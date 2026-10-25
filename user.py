@@ -2278,24 +2278,26 @@ def register_user_handlers(bot: TeleBot):
     def wallet_charge_handler(call: CallbackQuery):
         """شروع فرآیند شارژ حساب"""
         user_id = call.from_user.id
-        msg = bot.send_message(
+        db.set_user_state(user_id, "WAITING_DEPOSIT_AMOUNT")
+        bot.send_message(
             call.message.chat.id,
             "🏦 **شارژ حساب کاربری**\n\n"
             "لطفاً مبلغی که قصد واریز دارید را به **تومان** وارد کنید:\n"
             "*(حداقل مبلغ: ۵۰,۰۰۰ تومان)*",
             reply_markup=kb.get_cancel_keyboard()
         )
-        bot.register_next_step_handler(msg, process_deposit_amount_step)
         bot.answer_callback_query(call.id)
 
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_AMOUNT")
     def process_deposit_amount_step(message: Message):
-        """دریافت و اعتبارسنجی مبلغ شارژ"""
+        """دریافت و اعتبارسنجی مبلغ شارژ (FSM based)"""
         user_id = message.from_user.id
         text = message.text or ""
         logger.info(f"💰 [DEPOSIT_DEBUG] User {user_id} sent: {text}")
 
         # بررسی انصراف
         if text in ["🔙 انصراف و بازگشت", "❌ انصراف و بازگشت به منو"] or text == "/cancel":
+            db.clear_user_state(user_id)
             is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
             bot.send_message(message.chat.id, "❌ عملیات شارژ لغو شد.", reply_markup=kb.get_main_menu(is_admin))
             return
@@ -2304,19 +2306,18 @@ def register_user_handlers(bot: TeleBot):
         parsed_amount = utils.parse_amount_flexible(text)
         logger.info(f"💰 [DEPOSIT_DEBUG] Parsed amount: {parsed_amount}")
         if not parsed_amount:
-            msg = bot.send_message(message.chat.id, "❌ مبلغ وارد‌شده قابل تشخیص نیست.\nلطفاً مبلغ را به صورت عدد (به تومان) وارد کنید:")
-            bot.register_next_step_handler(msg, process_deposit_amount_step)
+            bot.send_message(message.chat.id, "❌ مبلغ وارد‌شده قابل تشخیص نیست.\nلطفاً مبلغ را به صورت عدد (به تومان) وارد کنید:")
             return
 
         amount = int(parsed_amount)
         if amount < 50000:
-            msg = bot.send_message(message.chat.id, "❌ حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است. لطفاً مبلغ بیشتری وارد کنید:")
-            bot.register_next_step_handler(msg, process_deposit_amount_step)
+            bot.send_message(message.chat.id, "❌ حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است. لطفاً مبلغ بیشتری وارد کنید:")
             return
 
         # ایجاد تراکنش در دیتابیس
         tx_id = db.create_deposit_transaction(user_id, amount)
         if not tx_id:
+            db.clear_user_state(user_id)
             bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً دقایقی دیگر تلاش کنید.")
             return
 
@@ -2328,40 +2329,66 @@ def register_user_handlers(bot: TeleBot):
             "👤 **بنام:** میانجی (واسط معتبر معاملات)\n\n"
             "⚠️ **توجه:** پس از واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید."
         )
-        msg = bot.send_message(message.chat.id, instruction, parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_receipt_step, tx_id)
+        db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id})
+        bot.send_message(message.chat.id, instruction, parse_mode="Markdown")
 
-    def process_receipt_step(message: Message, transaction_id: int):
-        """دریافت تصویر فیش و ارسال به ادمین"""
+    @bot.message_handler(content_types=['photo'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
+    def process_receipt_step(message: Message):
+        """دریافت تصویر فیش و ارسال به ادمین (FSM based)"""
         user_id = message.from_user.id
+        _, data = db.get_user_state(user_id)
+        transaction_id = data.get("tx_id")
+
+        if not transaction_id:
+            db.clear_user_state(user_id)
+            bot.send_message(message.chat.id, "❌ خطای سیستمی رخ داد. لطفاً دوباره تلاش کنید.")
+            return
         
-        # بررسی انصراف
-        if message.text == "❌ انصراف و بازگشت به منو" or message.text == "/cancel":
-            is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
-            bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=kb.get_main_menu(is_admin))
-            return
-
-        if not message.photo:
-            msg = bot.send_message(message.chat.id, "❌ لطفاً تصویر فیش واریزی خود را ارسال کنید (عکس):")
-            bot.register_next_step_handler(msg, process_receipt_step, transaction_id)
-            return
-
         proc_msg = bot.send_message(message.chat.id, "⏳ **در حال بررسی فایل و ثبت درخواست...**")
         file_id = message.photo[-1].file_id
         
         # بروزرسانی دیتابیس
         if db.update_deposit_receipt(transaction_id, file_id):
             # ثبت در جدول متمرکز فیش‌های در انتظار (برای نظارت بهتر ادمین)
+            # فرض بر این است که db.create_pending_receipt وجود دارد
             res_tx = db.supabase.table("transactions").select("amount, description").eq("id", transaction_id).execute()
             tx_info = res_tx.data[0] if res_tx.data else {}
-            db.create_pending_receipt(
-                receipt_type="wallet",
-                related_id=str(transaction_id),
-                user_id=user_id,
-                file_id=file_id,
-                amount=float(tx_info.get("amount", 0)),
-                description=tx_info.get("description", "شارژ کیف پول")
+            
+            # ثبت فیش در صورت موجود بودن متد در دیتابیس
+            if hasattr(db, 'create_pending_receipt'):
+                db.create_pending_receipt(
+                    receipt_type="wallet",
+                    related_id=str(transaction_id),
+                    user_id=user_id,
+                    file_id=file_id,
+                    amount=float(tx_info.get("amount", 0)),
+                    description=tx_info.get("description", "شارژ کیف پول")
+                )
+            
+            db.clear_user_state(user_id)
+            bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=proc_msg.message_id,
+                text="✅ **فیش واریزی شما دریافت شد.**\nپس از بررسی و تایید ادمین، کیف پول شما شارژ خواهد شد."
             )
+        else:
+            bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=proc_msg.message_id,
+                text="❌ خطایی در ثبت فیش رخ داد. لطفاً دوباره تلاش کنید."
+            )
+
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
+    def handle_receipt_non_photo(message: Message):
+        """هندل کردن پیام‌های غیر عکس در مرحله دریافت فیش"""
+        user_id = message.from_user.id
+        if message.text in ["❌ انصراف و بازگشت به منو", "/cancel"]:
+            db.clear_user_state(user_id)
+            is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
+            bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=kb.get_main_menu(is_admin))
+            return
+            
+        bot.send_message(message.chat.id, "❌ لطفاً تصویر فیش واریزی خود را ارسال کنید (عکس):")
 
             # ارسال به ادمین
             res = db.supabase.table("transactions").select("*, users(full_name, username)").eq("id", transaction_id).execute()

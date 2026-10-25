@@ -1,9 +1,6 @@
-import os
 import sys
-import threading
 import logging
 import time
-from flask import Flask
 import telebot
 from config import config
 import database as db
@@ -21,28 +18,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Miyanji_Main")
 
-# سرور Flask سبک برای Render Web Service
-app = Flask(__name__)
-
-@app.route('/', methods=['GET', 'HEAD'])
-def index():
-    return "Miyanji Telegram Bot is live.", 200
-
-@app.route('/health', methods=['GET', 'HEAD'])
-def health_check():
-    return "OK", 200
-
-def run_flask_server():
-    # استفاده از پورت تعیین شده توسط رندر یا پیش‌فرض ۳۰۰۰
-    port = int(os.environ.get("PORT", config.PORT))
-    logger.info(f"🚀 Flask Web Server starting on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
 def main():
     logger.info("🎬 Starting Miyanji application...")
-    
-    # اجرای سرور Flask در ترد جداگانه
-    threading.Thread(target=run_flask_server, daemon=True).start()
     
     # تست اتصال دیتابیس سوپابیس
     if db.supabase:
