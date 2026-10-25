@@ -2393,10 +2393,7 @@ def register_user_handlers(bot: TeleBot):
 
 
             
-            try:
-                bot.delete_message(message.chat.id, proc_msg.message_id)
-            except:
-                pass
+
 
             is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
             bot.send_message(
