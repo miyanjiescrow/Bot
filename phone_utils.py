@@ -11,7 +11,7 @@ def normalize_phone_number(raw_phone: str) -> Optional[str]:
       * 00989... -> 989...
       * 09...    -> 989...
       * 9... (10 digits) -> 989...
-    - Step 4: Validate against Regex ^989\d{9}$ (must be exactly 12 digits). Return None if invalid.
+    # Step 4: Validate against Regex r"^989\d{9}$" (must be exactly 12 digits). Return None if invalid.
     """
     if not raw_phone:
         return None
@@ -47,7 +47,7 @@ def normalize_phone_number(raw_phone: str) -> Optional[str]:
     elif len(numeric_only) == 10 and numeric_only.startswith("9"):
         numeric_only = "98" + numeric_only # 989...
         
-    # Step 4: Validate against Regex ^989\d{9}$ (must be exactly 12 digits starting with 989)
+    # Step 4: Validate against Regex r"^989\d{9}$" (must be exactly 12 digits starting with 989)
     if re.fullmatch(r"^989\d{9}$", numeric_only):
         return numeric_only
         

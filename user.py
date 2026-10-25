@@ -277,7 +277,7 @@ def build_draft_preview_text(state_data: dict) -> str:
         f"{ms_text}\n\n"
         f"📝 *تعهدات:* {utils.escape_markdown(state_data.get('description', ''))}\n"
         "──────────────────\n"
-        "✅ در صورت صحت اطلاعات، دکمه *تایید* را بزنید\."
+        "✅ در صورت صحت اطلاعات، دکمه *تایید* را بزنید\\."
     )
 
 
@@ -1138,7 +1138,7 @@ def register_user_handlers(bot: TeleBot):
                 message_id=call.message.message_id,
                 text=f"📜 *تعهدات قانونی دسته‌بندی {category}:*\n\n"
                      f"{legal_text}\n"
-                     "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند\. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید\.",
+                     "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند\\. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید\\.",
                 parse_mode="MarkdownV2",
                 reply_markup=kb.get_wizard_description_legal_back_inline()
             )
@@ -1147,7 +1147,7 @@ def register_user_handlers(bot: TeleBot):
                 call.message.chat.id,
                 f"📜 *تعهدات قانونی دسته‌بندی {category}:*\n\n"
                 f"{legal_text}\n"
-                "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند\. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید\.",
+                "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند\\. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید\\.",
                 parse_mode="MarkdownV2",
                 reply_markup=kb.get_wizard_description_legal_back_inline()
             )
@@ -1755,14 +1755,14 @@ def register_user_handlers(bot: TeleBot):
         p1_name = (c.get("buyer_fullname") if creator_is_buyer else c.get("seller_fullname")) or (f"کاربر {creator_id}" if creator_id else "سازنده معامله")
         p1_phone = (c.get("buyer_phone") if creator_is_buyer else c.get("seller_phone")) or "ثبت نشده"
         p1_nid = c.get("buyer_national_id") if creator_is_buyer else c.get("seller_national_id")
-        p1_nid_text = f" \| کدملی: `{utils.escape_markdown(str(p1_nid))}`" if p1_nid else ""
+        p1_nid_text = r" \| کدملی: " + f"`{utils.escape_markdown(str(p1_nid))}`" if p1_nid else ""
         p1_signed = "✅ امضا شده" if (c.get("buyer_signed_at") if creator_is_buyer else c.get("seller_signed_at")) else "⏳ در انتظار امضا"
 
         p2_role = "مجری (فروشنده)" if creator_is_buyer else "کارفرما (خریدار)"
         p2_name = (c.get("seller_fullname") if creator_is_buyer else c.get("buyer_fullname")) or "در انتظار پیوستن طرف دوم"
         p2_phone = (c.get("seller_phone") if creator_is_buyer else c.get("buyer_phone")) or "ثبت نشده"
         p2_nid = c.get("seller_national_id") if creator_is_buyer else c.get("buyer_national_id")
-        p2_nid_text = f" \| کدملی: `{utils.escape_markdown(str(p2_nid))}`" if p2_nid else ""
+        p2_nid_text = r" \| کدملی: " + f"`{utils.escape_markdown(str(p2_nid))}`" if p2_nid else ""
         p2_signed = "✅ امضا شده" if (c.get("seller_signed_at") if creator_is_buyer else c.get("buyer_signed_at")) else "⏳ در انتظار امضا"
         
         # اگر قرارداد پرداخت شده است ولی وضعیت هنوز awaiting_payment مانده، اصلاح خودکار
@@ -2390,27 +2390,8 @@ def register_user_handlers(bot: TeleBot):
             
         bot.send_message(message.chat.id, "❌ لطفاً تصویر فیش واریزی خود را ارسال کنید (عکس):")
 
-            # ارسال به ادمین
-            res = db.supabase.table("transactions").select("*, users(full_name, username)").eq("id", transaction_id).execute()
-            tx_data = res.data[0] if res.data else {}
-            u_data = tx_data.get("users", {})
-            
-            admin_text = (
-                "📥 <b>درخواست شارژ حساب جدید</b>\n\n"
-                f"🆔 کد تراکنش: <code>{transaction_id}</code>\n"
-                f"👤 کاربر: <code>{utils.escape_html(u_data.get('full_name', 'نامشخص'))}</code> (@{u_data.get('username', '-')})\n"
-                f"💰 مبلغ: <code>{utils.format_currency(tx_data.get('amount', 0))}</code>\n"
-                f"📅 تاریخ: {datetime.now().strftime('%Y/%m/%d %H:%M')}"
-            )
-            
-            markup = kb.get_deposit_admin_keyboard(transaction_id)
-            utils.send_admin_alert(
-                bot, 
-                text=admin_text, 
-                content_type="photo", 
-                file_id=file_id, 
-                reply_markup=markup
-            )
+
+
             
             try:
                 bot.delete_message(message.chat.id, proc_msg.message_id)
