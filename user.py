@@ -2395,13 +2395,7 @@ def register_user_handlers(bot: TeleBot):
             
 
 
-            is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
-            bot.send_message(
-                message.chat.id,
-                "✅ فیش واریزی شما دریافت شد و جهت بررسی به پشتیبانی ارسال گردید.\n"
-                "پس از تایید، موجودی شما شارژ خواهد شد.",
-                reply_markup=kb.get_main_menu(is_admin)
-            )
+
         else:
             bot.send_message(message.chat.id, "❌ خطایی در ثبت فیش رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
