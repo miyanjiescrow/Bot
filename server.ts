@@ -1136,10 +1136,21 @@ app.post('/api/bot/simulate', (req: Request, res: Response) => {
 // ====================================================
 // Vite Integration (Dev Mode & Static Prod)
 // ====================================================
+import { bot } from './src/bot';
+
+// ... (existing imports and code)
+
 async function startServer() {
   const isDev = process.env.NODE_ENV !== 'production';
+  
+  // Launch Bot
+  if (process.env.BOT_TOKEN) {
+    bot.launch().then(() => console.log('🤖 Telegram bot launched.'));
+  }
 
   if (isDev) {
+    // ...
+
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, host: HOST, port: PORT },
