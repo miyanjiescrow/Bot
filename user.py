@@ -2292,6 +2292,7 @@ def register_user_handlers(bot: TeleBot):
         """دریافت و اعتبارسنجی مبلغ شارژ"""
         user_id = message.from_user.id
         text = message.text or ""
+        logger.info(f"💰 [DEPOSIT_DEBUG] User {user_id} sent: {text}")
 
         # بررسی انصراف
         if text in ["🔙 انصراف و بازگشت", "❌ انصراف و بازگشت به منو"] or text == "/cancel":
@@ -2301,6 +2302,7 @@ def register_user_handlers(bot: TeleBot):
 
         # تبدیل اعداد و اعتبارسنجی
         parsed_amount = utils.parse_amount_flexible(text)
+        logger.info(f"💰 [DEPOSIT_DEBUG] Parsed amount: {parsed_amount}")
         if not parsed_amount:
             msg = bot.send_message(message.chat.id, "❌ مبلغ وارد‌شده قابل تشخیص نیست.\nلطفاً مبلغ را به صورت عدد (به تومان) وارد کنید:")
             bot.register_next_step_handler(msg, process_deposit_amount_step)
