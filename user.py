@@ -2300,13 +2300,13 @@ def register_user_handlers(bot: TeleBot):
             return
 
         # تبدیل اعداد و اعتبارسنجی
-        clean_amount = utils.fa_to_en_digits(text).replace(",", "").strip()
-        if not clean_amount.isdigit():
-            msg = bot.send_message(message.chat.id, "❌ لطفاً فقط عدد (به تومان) وارد کنید:")
+        parsed_amount = utils.parse_amount_flexible(text)
+        if not parsed_amount:
+            msg = bot.send_message(message.chat.id, "❌ مبلغ وارد‌شده قابل تشخیص نیست.\nلطفاً مبلغ را به صورت عدد (به تومان) وارد کنید:")
             bot.register_next_step_handler(msg, process_deposit_amount_step)
             return
 
-        amount = int(clean_amount)
+        amount = int(parsed_amount)
         if amount < 50000:
             msg = bot.send_message(message.chat.id, "❌ حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است. لطفاً مبلغ بیشتری وارد کنید:")
             bot.register_next_step_handler(msg, process_deposit_amount_step)
