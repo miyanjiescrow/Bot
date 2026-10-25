@@ -1145,7 +1145,11 @@ async function startServer() {
   
   // Launch Bot
   if (process.env.BOT_TOKEN) {
-    bot.launch().then(() => console.log('🤖 Telegram bot launched.'));
+    bot.launch()
+      .then(() => console.log('🤖 Telegram bot launched.'))
+      .catch((err) => console.error('❌ Failed to launch Telegram bot:', err.message));
+  } else {
+    console.warn('⚠️ BOT_TOKEN not set, Telegram bot will not be launched.');
   }
 
   if (isDev) {
