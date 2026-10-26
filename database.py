@@ -812,7 +812,9 @@ def create_deposit_transaction(user_id: int, amount: float) -> Optional[int]:
             "status": "pending",
             "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان"
         }
+        logger.info(f"📡 [DB_DEBUG] Inserting deposit transaction to Supabase for user {user_id}...")
         res = supabase.table("transactions").insert(data).execute()
+        logger.info(f"✅ [DB_DEBUG] Supabase response received.")
         if res.data:
             actual_id = res.data[0]["id"]
             with db_lock:
@@ -2473,8 +2475,8 @@ def set_user_state_safe(user_id: int, state: str, data: Dict = None, username: s
 def register_or_update_user_by_phone(phone_number: str, full_name: str, telegram_id: Optional[int] = None, username: str = "", **kwargs) -> Optional[Dict[str, Any]]:
     """ثبت یا بروزرسانی کاربر بر اساس شماره تلفن (Thread-safe)"""
     if not supabase: return None
-    with db_lock:
-        try:
+    try:
+        with db_lock:
             norm_phone = normalize_phone_number(phone_number)
             if not norm_phone: return None
             
@@ -2512,13 +2514,6 @@ def register_or_update_user_by_phone(phone_number: str, full_name: str, telegram
                     if telegram_id: set_user_session(telegram_id, norm_phone)
                     return created
                 return None
-        except Exception as e:
-            logger.error(f"Error in register_or_update_user_by_phone: {e}")
-            return None
     except Exception as e:
-        logger.error(f"Error registering/updating user by phone: {e}")
+        logger.error(f"Error in register_or_update_user_by_phone: {e}")
         return None
-
-db = Database()
-
-# بخش‌های اضافی/تغییر یافتهٔ database.py

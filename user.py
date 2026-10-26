@@ -369,6 +369,25 @@ def _forward_media_to_user(bot: TeleBot, chat_id: int, file_id: str, file_type: 
 def register_user_handlers(bot: TeleBot):
     """ثبت تمامی هندلرهای مربوط به کاربر در سیستم میانجی (کامل و بدون حذفیات)"""
 
+    _ACTIVE_FSM_STATES = {
+        "WAITING_ROLE_SELECTION", "WAITING_CATEGORY_SELECTION", "WAITING_WIZARD_TITLE",
+        "WAITING_WIZARD_AMOUNT", "WAITING_WIZARD_COMMISSION_PAYER", "WAITING_WIZARD_DEADLINE",
+        "WAITING_WIZARD_DEADLINE_CUSTOM", "WAITING_WIZARD_MS_ASK", "WAITING_WIZARD_DESCRIPTION",
+        "WAITING_FREE_EDITS_CHOICE", "WAITING_CUSTOM_FREE_EDITS", "WAITING_PREVIEW_CONFIRM",
+        "WAITING_FIELD_EDIT", "WAITING_SIGN_CONFIRM", "WAITING_SIGNATURE_OTP",
+        "WAITING_DEPOSIT_AMOUNT", "WAITING_DEPOSIT_RECEIPT", "WAITING_WITHDRAW_AMOUNT",
+        "WAITING_WITHDRAW_SHEBA", "WAITING_WITHDRAW_HOLDER_NAME", "WAITING_AMBASSADOR_CASHOUT_INFO",
+        "WAITING_KYC_PHONE", "WAITING_KYC_NATIONAL_ID", "WAITING_FULL_NAME",
+        "WAITING_PROFILE_FULLNAME", "EDITING_FULLNAME", "EDITING_NATIONAL_ID",
+        "WAITING_NEGOTIATION_TEXT", "WAITING_NEGOTIATION_UPDATE", "WAITING_SIGN_FULLNAME",
+        "WAITING_SIGN_PHONE", "WAITING_SIGN_NATIONAL_ID", "WAITING_SIGN_ALT_PHONE",
+        "WAITING_PROJECT_REJECT_REASON", "WAITING_EXTRA_EDIT_PRICE", "WAITING_BARGAIN_PRICE",
+        "WAITING_DISPUTE_CID", "WAITING_DISPUTE_REASON", "WAITING_DISPUTE_PROOF",
+        "WAITING_DELIVERY_CONTENT", "WAITING_MS_DELIVERY_CONTENT", "WAITING_CONTRACT_SEARCH_ID",
+        "WAITING_BANK_ACCOUNT_INPUT", "AMB_BROADCASTER_CHANNEL", "AMB_BROADCASTER_CONTENT",
+        "AMB_BROADCASTER_BUTTON_TEXT"
+    }
+
     # پچ کردن متد answer_callback_query برای جلوگیری از خطا در تراکنش‌های شبیه‌سازی شده (Resume)
     _orig_answer = bot.answer_callback_query
     def patched_answer(callback_query_id, text=None, show_alert=False, url=None, cache_time=None):
@@ -2276,8 +2295,16 @@ def register_user_handlers(bot: TeleBot):
 
     @bot.callback_query_handler(func=lambda call: call.data == "deposit_wallet")
     def wallet_charge_handler(call: CallbackQuery):
-        """شروع فرآیند شارژ حساب"""
+        """شروع فرآیند شارژ حساب با بررسی احراز هویت"""
         user_id = call.from_user.id
+        user_info = db.get_user(user_id)
+        
+        # بررسی احراز هویت برای شارژ حساب
+        if not (user_info and user_info.get("is_verified")):
+            bot.answer_callback_query(call.id, "⚠️ برای امنیت تراکنش‌ها، ابتدا باید احراز هویت کنید.", show_alert=True)
+            start_kyc_process(call.message.chat.id, user_id, resume_data=call.data)
+            return
+
         db.set_user_state(user_id, "WAITING_DEPOSIT_AMOUNT")
         bot.send_message(
             call.message.chat.id,
@@ -2296,9 +2323,9 @@ def register_user_handlers(bot: TeleBot):
         logger.info(f"💰 [DEPOSIT_DEBUG] User {user_id} sent: {text}")
 
         # بررسی انصراف
-        if text in ["🔙 انصراف و بازگشت", "❌ انصراف و بازگشت به منو"] or text == "/cancel":
+        if text in ["🔙 انصراف و بازگشت", "❌ انصراف و بازگشت به منو", "❌ انصراف"] or text == "/cancel":
             db.clear_user_state(user_id)
-            is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
+            is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
             bot.send_message(message.chat.id, "❌ عملیات شارژ لغو شد.", reply_markup=kb.get_main_menu(is_admin))
             return
 
@@ -2316,21 +2343,25 @@ def register_user_handlers(bot: TeleBot):
 
         try:
             # ایجاد تراکنش در دیتابیس
+            logger.info(f"🔄 [DEPOSIT_DEBUG] Creating transaction for user {user_id}, amount {amount}")
             tx_id = db.create_deposit_transaction(user_id, amount)
+            logger.info(f"✅ [DEPOSIT_DEBUG] Transaction created: {tx_id}")
+            
             if not tx_id:
                 db.clear_user_state(user_id)
                 bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً دقایقی دیگر تلاش کنید.")
                 return
 
+            card_num = getattr(config, 'INTERMEDIARY_CARD', '6037-9975-7534-8211')
             instruction = (
                 "✅ **درخواست شما ثبت شد.**\n\n"
                 f"💰 **مبلغ قابل واریز:** `{utils.format_currency(amount)}` تومان\n\n"
                 "💳 **شماره کارت جهت واریز:**\n"
-                "`6037-9975-7534-8211`\n"
+                f"`{card_num}`\n"
                 "👤 **بنام:** میانجی (واسط معتبر معاملات)\n\n"
                 "⚠️ **توجه:** پس از واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید."
             )
-            db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id})
+            db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id, "amount": amount})
             bot.send_message(message.chat.id, instruction, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in process_deposit_amount_step: {e}", exc_info=True)
@@ -2397,14 +2428,6 @@ def register_user_handlers(bot: TeleBot):
             
         bot.send_message(message.chat.id, "❌ لطفاً تصویر فیش واریزی خود را ارسال کنید (عکس):")
 
-
-
-            
-
-
-
-        else:
-            bot.send_message(message.chat.id, "❌ خطایی در ثبت فیش رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_deposit:", "reject_deposit:")))
     def handle_deposit_admin_callback(call: CallbackQuery):
@@ -6071,110 +6094,6 @@ def register_user_handlers(bot: TeleBot):
     # ۱۳.۷ کیف پول: درخواست شارژ و برداشت با تایید ادمین — قبلاً فقط یک Alert «به‌زودی» بود
     # ====================================================
 
-    @bot.callback_query_handler(func=lambda call: call.data == "deposit_wallet")
-    def handle_deposit_start(call: CallbackQuery):
-        user_id = call.from_user.id
-        user_info = db.get_user(user_id)
-        
-        if not user_info.get("is_verified"):
-            bot.answer_callback_query(call.id, "⚠️ برای امنیت تراکنش‌ها، ابتدا باید احراز هویت کنید.", show_alert=True)
-            start_kyc_process(call.message.chat.id, user_id, resume_data=call.data)
-            return
-
-        db.set_user_state(user_id, "WAITING_DEPOSIT_AMOUNT")
-        bot.answer_callback_query(call.id)
-        bot.send_message(
-            call.message.chat.id,
-            "💳 لطفاً مبلغی که واریز کرده‌اید (به تومان) را ارسال کنید:",
-            reply_markup=kb.get_wallet_amount_cancel_keyboard()
-        )
-
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_AMOUNT")
-    def handle_deposit_amount(message: Message):
-        user_id = message.from_user.id
-        clean_text = utils.fa_to_en_digits(message.text).replace(",", "").strip()
-
-        if not clean_text.isdigit() or int(clean_text) <= 0:
-            bot.send_message(message.chat.id, "⚠️ لطفاً مبلغ را فقط به‌صورت عدد مثبت وارد کنید.")
-            return
-
-        amount = float(clean_text)
-        db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"amount": amount})
-        
-        bot.send_message(
-            message.chat.id,
-            f"💳 **دستورالعمل واریز وجه**\n\n"
-            f"مبلغ: `{amount:,.0f}` تومان\n\n"
-            f"لطفاً مبلغ فوق را به شماره کارت میانجی واریز کرده و **تصویر فیش واریزی** را ارسال کنید:\n\n"
-            f"🏧 شماره کارت: `{config.INTERMEDIARY_CARD}`\n"
-            f"👤 بنام: میانجی (واسط معتبر معاملات)",
-            parse_mode="Markdown",
-            reply_markup=kb.get_wallet_amount_cancel_keyboard()
-        )
-
-    @bot.message_handler(content_types=['photo'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
-    def handle_deposit_receipt(message: Message):
-        user_id = message.from_user.id
-        _, state_data = db.get_user_state(user_id)
-        amount = float((state_data or {}).get("amount", 0))
-        
-        photo = message.photo[-1]
-        file_info = bot.get_file(photo.file_id)
-        
-        db.clear_user_state(user_id)
-        user_info = db.get_user(user_id)
-        is_admin_u = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
-        
-        bot.send_message(
-            message.chat.id,
-            "✅ فیش واریزی شما دریافت شد. پس از بررسی و تایید ادمین، کیف پول شما شارژ خواهد شد.",
-            reply_markup=kb.get_main_menu(is_admin_u)
-        )
-        
-        # ثبت تراکنش معلق در جدول transactions
-        tx_id = None
-        try:
-            from database import supabase
-            tx_res = supabase.table("transactions").insert({
-                "user_id": user_id,
-                "amount": amount,
-                "type": "deposit",
-                "description": "درخواست شارژ کیف پول (در انتظار تایید)",
-                "status": "pending",
-                "receipt_file_id": photo.file_id
-            }).execute()
-            if tx_res.data:
-                tx_id = tx_res.data[0].get("id")
-        except Exception as e:
-            logger.error(f"خطا در ثبت تراکنش معلق: {e}")
-
-        # ثبت در جدول متمرکز فیش‌ها
-        if tx_id:
-            db.create_pending_receipt(
-                receipt_type="wallet",
-                related_id=str(tx_id),
-                user_id=user_id,
-                file_id=photo.file_id,
-                amount=amount,
-                description=f"شارژ کیف پول - تراکنش {tx_id}"
-            )
-        
-        # اطلاع‌رسانی به ادمین یا کانال مدیریت
-        admin_markup = kb.get_wallet_admin_approval_inline("deposit", user_id, amount, req_id=tx_id)
-        safe_full_name = utils.escape_html(user_info.get('full_name') or 'نامشخص')
-        admin_text = (
-            f"🏧 <b>درخواست شارژ کیف پول</b> (#{tx_id})\n\n"
-            f"👤 کاربر: {safe_full_name} (<code>{user_id}</code>)\n"
-            f"💰 مبلغ: {utils.format_currency(amount)}\n"
-        )
-        
-        utils.send_admin_alert(
-            bot,
-            content_type="photo",
-            file_id=photo.file_id,
-            text=admin_text + "\n\n📢 #شارژ_حساب",
-            reply_markup=admin_markup
-        )
 
     @bot.callback_query_handler(func=lambda call: call.data == "show_transactions")
     def handle_show_transactions(call: CallbackQuery):
