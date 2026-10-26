@@ -775,8 +775,8 @@ def register_user_handlers(bot: TeleBot):
             if not contract: return
             
             current_neg_count = int(contract.get("negotiation_count", 0) or 0)
-            if current_neg_count >= 30:
-                bot.send_message(call.message.chat.id, "⚠️ **خطا:** سقف تعداد تغییرات پیشنهادی (۳۰ بار) برای این معامله به پایان رسیده است.")
+            if current_neg_count >= getattr(config, 'MAX_NEGOTIATION_COUNT', 30):
+                bot.send_message(call.message.chat.id, f"⚠️ **خطا:** سقف تعداد تغییرات پیشنهادی ({getattr(config, 'MAX_NEGOTIATION_COUNT', 30)} بار) برای این معامله به پایان رسیده است.")
                 bot.answer_callback_query(call.id)
                 return
 
@@ -2314,23 +2314,27 @@ def register_user_handlers(bot: TeleBot):
             bot.send_message(message.chat.id, "❌ حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است. لطفاً مبلغ بیشتری وارد کنید:")
             return
 
-        # ایجاد تراکنش در دیتابیس
-        tx_id = db.create_deposit_transaction(user_id, amount)
-        if not tx_id:
-            db.clear_user_state(user_id)
-            bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً دقایقی دیگر تلاش کنید.")
-            return
+        try:
+            # ایجاد تراکنش در دیتابیس
+            tx_id = db.create_deposit_transaction(user_id, amount)
+            if not tx_id:
+                db.clear_user_state(user_id)
+                bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً دقایقی دیگر تلاش کنید.")
+                return
 
-        instruction = (
-            "✅ **درخواست شما ثبت شد.**\n\n"
-            f"💰 **مبلغ قابل واریز:** `{utils.format_currency(amount)}` تومان\n\n"
-            "💳 **شماره کارت جهت واریز:**\n"
-            "`6037-9975-7534-8211`\n"
-            "👤 **بنام:** میانجی (واسط معتبر معاملات)\n\n"
-            "⚠️ **توجه:** پس از واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید."
-        )
-        db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id})
-        bot.send_message(message.chat.id, instruction, parse_mode="Markdown")
+            instruction = (
+                "✅ **درخواست شما ثبت شد.**\n\n"
+                f"💰 **مبلغ قابل واریز:** `{utils.format_currency(amount)}` تومان\n\n"
+                "💳 **شماره کارت جهت واریز:**\n"
+                "`6037-9975-7534-8211`\n"
+                "👤 **بنام:** میانجی (واسط معتبر معاملات)\n\n"
+                "⚠️ **توجه:** پس از واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید."
+            )
+            db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id})
+            bot.send_message(message.chat.id, instruction, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error in process_deposit_amount_step: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "❌ متأسفانه در ثبت درخواست خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
     @bot.message_handler(content_types=['photo'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
     def process_receipt_step(message: Message):
@@ -2344,39 +2348,42 @@ def register_user_handlers(bot: TeleBot):
             bot.send_message(message.chat.id, "❌ خطای سیستمی رخ داد. لطفاً دوباره تلاش کنید.")
             return
         
-        proc_msg = bot.send_message(message.chat.id, "⏳ **در حال بررسی فایل و ثبت درخواست...**")
-        file_id = message.photo[-1].file_id
-        
-        # بروزرسانی دیتابیس
-        if db.update_deposit_receipt(transaction_id, file_id):
-            # ثبت در جدول متمرکز فیش‌های در انتظار (برای نظارت بهتر ادمین)
-            # فرض بر این است که db.create_pending_receipt وجود دارد
-            res_tx = db.supabase.table("transactions").select("amount, description").eq("id", transaction_id).execute()
-            tx_info = res_tx.data[0] if res_tx.data else {}
+        try:
+            proc_msg = bot.send_message(message.chat.id, "⏳ **در حال بررسی فایل و ثبت درخواست...**")
+            file_id = message.photo[-1].file_id
             
-            # ثبت فیش در صورت موجود بودن متد در دیتابیس
-            if hasattr(db, 'create_pending_receipt'):
-                db.create_pending_receipt(
-                    receipt_type="wallet",
-                    related_id=str(transaction_id),
-                    user_id=user_id,
-                    file_id=file_id,
-                    amount=float(tx_info.get("amount", 0)),
-                    description=tx_info.get("description", "شارژ کیف پول")
+            # بروزرسانی دیتابیس
+            if db.update_deposit_receipt(transaction_id, file_id):
+                # ثبت در جدول متمرکز فیش‌های در انتظار (برای نظارت بهتر ادمین)
+                res_tx = db.supabase.table("transactions").select("amount, description").eq("id", transaction_id).execute()
+                tx_info = res_tx.data[0] if res_tx.data else {}
+                
+                # ثبت فیش در صورت موجود بودن متد در دیتابیس
+                if hasattr(db, 'create_pending_receipt'):
+                    db.create_pending_receipt(
+                        receipt_type="wallet",
+                        related_id=str(transaction_id),
+                        user_id=user_id,
+                        file_id=file_id,
+                        amount=float(tx_info.get("amount", 0)),
+                        description=tx_info.get("description", "شارژ کیف پول")
+                    )
+                
+                db.clear_user_state(user_id)
+                bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=proc_msg.message_id,
+                    text="✅ **فیش واریزی شما دریافت شد.**\nپس از بررسی و تایید ادمین، کیف پول شما شارژ خواهد شد."
                 )
-            
-            db.clear_user_state(user_id)
-            bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=proc_msg.message_id,
-                text="✅ **فیش واریزی شما دریافت شد.**\nپس از بررسی و تایید ادمین، کیف پول شما شارژ خواهد شد."
-            )
-        else:
-            bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=proc_msg.message_id,
-                text="❌ خطایی در ثبت فیش رخ داد. لطفاً دوباره تلاش کنید."
-            )
+            else:
+                bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=proc_msg.message_id,
+                    text="❌ خطایی در ثبت فیش رخ داد. لطفاً دوباره تلاش کنید."
+                )
+        except Exception as e:
+            logger.error(f"Error in process_receipt_step: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "❌ متأسفانه در ثبت فیش خطایی رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
     @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
     def handle_receipt_non_photo(message: Message):

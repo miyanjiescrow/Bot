@@ -1143,7 +1143,8 @@ import { bot } from './src/bot';
 async function startServer() {
   const isDev = process.env.NODE_ENV !== 'production';
   
-  // Launch Bot
+  // Launch Bot (Disabled in favor of Python bot in main.py)
+  /*
   if (process.env.BOT_TOKEN) {
     bot.launch()
       .then(() => console.log('🤖 Telegram bot launched.'))
@@ -1151,6 +1152,7 @@ async function startServer() {
   } else {
     console.warn('⚠️ BOT_TOKEN not set, Telegram bot will not be launched.');
   }
+  */
 
   if (isDev) {
     // ...

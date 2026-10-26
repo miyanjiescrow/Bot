@@ -1,4 +1,5 @@
 import logging
+import time
 import re
 import threading
 import uuid
@@ -200,107 +201,93 @@ def register_or_update_user(
     role: Optional[str] = "user",
     **kwargs
 ) -> Dict[str, Any]:
-    if not supabase:
-        logger.warning("Supabase client is not initialized; saving to local memory store.")
-        user_rec = _in_memory_users.get(user_id, {
-            "id": user_id,
-            "username": username or "",
-            "full_name": full_name or first_name or f"کاربر {user_id}",
-            "phone_number": phone_number,
-            "role": role or "user",
-            "wallet_balance": 0.0,
-            "is_verified": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        })
-        if full_name: user_rec["full_name"] = full_name
-        if phone_number: user_rec["phone_number"] = phone_number
-        if username: user_rec["username"] = username
-        for k, v in kwargs.items(): user_rec[k] = v
-        _in_memory_users[user_id] = user_rec
-        _user_info_cache[user_id] = user_rec
-        return user_rec
-
-    try:
-        # جستجو بر اساس آیدی
-        res = supabase.table("users").select("*").eq("id", user_id).execute()
-        existing_user = res.data[0] if res.data else None
-
-        if existing_user:
-            update_data = {}
-            if first_name: update_data["full_name"] = first_name # Using full_name instead
-            if username: update_data["username"] = username
-            if phone_number: update_data["phone_number"] = phone_number
-            if full_name: update_data["full_name"] = full_name
-            
-            # فیلدهای تکمیلی و احراز هویت
-            for key in ["is_verified", "national_id", "is_blacklisted", "role", "wallet_balance", "payment_cards", "invited_by", "password_hash"]:
-                if key in kwargs:
-                    val = kwargs[key]
-                    update_data[key] = val
-            
-            if update_data:
-                # فقط اگر فیلدهای حساس تغییر کردند، کش را پاک کن
-                sensitive_fields = ["is_verified", "national_id", "is_blacklisted", "role", "wallet_balance", "payment_cards"]
-                should_clear_cache = any(field in update_data for field in sensitive_fields)
-                
-                # بروزرسانی آنی کش جهت جلوگیری از Race Condition
-                if user_id in _user_info_cache:
-                    _user_info_cache[user_id].update(update_data)
-                    _user_info_last_update[user_id] = datetime.now()
-                else:
-                    # اگر در کش نبود، شیء کامل را با داده‌های جدید بساز و در کش بگذار
-                    full_obj = dict(existing_user)
-                    full_obj.update(update_data)
-                    _user_info_cache[user_id] = full_obj
-                    _user_info_last_update[user_id] = datetime.now()
-
-                def _do_update_final():
-                    try:
-                        supabase.table("users").update(update_data).eq("id", user_id).execute()
-                    except Exception as e:
-                        logger.error(f"Async user update error: {e}")
-                
-                db_pool.submit(_do_update_final)
-                # آپدیت موقت شیء در حافظه جهت بازگشت سریع
-                existing_user.update(update_data)
-            
-            return existing_user
-        else:
-            new_user = {
+    with db_lock:
+        if not supabase:
+            logger.warning("Supabase client is not initialized; saving to local memory store.")
+            user_rec = _in_memory_users.get(user_id, {
                 "id": user_id,
                 "username": username or "",
-                "full_name": full_name or f"{first_name or 'کاربر'}",
+                "full_name": full_name or first_name or f"کاربر {user_id}",
                 "phone_number": phone_number,
-                "password_hash": kwargs.get("password_hash"),
-                "wallet_balance": kwargs.get("wallet_balance", 0.0),
-                "invited_by": invited_by if (invited_by and invited_by != user_id) else None,
-                "role": role,
-                "impersonated_by": None,
-                "is_verified": kwargs.get("is_verified", False),
-                "national_id": kwargs.get("national_id"),
-                "is_blacklisted": kwargs.get("is_blacklisted", False),
-                "payment_cards": kwargs.get("payment_cards", "[]")
-            }
-            res_insert = supabase.table("users").insert(new_user).execute()
-            
-            if res_insert.data:
-                user_data = res_insert.data[0]
-                # آپدیت کش پس از درج موفق
-                _user_info_cache[user_id] = user_data
-                _user_info_last_update[user_id] = datetime.now()
+                "role": role or "user",
+                "wallet_balance": 0.0,
+                "is_verified": False,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            })
+            if full_name: user_rec["full_name"] = full_name
+            if phone_number: user_rec["phone_number"] = phone_number
+            if username: user_rec["username"] = username
+            for k, v in kwargs.items(): user_rec[k] = v
+            _in_memory_users[user_id] = user_rec
+            _user_info_cache[user_id] = user_rec
+            return user_rec
+
+        try:
+            # جستجو بر اساس آیدی
+            res = supabase.table("users").select("*").eq("id", user_id).execute()
+            existing_user = res.data[0] if res.data else None
+
+            if existing_user:
+                update_data = {}
+                if first_name: update_data["full_name"] = first_name
+                if username: update_data["username"] = username
+                if phone_number: update_data["phone_number"] = phone_number
+                if full_name: update_data["full_name"] = full_name
                 
-                # اگر توسط کسی دعوت شده، آمار سفیر را بروزرسانی کنیم
-                if invited_by:
-                    update_ambassador_stats(invited_by, referrals_delta=1)
+                # فیلدهای تکمیلی و احراز هویت
+                for key in ["is_verified", "national_id", "is_blacklisted", "role", "wallet_balance", "payment_cards", "invited_by", "password_hash"]:
+                    if key in kwargs:
+                        val = kwargs[key]
+                        update_data[key] = val
                 
-                return user_data
-            
-            if not res_insert.data:
-                logger.error(f"Failed to insert user {user_id}. Response: {res_insert}")
-            return new_user
-    except Exception as e:
-        logger.error(f"خطا در ثبت یا بروزرسانی کاربر {user_id}: {e}", exc_info=True)
-        return {}
+                if update_data:
+                    # بروزرسانی آنی کش جهت جلوگیری از Race Condition
+                    if user_id in _user_info_cache:
+                        _user_info_cache[user_id].update(update_data)
+                        _user_info_last_update[user_id] = datetime.now()
+                    else:
+                        full_obj = dict(existing_user)
+                        full_obj.update(update_data)
+                        _user_info_cache[user_id] = full_obj
+                        _user_info_last_update[user_id] = datetime.now()
+
+                    # اجرای آپدیت واقعی
+                    supabase.table("users").update(update_data).eq("id", user_id).execute()
+                    existing_user.update(update_data)
+                
+                return existing_user
+            else:
+                new_user = {
+                    "id": user_id,
+                    "username": username or "",
+                    "full_name": full_name or f"{first_name or 'کاربر'}",
+                    "phone_number": phone_number,
+                    "password_hash": kwargs.get("password_hash"),
+                    "wallet_balance": kwargs.get("wallet_balance", 0.0),
+                    "invited_by": invited_by if (invited_by and invited_by != user_id) else None,
+                    "role": role,
+                    "impersonated_by": None,
+                    "is_verified": kwargs.get("is_verified", False),
+                    "national_id": kwargs.get("national_id"),
+                    "is_blacklisted": kwargs.get("is_blacklisted", False),
+                    "payment_cards": kwargs.get("payment_cards", "[]")
+                }
+                res_insert = supabase.table("users").insert(new_user).execute()
+                
+                if res_insert.data:
+                    user_data = res_insert.data[0]
+                    _user_info_cache[user_id] = user_data
+                    _user_info_last_update[user_id] = datetime.now()
+                    
+                    if invited_by:
+                        update_ambassador_stats(invited_by, referrals_delta=1)
+                    
+                    return user_data
+                
+                return new_user
+        except Exception as e:
+            logger.error(f"خطا در ثبت یا بروزرسانی کاربر {user_id}: {e}", exc_info=True)
+            return {}
 
 # ====================================================
 #  Settings Management
@@ -670,106 +657,79 @@ def set_impersonation(admin_id: int, target_user_id: Optional[int]) -> bool:
 def process_wallet_payment(user_id: int, contract_id: str) -> Tuple[bool, str]:
     """
     فرآیند اتمیک کسر از کیف پول و فعال‌سازی معامله.
-    برمی‌گرداند: (موفقیت، پیام خطا یا موفقیت)
     """
     if not supabase:
         return False, "❌ اتصال به دیتابیس برقرار نیست."
 
-    try:
-        # ۱. دریافت اطلاعات معامله
-        contract = get_contract(contract_id)
-        if not contract:
-            return False, "❌ معامله یافت نشد."
-        
-        status = contract.get("status")
-        # وضعیت‌های مجاز برای پرداخت (شامل موارد در انتظار تایید یا امضا)
-        if status in ["active", "paid", "in_progress", "completed"]:
-            return False, "⚠️ این معامله قبلاً پرداخت شده یا در جریان است."
-
-        # ۲. پارس کردن مبلغ معامله و محاسبه مبلغ نهایی با کارمزد
-        raw_amount = contract.get("amount", 0)
+    with db_lock:
         try:
-            # پاکسازی و تبدیل به عدد صحیح (سانتی‌رایز مبالغ رشته‌ای با کاما)
-            amount_str = str(raw_amount).replace(',', '').split('.')[0]
-            base_amount = float(amount_str)
-        except (ValueError, TypeError):
-            return False, "❌ مبلغ معامله نامعتبر است."
-
-        if base_amount <= 0:
-            return False, "❌ مبلغ معامله نمی‌تواند صفر یا منفی باشد."
-
-        # محاسبه کارمزد و مبلغ نهایی که کارفرما باید بپردازد
-        comm_payer = contract.get("commission_payer", "freelancer")
-        _, _, total_to_pay = utils.calculate_commission(base_amount, payer=comm_payer)
-
-        # ۳. دریافت موجودی کاربر
-        user = get_user(user_id)
-        if not user:
-            return False, "❌ کاربر یافت نشد."
-        
-        user_balance = utils.safe_float(user.get("wallet_balance"), 0.0)
-
-        # ۴. چک کردن موجودی (مقایسه عددی دقیق با مبلغ نهایی شامل کارمزد)
-        if user_balance < total_to_pay:
-            return False, f"⚠️ موجودی کافی نیست.\nموجودی شما: {utils.format_currency(user_balance)}\nمبلغ مورد نیاز (با احتساب کارمزد): {utils.format_currency(total_to_pay)}"
-
-        # ۵. کسر وجه از کیف پول
-        new_balance = user_balance - total_to_pay
-        update_wallet = {"wallet_balance": new_balance}
+            # ۱. دریافت اطلاعات معامله
+            contract = get_contract(contract_id)
+            if not contract:
+                return False, "❌ معامله یافت نشد."
             
-        res_wallet = supabase.table("users").update(update_wallet).eq("id", user_id).execute()
-        _clear_user_cache(user_id)
-        if not res_wallet.data:
-            return False, "❌ خطا در کسر از موجودی کیف پول."
+            status = contract.get("status")
+            if status in ["active", "paid", "in_progress", "completed"]:
+                return False, "⚠️ این معامله قبلاً پرداخت شده یا در جریان است."
 
-        # ۶. بروزرسانی وضعیت معامله به active (فعال و در جریان)
-        now = datetime.now(timezone.utc)
-        deadline_days = int(contract.get("deadline", 1))
-        delivery_deadline = now + timedelta(days=deadline_days)
+            # ۲. پارس کردن مبلغ معامله
+            raw_amount = contract.get("amount", 0)
+            try:
+                base_amount = float(str(raw_amount).replace(',', '').split('.')[0])
+            except (ValueError, TypeError):
+                return False, "❌ مبلغ معامله نامعتبر است."
 
-        contract_updates = {
-            "status": "active",
-            "paid_at": now.isoformat(),
-            "delivery_deadline": delivery_deadline.isoformat()
-        }
-        
-        # بروزرسانی حافظه موقت محلی
-        clean_cid = utils.normalize_deal_id(contract_id)
-        with db_lock:
-            if clean_cid in _in_memory_contracts:
-                _in_memory_contracts[clean_cid].update(contract_updates)
-            if contract_id in _in_memory_contracts:
-                _in_memory_contracts[contract_id].update(contract_updates)
-        
-        res_contract = supabase.table("contracts").update(contract_updates).eq("contract_id", contract_id).execute()
-        
-        if not res_contract.data:
-            # تلاش برای Rollback دستی موجودی در صورت شکست آپدیت قرارداد
-            rollback_data = {"wallet_balance": user_balance}
-            supabase.table("users").update(rollback_data).eq("id", user_id).execute()
-            return False, "❌ خطا در بروزرسانی وضعیت قرارداد."
+            if base_amount <= 0:
+                return False, "❌ مبلغ معامله نمی‌تواند صفر یا منفی باشد."
 
-        # ۷. ثبت در جدول تراکنش‌ها
-        try:
-            supabase.table("transactions").insert({
-                "user_id": user_id,
-                "amount": -float(amount),
-                "type": "wallet_payment",
-                "description": f"پرداخت قرارداد {contract_id} از کیف پول",
-                "status": "approved",
-                "created_at": now.isoformat()
-            }).execute()
-        except Exception as tx_err:
-            logger.warning(f"Transaction log failed: {tx_err}")
+            comm_payer = contract.get("commission_payer", "freelancer")
+            _, _, total_to_pay = utils.calculate_commission(base_amount, payer=comm_payer)
 
-        # ۸. ثبت در تاریخچه معامله
-        append_contract_history(contract_id, f"💰 پرداخت کل مبلغ ({utils.format_currency(amount)}) از کیف پول کارفرما", actor_id=user_id)
+            # ۳. دریافت موجودی کاربر
+            user = get_user(user_id)
+            if not user:
+                return False, "❌ کاربر یافت نشد."
+            
+            user_balance = utils.safe_float(user.get("wallet_balance"), 0.0)
 
-        return True, "✅ پرداخت با موفقیت انجام شد."
+            # ۴. چک کردن موجودی
+            if user_balance < total_to_pay:
+                return False, f"⚠️ موجودی کافی نیست.\nموجودی شما: {utils.format_currency(user_balance)}\nمبلغ مورد نیاز: {utils.format_currency(total_to_pay)}"
 
-    except Exception as e:
-        logger.exception(f"Critical error in process_wallet_payment: {e}")
-        return False, f"❌ خطای بحرانی در فرآیند پرداخت: {str(e)}"
+            # ۵. کسر وجه
+            new_balance = user_balance - total_to_pay
+            supabase.table("users").update({"wallet_balance": new_balance}).eq("id", user_id).execute()
+            _clear_user_cache(user_id)
+
+            # ۶. بروزرسانی معامله
+            now = datetime.now(timezone.utc)
+            deadline_days = int(contract.get("deadline", 1))
+            delivery_deadline = now + timedelta(days=deadline_days)
+
+            contract_updates = {
+                "status": "active",
+                "paid_at": now.isoformat(),
+                "delivery_deadline": delivery_deadline.isoformat()
+            }
+            supabase.table("contracts").update(contract_updates).eq("contract_id", contract_id).execute()
+            
+            # ثبت تراکنش و تاریخچه
+            try:
+                supabase.table("transactions").insert({
+                    "user_id": user_id,
+                    "amount": -float(base_amount),
+                    "type": "wallet_payment",
+                    "description": f"پرداخت قرارداد {contract_id}",
+                    "status": "approved"
+                }).execute()
+                append_contract_history(contract_id, f"💰 پرداخت {utils.format_currency(base_amount)} از کیف پول", actor_id=user_id)
+            except: pass
+
+            return True, "✅ پرداخت با موفقیت انجام شد."
+
+        except Exception as e:
+            logger.exception(f"Critical error in process_wallet_payment: {e}")
+            return False, f"❌ خطا: {str(e)}"
 
 
 def update_wallet_balance(
@@ -780,72 +740,45 @@ def update_wallet_balance(
     admin_document_id: str = None
 ) -> bool:
     """
-    بروزرسانی موجودی کیف پول کاربر با دقت بالا و لاگ‌گذاری شفاف.
+    بروزرسانی موجودی کیف پول کاربر با دقت بالا و قفل ترد جهت پایداری.
     """
     if not supabase:
-        logger.error("❌ [WALLET_ERR] supabase client is None")
         return False
 
-    try:
-        # اطمینان از عددی بودن مقادیر
-        user_id = int(user_id)
-        amount_change = round(float(amount_change), 2)
-        
-        # اطمینان از وجود کاربر
-        ensure_user_exists(user_id)
-        
-        user = get_user(user_id)
-        if not user:
-            logger.error(f"❌ [WALLET_ERR] user {user_id} not found after ensure_user_exists")
-            return False
-        
-        # دریافت موجودی فعلی
-        current_balance = utils.safe_float(user.get("wallet_balance"), 0.0)
-        
-        # محاسبه موجودی جدید
-        new_balance = round(current_balance + amount_change, 2)
-        
-        logger.info(f"💰 [WALLET_DEBUG] User: {user_id} | Curr: {current_balance} | Change: {amount_change} | New: {new_balance}")
-        
-        # چک کردن موجودی (با تلرانس اعشاری)
-        if new_balance < -0.01:
-            logger.warning(f"❌ [INSUFFICIENT_FUNDS] User: {user_id} | Avail: {current_balance} | Req: {amount_change}")
-            return False
-
-        # بروزرسانی در دیتابیس
-        update_data = {"wallet_balance": new_balance}
+    with db_lock:
+        try:
+            user_id = int(user_id)
+            amount_change = round(float(amount_change), 2)
             
-        try:
-            res = supabase.table("users").update(update_data).eq("id", user_id).execute()
-            if not res.data:
-                logger.error(f"❌ [WALLET_DB_ERR] Update returned no data for user {user_id}. Data sent: {update_data}")
+            ensure_user_exists(user_id)
+            user = get_user(user_id)
+            if not user: return False
+            
+            current_balance = utils.safe_float(user.get("wallet_balance"), 0.0)
+            new_balance = round(current_balance + amount_change, 2)
+            
+            if new_balance < -0.01:
                 return False
-        except Exception as db_exc:
-            logger.error(f"❌ [WALLET_DB_EXC] Update failed for user {user_id}: {db_exc}")
+
+            supabase.table("users").update({"wallet_balance": new_balance}).eq("id", user_id).execute()
+            _clear_user_cache(user_id)
+            
+            try:
+                tx_data = {
+                    "user_id": user_id,
+                    "amount": amount_change,
+                    "type": transaction_type,
+                    "description": description,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }
+                if admin_document_id: tx_data["admin_document_id"] = admin_document_id
+                supabase.table("transactions").insert(tx_data).execute()
+            except: pass
+
+            return True
+        except Exception as e:
+            logger.error(f"Error in update_wallet_balance: {e}")
             return False
-        
-        # ثبت در جدول تراکنش‌ها
-        try:
-            tx_data = {
-                "user_id": user_id,
-                "amount": amount_change,
-                "type": transaction_type,
-                "description": description,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            if admin_document_id:
-                tx_data["admin_document_id"] = admin_document_id
-                
-            supabase.table("transactions").insert(tx_data).execute()
-        except Exception as tx_err:
-            logger.warning(f"⚠️ [TRANSACTION_LOG_ERR] User {user_id} balance updated but log failed: {tx_err}")
-
-        logger.info(f"✅ [WALLET_OK] User: {user_id} | New Balance: {new_balance}")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ [WALLET_CRITICAL_ERR] User {user_id}: {e}", exc_info=True)
-        return False
 
 # ====================================================
 # ۹. مدیریت شارژ حساب (کارت به کارت)
@@ -2538,45 +2471,49 @@ def set_user_state_safe(user_id: int, state: str, data: Dict = None, username: s
     set_user_state(user_id, state, data)
 
 def register_or_update_user_by_phone(phone_number: str, full_name: str, telegram_id: Optional[int] = None, username: str = "", **kwargs) -> Optional[Dict[str, Any]]:
-    """ثبت یا بروزرسانی کاربر بر اساس شماره تلفن"""
+    """ثبت یا بروزرسانی کاربر بر اساس شماره تلفن (Thread-safe)"""
     if not supabase: return None
-    try:
-        norm_phone = normalize_phone_number(phone_number)
-        if not norm_phone:
-            return None
-        existing = get_user_by_phone(norm_phone)
-        if existing:
-            update_data = {}
-            if full_name: update_data["full_name"] = full_name
-            if username: update_data["username"] = username
-            for k, v in kwargs.items():
-                if v is not None: update_data[k] = v
-            if update_data:
-                supabase.table("users").update(update_data).eq("phone_number", norm_phone).execute()
-                existing.update(update_data)
-            if telegram_id:
-                set_user_session(telegram_id, norm_phone)
-            return existing
-        else:
-            uid = telegram_id if telegram_id else int(str(abs(hash(norm_phone)))[:10])
-            new_user = {
-                "id": uid,
-                "phone_number": norm_phone,
-                "full_name": full_name or "کاربر میانجی",
-                "username": username or "",
-                "wallet_balance": kwargs.get("wallet_balance", 0.0),
-                "role": kwargs.get("role", "user"),
-                "is_verified": True,
-                "national_id": kwargs.get("national_id"),
-                "is_blacklisted": kwargs.get("is_blacklisted", False),
-                "payment_cards": kwargs.get("payment_cards", "[]")
-            }
-            res = supabase.table("users").insert(new_user).execute()
-            if res.data:
-                created = res.data[0]
-                if telegram_id:
-                    set_user_session(telegram_id, norm_phone)
-                return created
+    with db_lock:
+        try:
+            norm_phone = normalize_phone_number(phone_number)
+            if not norm_phone: return None
+            
+            existing = get_user_by_phone(norm_phone)
+            if existing:
+                update_data = {}
+                if full_name: update_data["full_name"] = full_name
+                if username: update_data["username"] = username
+                for k, v in kwargs.items():
+                    if v is not None: update_data[k] = v
+                
+                if update_data:
+                    supabase.table("users").update(update_data).eq("phone_number", norm_phone).execute()
+                    existing.update(update_data)
+                
+                if telegram_id: set_user_session(telegram_id, norm_phone)
+                return existing
+            else:
+                uid = telegram_id if telegram_id else int(str(abs(hash(norm_phone)))[:10])
+                new_user = {
+                    "id": uid,
+                    "phone_number": norm_phone,
+                    "full_name": full_name or "کاربر میانجی",
+                    "username": username or "",
+                    "wallet_balance": kwargs.get("wallet_balance", 0.0),
+                    "role": kwargs.get("role", "user"),
+                    "is_verified": True,
+                    "national_id": kwargs.get("national_id"),
+                    "is_blacklisted": kwargs.get("is_blacklisted", False),
+                    "payment_cards": kwargs.get("payment_cards", "[]")
+                }
+                res = supabase.table("users").insert(new_user).execute()
+                if res.data:
+                    created = res.data[0]
+                    if telegram_id: set_user_session(telegram_id, norm_phone)
+                    return created
+                return None
+        except Exception as e:
+            logger.error(f"Error in register_or_update_user_by_phone: {e}")
             return None
     except Exception as e:
         logger.error(f"Error registering/updating user by phone: {e}")

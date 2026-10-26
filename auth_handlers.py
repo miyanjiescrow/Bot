@@ -1,5 +1,5 @@
 import logging
-import hashlib
+import bcrypt
 import re
 import unicodedata
 from telebot import TeleBot
@@ -13,7 +13,20 @@ import utils
 logger = logging.getLogger("Miyanji_Auth")
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.strip().encode()).hexdigest()
+    """رمزنگاری امن با استفاده از الگوریتم bcrypt"""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.strip().encode(), salt).decode('utf-8')
+
+def check_password(password: str, hashed: str) -> bool:
+    """بررسی صحت رمز عبور در برابر هش ذخیره شده"""
+    try:
+        # پشتیبانی از هش‌های قدیمی SHA256 برای جلوگیری از مسدود شدن کاربران قدیمی
+        import hashlib
+        if len(hashed) == 64 and all(c in "0123456789abcdef" for c in hashed):
+            return hashlib.sha256(password.strip().encode()).hexdigest() == hashed
+        return bcrypt.checkpw(password.strip().encode(), hashed.encode('utf-8'))
+    except Exception:
+        return False
 
 def validate_password(password: str) -> bool:
     """محدودیت رمز عبور: حداقل ۶ کاراکتر (اعداد و حروف انگلیسی)"""
@@ -356,7 +369,7 @@ def register_auth_handlers(bot: TeleBot):
             user = db.get_user_by_phone(phone)
             stored_hash = user.get("password_hash") if user else None
 
-            if stored_hash and stored_hash != hash_password(password):
+            if stored_hash and not check_password(password, stored_hash):
                 bot.send_message(
                     message.chat.id, 
                     "❌ رمز عبور اشتباه است! دوباره تلاش کنید یا از دکمه زیر برای بازیابی رمز استفاده کنید:", 
@@ -592,7 +605,7 @@ def register_auth_handlers(bot: TeleBot):
             user = db.get_user_by_phone(phone) if phone else None
             
             stored_hash = user.get("password_hash") if user else None
-            if stored_hash and stored_hash != hash_password(pwd):
+            if stored_hash and not check_password(pwd, stored_hash):
                 bot.send_message(message.chat.id, "❌ رمز عبور فعلی اشتباه است. دوباره وارد کنید:", reply_markup=kb.get_cancel_keyboard())
                 return
 

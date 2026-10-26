@@ -155,6 +155,9 @@ class Config:
         "CATEGORY": "category"
     }
 
+    # سقف تعداد تغییرات پیشنهادی در چانه‌زنی
+    MAX_NEGOTIATION_COUNT = _safe_int(os.getenv("MAX_NEGOTIATION_COUNT"), 30)
+
     DEBUG = False
 
 # نمونه‌سازی از کانفیگ
@@ -183,5 +186,6 @@ DEFAULT_FREE_EDITS = config.DEFAULT_FREE_EDITS
 FREE_EDITS_OPTIONS = config.FREE_EDITS_OPTIONS
 STYLE_CODES = config.STYLE_CODES
 DEAL_KEYS = config.DEAL_KEYS
+MAX_NEGOTIATION_COUNT = config.MAX_NEGOTIATION_COUNT
 DEBUG = config.DEBUG
 MJ_ADMIN = config.MJ_ADMIN

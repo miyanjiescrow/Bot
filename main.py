@@ -10,11 +10,25 @@ import user
 import admin_settings
 import reminders
 
-# پیکربندی لاگ‌گیری استاندارد
+import os
+import logging
+from logging.handlers import RotatingFileHandler
+
+# پیکربندی لاگ‌گیری پیشرفته با قابلیت چرخش فایل
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+log_file = 'bot.log'
+
+# هندلر برای خروجی استاندارد
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setFormatter(log_formatter)
+
+# هندلر برای فایل با قابلیت چرخش (حداکثر ۵ مگابایت، تا ۵ فایل پشتیبان)
+file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8')
+file_handler.setFormatter(log_formatter)
+
 logging.basicConfig(
-    stream=sys.stdout,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[stream_handler, file_handler]
 )
 logger = logging.getLogger("Miyanji_Main")
 
