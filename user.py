@@ -2319,8 +2319,9 @@ def register_user_handlers(bot: TeleBot):
     def process_deposit_amount_step(message: Message):
         """دریافت و اعتبارسنجی مبلغ شارژ (FSM based)"""
         user_id = message.from_user.id
-        text = message.text or ""
-        logger.info(f"💰 [DEPOSIT_DEBUG] User {user_id} sent: {text}")
+        text = (message.text or "").strip()
+        logger.info(f"💰 [DEPOSIT_DEBUG] User {user_id} sent text: '{text}' in state WAITING_DEPOSIT_AMOUNT")
+        bot.send_chat_action(message.chat.id, 'typing')
 
         # بررسی انصراف
         if text in ["🔙 انصراف و بازگشت", "❌ انصراف و بازگشت به منو", "❌ انصراف"] or text == "/cancel":
@@ -7639,5 +7640,5 @@ def register_user_handlers(bot: TeleBot):
             "لطفاً از دکمه‌های منوی زیر استفاده کنید، یا اگر شناسه یک معامله را دارید "
             "مستقیم همان را برایم بفرستید (مثال: `DEV-2508-1234`).",
             parse_mode="Markdown",
-            reply_markup=_get_main_menu_for_user(user_id, is_admin)
+            reply_markup=_get_main_menu_for_user(user_id, is_admin_u)
         )
