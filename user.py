@@ -1157,8 +1157,8 @@ def register_user_handlers(bot: TeleBot):
                 message_id=call.message.message_id,
                 text=f"📜 *تعهدات قانونی دسته‌بندی {category}:*\n\n"
                      f"{legal_text}\n"
-                     "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند\\. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید\\.",
-                parse_mode="MarkdownV2",
+                     "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید.",
+                parse_mode="Markdown",
                 reply_markup=kb.get_wizard_description_legal_back_inline()
             )
         except Exception:
@@ -1166,8 +1166,8 @@ def register_user_handlers(bot: TeleBot):
                 call.message.chat.id,
                 f"📜 *تعهدات قانونی دسته‌بندی {category}:*\n\n"
                 f"{legal_text}\n"
-                "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند\\. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید\\.",
-                parse_mode="MarkdownV2",
+                "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید.",
+                parse_mode="Markdown",
                 reply_markup=kb.get_wizard_description_legal_back_inline()
             )
 
@@ -1869,12 +1869,12 @@ def register_user_handlers(bot: TeleBot):
         sent_msg = None
         if message_id:
             try:
-                bot.edit_message_text(text, chat_id, message_id, parse_mode="MarkdownV2", reply_markup=markup)
+                bot.edit_message_text(text, chat_id, message_id, parse_mode="Markdown", reply_markup=markup)
                 sent_msg = message_id
             except Exception:
-                sent_msg = bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=markup).message_id
+                sent_msg = bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup).message_id
         else:
-            sent_msg = bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=markup).message_id
+            sent_msg = bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup).message_id
 
         # ✅ Store message ID in state for deletion later
         # ذخیره message_id در state برای حذف بعدی (زمانی که هر دو طرف امضا کنند)
@@ -2311,6 +2311,7 @@ def register_user_handlers(bot: TeleBot):
             "🏦 **شارژ حساب کاربری**\n\n"
             "لطفاً مبلغی که قصد واریز دارید را به **تومان** وارد کنید:\n"
             "*(حداقل مبلغ: ۵۰,۰۰۰ تومان)*",
+            parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
         bot.answer_callback_query(call.id)
