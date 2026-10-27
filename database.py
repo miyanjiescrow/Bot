@@ -85,83 +85,88 @@ def is_user_blacklisted(user_id: int) -> bool:
 # ۱. مدیریت وضعیت کاربران (FSM State Management)
 # ====================================================
 
-def set_user_state(user_id: int, current_state: str, state_data: Optional[Dict[str, Any]] = None) -> None:
+def set_user_state(user_id: int, state: str, data: Optional[Dict[str, Any]] = None) -> None:
     """
-    تنظیم وضعیت و داده‌های موقت کاربر (با ذخیره‌سازی غیرهمزمان در دیتابیس).
+    تنظیم وضعیت و داده‌های موقت کاربر با اولویت حافظه و همگام‌سازی دیتابیس.
     """
-    data_to_store = dict(state_data) if state_data else {}
+    if not user_id: return
     
-    # آپدیت سریع حافظه موقت (بدون قفل طولانی)
+    clean_data = dict(data) if data else {}
+    logger.info(f"💾 [FSM_SAVE] User {user_id} -> State: {state} | Data: {list(clean_data.keys())}")
+    
     with db_lock:
         _user_states[user_id] = {
-            "current_state": current_state,
-            "state_data": data_to_store
+            "current_state": state,
+            "state_data": clean_data,
+            "last_updated": time.time()
         }
     
-    # ذخیره‌سازی در دیتابیس در پس‌زمینه برای جلوگیری از تاخیر در پاسخدهی
+    # ذخیره غیرهمزمان در Supabase
     if supabase:
-        def _persist():
+        def _persist_task():
             try:
+                # استفاده از upsert برای ستون id که کلید اصلی است
                 supabase.table("user_states").upsert({
                     "id": user_id,
-                    "state": current_state,
-                    "data": data_to_store,
+                    "state": state,
+                    "data": clean_data,
                     "updated_at": "now()"
                 }).execute()
             except Exception as e:
-                logger.error(f"Error persisting user state for {user_id}: {e}")
+                logger.error(f"❌ [FSM_DB_ERR] Failed to persist state for {user_id}: {e}")
         
-        db_pool.submit(_persist)
+        db_pool.submit(_persist_task)
 
 
-def get_user_state(user_id: int) -> tuple:
-    """دریافت وضعیت و داده‌های جاری کاربر (با اولویت حافظه موقت)"""
-    # خواندن فوق‌سریع از کش بدون نیاز به لاک سنگین در عملیات خواندن
-    user_info = _user_states.get(user_id)
-    if user_info:
-        return user_info.get("current_state"), user_info.get("state_data", {})
+def get_user_state(user_id: int) -> Tuple[str, Dict[str, Any]]:
+    """
+    دریافت وضعیت جاری کاربر (ابتدا حافظه، سپس دیتابیس).
+    خروجی همیشه یک تاپل (State, Data) است.
+    """
+    if not user_id: return "START", {}
     
-    # اگر در حافظه نبود، از دیتابیس می‌خوانیم
+    # ۱. چک کردن حافظه (بسیار سریع)
+    state_obj = _user_states.get(user_id)
+    if state_obj:
+        return state_obj.get("current_state", "START"), state_obj.get("state_data", {})
+    
+    # ۲. چک کردن دیتابیس در صورت نبودن در حافظه
     if supabase:
         try:
             res = supabase.table("user_states").select("*").eq("id", user_id).execute()
             if res.data and len(res.data) > 0:
                 row = res.data[0]
+                state = row.get("state", "START")
+                data = row.get("data") or {}
+                
+                # بروزرسانی حافظه جهت مراجعات بعدی
                 with db_lock:
                     _user_states[user_id] = {
-                        "current_state": row["state"],
-                        "state_data": row["data"] or {}
+                        "current_state": state,
+                        "state_data": data,
+                        "last_updated": time.time()
                     }
-                return row["state"], row["data"] or {}
-            else:
-                # ثبت وضعیت پیش‌فرض در کش برای جلوگیری از کوئری‌های مکرر در فیلترها
-                with db_lock:
-                    _user_states[user_id] = {
-                        "current_state": "START",
-                        "state_data": {}
-                    }
-                return "START", {}
+                return state, data
         except Exception as e:
-            logger.error(f"Error fetching user state for {user_id}: {e}")
+            logger.error(f"⚠️ [FSM_GET_ERR] Error fetching state for {user_id}: {e}")
             
     return "START", {}
 
 
 def clear_user_state(user_id: int) -> None:
-    """پاک‌سازی وضعیت کاربر (به صورت غیرهمزمان در دیتابیس و ریست آنی در کش)"""
+    """پاکسازی کامل وضعیت کاربر و بازگشت به منوی اصلی"""
+    if not user_id: return
+    logger.info(f"🧹 [FSM_CLEAR] Resetting state for user {user_id}")
+    
     with db_lock:
         _user_states[user_id] = {
             "current_state": "START",
-            "state_data": {}
+            "state_data": {},
+            "last_updated": time.time()
         }
     
     if supabase:
-        def _delete():
-            try:
-                supabase.table("user_states").delete().eq("id", user_id).execute()
-            except Exception as e:
-                logger.error(f"Error deleting user state for {user_id}: {e}")
-        db_pool.submit(_delete)
+        db_pool.submit(lambda: supabase.table("user_states").delete().eq("id", user_id).execute())
 
 
 def get_user_draft(user_id: int) -> Optional[Dict[str, Any]]:

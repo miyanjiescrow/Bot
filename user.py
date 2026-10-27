@@ -375,7 +375,7 @@ def register_user_handlers(bot: TeleBot):
         "WAITING_WIZARD_DEADLINE_CUSTOM", "WAITING_WIZARD_MS_ASK", "WAITING_WIZARD_DESCRIPTION",
         "WAITING_FREE_EDITS_CHOICE", "WAITING_CUSTOM_FREE_EDITS", "WAITING_PREVIEW_CONFIRM",
         "WAITING_FIELD_EDIT", "WAITING_SIGN_CONFIRM", "WAITING_SIGNATURE_OTP",
-        "WAITING_DEPOSIT_AMOUNT", "WAITING_DEPOSIT_RECEIPT", "WAITING_WITHDRAW_AMOUNT",
+        "AWAITING_TOPUP_AMOUNT", "WAITING_DEPOSIT_RECEIPT", "WAITING_WITHDRAW_AMOUNT",
         "WAITING_WITHDRAW_SHEBA", "WAITING_WITHDRAW_HOLDER_NAME", "WAITING_AMBASSADOR_CASHOUT_INFO",
         "WAITING_KYC_PHONE", "WAITING_KYC_NATIONAL_ID", "WAITING_FULL_NAME",
         "WAITING_PROFILE_FULLNAME", "EDITING_FULLNAME", "EDITING_NATIONAL_ID",
@@ -2305,7 +2305,7 @@ def register_user_handlers(bot: TeleBot):
             start_kyc_process(call.message.chat.id, user_id, resume_data=call.data)
             return
 
-        db.set_user_state(user_id, "WAITING_DEPOSIT_AMOUNT")
+        db.set_user_state(user_id, "AWAITING_TOPUP_AMOUNT")
         bot.send_message(
             call.message.chat.id,
             "🏦 **شارژ حساب کاربری**\n\n"
@@ -2316,26 +2316,26 @@ def register_user_handlers(bot: TeleBot):
         )
         bot.answer_callback_query(call.id)
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_AMOUNT")
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "AWAITING_TOPUP_AMOUNT")
     def process_deposit_amount_step(message: Message):
-        """دریافت و اعتبارسنجی مبلغ شارژ (FSM based)"""
+        """[CORE_FIX] دریافت و پردازش مبلغ شارژ با اولویت بالا"""
         user_id = message.from_user.id
         text = (message.text or "").strip()
-        logger.info(f"💰 [DEPOSIT_DEBUG] User {user_id} sent text: '{text}' in state WAITING_DEPOSIT_AMOUNT")
-        bot.send_chat_action(message.chat.id, 'typing')
-
-        # بررسی انصراف
-        if text in ["🔙 انصراف و بازگشت", "❌ انصراف و بازگشت به منو", "❌ انصراف"] or text == "/cancel":
+        
+        # ۱. استخراج وضعیت برای اطمینان مضاعف
+        state, _ = db.get_user_state(user_id)
+        logger.info(f"💰 [TOPUP_DEBUG] Msg from {user_id} | Text: '{text}' | State: {state}")
+        
+        if text in ["🔙 انصراف و بازگشت", "❌ انصراف", "انصراف"] or text.startswith("/cancel"):
             db.clear_user_state(user_id)
-            is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
-            bot.send_message(message.chat.id, "❌ عملیات شارژ لغو شد.", reply_markup=kb.get_main_menu(is_admin))
+            bot.send_message(message.chat.id, "❌ عملیات شارژ لغو شد.", reply_markup=kb.get_main_menu(is_admin_user(user_id)))
             return
 
-        # تبدیل اعداد و اعتبارسنجی
+        # ۲. پاکسازی و تبدیل اعداد
         parsed_amount = utils.parse_amount_flexible(text)
-        logger.info(f"💰 [DEPOSIT_DEBUG] Parsed amount: {parsed_amount}")
         if not parsed_amount:
-            bot.send_message(message.chat.id, "❌ مبلغ وارد‌شده قابل تشخیص نیست.\nلطفاً مبلغ را به صورت عدد (به تومان) وارد کنید:")
+            logger.warning(f"⚠️ [TOPUP] Invalid amount input from {user_id}: '{text}'")
+            bot.send_message(message.chat.id, "❌ مبلغ وارد شده نامعتبر است.\n\nلطفاً فقط عدد (به تومان) وارد کنید (مثلاً ۵۰۰۰۰):")
             return
 
         amount = int(parsed_amount)
@@ -2344,34 +2344,30 @@ def register_user_handlers(bot: TeleBot):
             return
 
         try:
-            # ایجاد تراکنش در دیتابیس
-            logger.info(f"🔄 [DEPOSIT_DEBUG] Creating transaction for user {user_id}, amount {amount}")
+            bot.send_chat_action(message.chat.id, 'typing')
             tx_id = db.create_deposit_transaction(user_id, amount)
             
             if not tx_id:
-                logger.error(f"❌ [DEPOSIT_DEBUG] Failed to create tx_id for user {user_id}")
-                bot.send_message(message.chat.id, "⚠️ متأسفانه در حال حاضر امکان ثبت درخواست شارژ وجود ندارد. لطفاً دقایقی دیگر تلاش کنید.")
+                bot.send_message(message.chat.id, "⚠️ خطا در ثبت درخواست. لطفاً دقایقی دیگر تلاش کنید.")
                 return
 
-            logger.info(f"✅ [DEPOSIT_DEBUG] Transaction created: {tx_id}")
+            # ۳. انتقال به مرحله بعد (فیش)
+            db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id, "amount": amount})
             
             card_num = getattr(config, 'INTERMEDIARY_CARD', '6037-9975-7534-8211')
             instruction = (
-                "✅ **درخواست شما با موفقیت ثبت شد**\n\n"
-                f"💰 **مبلغ واریزی:** `{utils.format_currency(amount)}` تومان\n\n"
-                "💳 **شماره کارت مقصد:**\n"
+                "✅ **درخواست شارژ ثبت شد**\n\n"
+                f"💰 مبلغ: `{utils.format_currency(amount)}` تومان\n\n"
+                "💳 شماره کارت جهت واریز:\n"
                 f"`{card_num}`\n"
-                "👤 **بنام:** میانجی (واسط معتبر معاملات)\n\n"
-                "⚠️ **مهم:** پس از انجام واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید تا حساب شما شارژ شود."
+                "👤 بنام: میانجی\n\n"
+                "⚠️ **مهم:** پس از واریز، **تصویر فیش** را همین‌جا ارسال کنید."
             )
-            
-            # تنظیم وضعیت بعدی
-            db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id, "amount": amount})
             bot.send_message(message.chat.id, instruction, parse_mode="Markdown", reply_markup=kb.get_cancel_keyboard())
             
         except Exception as e:
-            logger.error(f"💥 [DEPOSIT_DEBUG] Critical error: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ متأسفانه خطایی در فرآیند ثبت شارژ رخ داد. لطفاً با پشتیبانی در ارتباط باشید.")
+            logger.error(f"💥 [TOPUP_CRASH] User {user_id}: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
     @bot.message_handler(content_types=['photo'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
     def process_receipt_step(message: Message):
@@ -7647,3 +7643,21 @@ def register_user_handlers(bot: TeleBot):
             parse_mode="Markdown",
             reply_markup=_get_main_menu_for_user(user_id, is_admin_u)
         )
+
+    # ====================================================
+    # Catch-All Handler (DEBUG/Fallback)
+    # ====================================================
+    @bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'document', 'video'])
+    def debug_catch_all(message: Message):
+        """[DEBUG] هندلر نهایی برای ردیابی پیام‌های پردازش‌نشده"""
+        user_id = message.from_user.id
+        state, _ = db.get_user_state(user_id)
+        text = message.text or f"[{message.content_type} data]"
+        
+        logger.warning(f"🕵️ [DEBUG_CATCH_ALL] Unhandled message: '{text}' | User: {user_id} | State: {state}")
+        
+        # اگر کاربر در وضعیتی بود که باید پیامی می‌گرفت ولی نگرفت، راهنمایی‌اش می‌کنیم
+        if state != "START":
+            bot.reply_to(message, f"⚠️ شما در وضعیت `{state}` هستید اما این ورودی معتبر نیست.\nبرای لغو از دکمه انصراف استفاده کنید.")
+        else:
+            bot.send_message(message.chat.id, "❌ دستور نامعتبر است. لطفاً از منو استفاده کنید.")
