@@ -47,59 +47,64 @@ def run_flask():
         logger.error(f"❌ Flask server failed: {e}")
 
 def main():
-    logger.info("🎬 Starting Miyanji Smart Escrow Application...")
-    
-    if not db.supabase:
-        logger.error("❌ Supabase client failed to initialize!")
-        # Fallback to local memory mode but keep running for health checks
-        logger.warning("⚠️ Running in local-memory mode (DB limited).")
-
-    # Start the web server in a background thread
+    # 1. Start health check server ASAP to satisfy Render
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
+    
+    logger.info("🎬 Starting Miyanji Smart Escrow Application...")
+    
+    # 2. Check Database Connection
+    if not db.supabase:
+        logger.error("❌ Supabase client failed to initialize!")
+        # We continue to allow health checks but bot features will be limited
+        logger.warning("⚠️ Running in local-memory mode (DB limited).")
+    else:
+        logger.info("🔗 Supabase connection verified.")
 
-    # Bot Initialization
+    # 3. Initialize Bot
     bot = telebot.TeleBot(config.BOT_TOKEN, threaded=True, num_threads=40)
 
     def register_all():
         try:
             logger.info("🛠 Registering handlers in priority order...")
-            # We register user handlers FIRST if we want them to have priority over generic ones
-            # But auth handlers should be first for session check.
             auth_handlers.register_auth_handlers(bot)
             admin.register_admin_handlers(bot)
             admin_settings.register_admin_settings_handlers(bot)
             user.register_user_handlers(bot)
             reminders.start_reminder_service(bot)
-            logger.info("✅ All components registered and coordinated.")
+            logger.info("✅ All handlers registered.")
         except Exception as e:
             logger.error(f"💥 Handler registration failed: {e}", exc_info=True)
             sys.exit(1)
 
     register_all()
     
-    # Webhook Cleanup
+    # 4. Clean up Webhooks and wait for session release
     try:
+        # Crucial: Drop pending updates to avoid 409 conflict during rolling updates
         bot.remove_webhook()
-        logger.info("🧹 Webhooks cleared. Waiting for potential overlaps to settle...")
-        time.sleep(5) # Increased wait time
+        bot.delete_webhook(drop_pending_updates=True)
+        logger.info("🧹 Webhooks cleared and pending updates dropped.")
+        # Give Render and Telegram time to recognize the new connection
+        time.sleep(12) 
     except Exception as e:
         logger.warning(f"⚠️ Webhook cleanup notice: {e}")
 
-    # Infinity Polling Loop
+    # 5. Infinity Polling Loop
+    logger.info("🚀 Bot is now polling for updates...")
     while True:
         try:
-            logger.info("🚀 Bot is now polling for updates...")
             bot.infinity_polling(
-                timeout=60, 
+                timeout=90, 
                 long_polling_timeout=20, 
-                skip_pending=True
+                skip_pending=True,
+                logger_level=logging.ERROR # Reduce log noise
             )
         except Exception as e:
             err_msg = str(e)
             if "409" in err_msg or "Conflict" in err_msg:
-                logger.warning("⚔️ Polling Conflict (409) detected. Backing off for 30s...")
-                time.sleep(30)
+                logger.warning("⚔️ Polling Conflict (409). Another instance is fighting for updates. Backing off for 40s...")
+                time.sleep(40)
             else:
                 logger.error(f"💥 Polling Error: {e}")
                 time.sleep(10)

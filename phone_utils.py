@@ -3,7 +3,7 @@ import unicodedata
 from typing import Optional
 
 def normalize_phone_number(raw_phone: str) -> Optional[str]:
-    """
+    r"""
     Bulletproof Iranian phone number normalization algorithm:
     - Step 1: Convert all Persian/Arabic digits (۰-۹ / ٠-٩) to English digits (0-9).
     - Step 2: Strip all non-numeric characters (spaces, dashes, parens, '+', etc.).
@@ -11,7 +11,7 @@ def normalize_phone_number(raw_phone: str) -> Optional[str]:
       * 00989... -> 989...
       * 09...    -> 989...
       * 9... (10 digits) -> 989...
-    # Step 4: Validate against Regex r"^989\d{9}$" (must be exactly 12 digits). Return None if invalid.
+    - Step 4: Validate against Regex r"^989\d{9}$" (must be exactly 12 digits). Return None if invalid.
     """
     if not raw_phone:
         return None

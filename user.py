@@ -267,17 +267,17 @@ def build_draft_preview_text(state_data: dict) -> str:
         )
 
     return (
-        "🔍 *بازبینی نهایی قرارداد*\n"
-        "──────────────────\n"
-        f"👤 *نقش:* {role_str} \| 📂 *دسته:* `{category}`\n"
-        f"📌 *عنوان:* **{utils.escape_markdown(state_data.get('title', ''))}**\n"
-        f"💰 *ارزش:* **{utils.format_currency(utils.safe_float(state_data.get('amount', 0)))}**\n"
-        f"⚖️ *کارمزد با:* {comm_payer_str}\n"
-        f"⏱ *تحویل:* **{state_data.get('deadline', 1)} روز** \| 🔄 *ویرایش:* **{free_edits}**\n"
-        f"{ms_text}\n\n"
-        f"📝 *تعهدات:* {utils.escape_markdown(state_data.get('description', ''))}\n"
-        "──────────────────\n"
-        "✅ در صورت صحت اطلاعات، دکمه *تایید* را بزنید\\."
+        r"🔍 *بازبینی نهایی قرارداد*" + "\n" +
+        r"──────────────────" + "\n" +
+        f"👤 *نقش:* {role_str} | 📂 *دسته:* `{category}`\n" +
+        f"📌 *عنوان:* **{utils.escape_markdown(state_data.get('title', ''))}**\n" +
+        f"💰 *ارزش:* **{utils.format_currency(utils.safe_float(state_data.get('amount', 0)))}**\n" +
+        f"⚖️ *کارمزد با:* {comm_payer_str}\n" +
+        f"⏱ *تحویل:* **{state_data.get('deadline', 1)} روز** | 🔄 *ویرایش:* **{free_edits}**\n" +
+        f"{ms_text}\n\n" +
+        f"📝 *تعهدات:* {utils.escape_markdown(state_data.get('description', ''))}\n" +
+        r"──────────────────" + "\n" +
+        r"✅ در صورت صحت اطلاعات، دکمه *تایید* را بزنید."
     )
 
 
@@ -2346,27 +2346,31 @@ def register_user_handlers(bot: TeleBot):
             # ایجاد تراکنش در دیتابیس
             logger.info(f"🔄 [DEPOSIT_DEBUG] Creating transaction for user {user_id}, amount {amount}")
             tx_id = db.create_deposit_transaction(user_id, amount)
-            logger.info(f"✅ [DEPOSIT_DEBUG] Transaction created: {tx_id}")
             
             if not tx_id:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً دقایقی دیگر تلاش کنید.")
+                logger.error(f"❌ [DEPOSIT_DEBUG] Failed to create tx_id for user {user_id}")
+                bot.send_message(message.chat.id, "⚠️ متأسفانه در حال حاضر امکان ثبت درخواست شارژ وجود ندارد. لطفاً دقایقی دیگر تلاش کنید.")
                 return
 
+            logger.info(f"✅ [DEPOSIT_DEBUG] Transaction created: {tx_id}")
+            
             card_num = getattr(config, 'INTERMEDIARY_CARD', '6037-9975-7534-8211')
             instruction = (
-                "✅ **درخواست شما ثبت شد.**\n\n"
-                f"💰 **مبلغ قابل واریز:** `{utils.format_currency(amount)}` تومان\n\n"
-                "💳 **شماره کارت جهت واریز:**\n"
+                "✅ **درخواست شما با موفقیت ثبت شد**\n\n"
+                f"💰 **مبلغ واریزی:** `{utils.format_currency(amount)}` تومان\n\n"
+                "💳 **شماره کارت مقصد:**\n"
                 f"`{card_num}`\n"
                 "👤 **بنام:** میانجی (واسط معتبر معاملات)\n\n"
-                "⚠️ **توجه:** پس از واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید."
+                "⚠️ **مهم:** پس از انجام واریز، حتماً **تصویر فیش واریزی** خود را در همینجا ارسال کنید تا حساب شما شارژ شود."
             )
+            
+            # تنظیم وضعیت بعدی
             db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id, "amount": amount})
-            bot.send_message(message.chat.id, instruction, parse_mode="Markdown")
+            bot.send_message(message.chat.id, instruction, parse_mode="Markdown", reply_markup=kb.get_cancel_keyboard())
+            
         except Exception as e:
-            logger.error(f"Error in process_deposit_amount_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ متأسفانه در ثبت درخواست خطایی رخ داد. لطفاً دوباره تلاش کنید.")
+            logger.error(f"💥 [DEPOSIT_DEBUG] Critical error: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "❌ متأسفانه خطایی در فرآیند ثبت شارژ رخ داد. لطفاً با پشتیبانی در ارتباط باشید.")
 
     @bot.message_handler(content_types=['photo'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
     def process_receipt_step(message: Message):
@@ -7127,53 +7131,53 @@ def register_user_handlers(bot: TeleBot):
             comm_pct = utils.get_commission_percent()
             answers = {
                 "1": (
-                    "💰 *کارمزد سامانه چقدر است؟*\n\n"
-                    f"کارمزد میانجی معادل *{comm_pct:,.2g}%* از مبلغ هر معامله است که صرف ایجاد زیرساخت امن پرداخت، داوری و نگهداری وجه در حساب واسط \(Escrow\) می‌گردد\."
+                    r"💰 *کارمزد سامانه چقدر است؟*" + "\n\n" +
+                    f"کارمزد میانجی معادل *{comm_pct:,.2g}%* از مبلغ هر معامله است که صرف ایجاد زیرساخت امن پرداخت، داوری و نگهداری وجه در حساب واسط (Escrow) می‌گردد."
                 ),
                 "2": (
-                    "⏱ *زمان واریز وجه چقدر است؟*\n\n"
-                    "تسویه حساب‌ها طبق سیکل‌های پایا و شبای بانک مرکزی انجام می‌شود\. پس از تایید نهایی معامله، وجه در اولین سیکل کاری به حساب بانکی شما واریز خواهد شد\."
+                    r"⏱ *زمان واریز وجه چقدر است؟*" + "\n\n" +
+                    r"تسویه حساب‌ها طبق سیکل‌های پایا و شبای بانک مرکزی انجام می‌شود. پس از تایید نهایی معامله، وجه در اولین سیکل کاری به حساب بانکی شما واریز خواهد شد."
                 ),
                 "3": (
-                    "⚖️ *در صورت بروز اختلاف چه می‌شود؟*\n\n"
-                    "با ثبت اختلاف، یک «اتاق داوری» اختصاصی ایجاد می‌گردد\. کارشناسان ما با بررسی مستندات و توافق اولیه، رای نهایی و عادلانه صادر می‌کنند\."
+                    r"⚖️ *در صورت بروز اختلاف چه می‌شود؟*" + "\n\n" +
+                    r"با ثبت اختلاف، یک «اتاق داوری» اختصاصی ایجاد می‌گردد. کارشناسان ما با بررسی مستندات و توافق اولیه، رای نهایی و عادلانه صادر می‌کنند."
                 ),
                 "4": (
-                    "🛡 *امنیت وجه من چگونه تضمین می‌شود؟*\n\n"
-                    "وجه پرداختی تا پایان معامله در حساب واسط امن میانجی بلوکه می‌ماند و تنها با تایید خریدار یا رای داور برای مجری آزاد می‌گردد\."
+                    r"🛡 *امنیت وجه من چگونه تضمین می‌شود؟*" + "\n\n" +
+                    r"وجه پرداختی تا پایان معامله در حساب واسط امن میانجی بلوکه می‌ماند و تنها با تایید خریدار یا رای داور برای مجری آزاد می‌گردد."
                 ),
                 "5": (
-                    "❌ *امکان لغو یکطرفه معامله وجود دارد؟*\n\n"
-                    "خیر؛ برای حفظ حقوق طرفین، لغو قرارداد تنها با *توافق دوطرفه* یا *رای رسمی داور* امکان‌پذیر است\."
+                    r"❌ *امکان لغو یکطرفه معامله وجود دارد؟*" + "\n\n" +
+                    r"خیر؛ برای حفظ حقوق طرفین، لغو قرارداد تنها با *توافق دوطرفه* یا *رای رسمی داور* امکان‌پذیر است."
                 ),
                 "6": (
-                    "⏳ *اگر مجری پروژه را تحویل ندهد چه می‌شود؟*\n\n"
-                    "در صورت احراز عدم تحویل در اتاق داوری، کل وجه واریزی به کیف پول خریدار مسترد خواهد شد\."
+                    r"⏳ *اگر مجری پروژه را تحویل ندهد چه می‌شود؟*" + "\n\n" +
+                    r"در صورت احراز عدم تحویل در اتاق داوری، کل وجه واریزی به کیف پول خریدار مسترد خواهد شد."
                 ),
                 "7": (
-                    "✏️ *مراحل ویرایش و اصلاح فایل‌ها چگونه است؟*\n\n"
-                    "تمامی ویرایش‌ها باید بر اساس «توافق اولیه» ثبت شده در متن قرارداد انجام شود\. طرفین موظف به رعایت چهارچوب ثبت‌شده هستند\."
+                    r"✏️ *مراحل ویرایش و اصلاح فایل‌ها چگونه است؟*" + "\n\n" +
+                    r"تمامی ویرایش‌ها باید بر اساس «توافق اولیه» ثبت شده در متن قرارداد انجام شود. طرفین موظف به رعایت چهارچوب ثبت‌شده هستند."
                 ),
                 "8": (
-                    "🆔 *آیا برای استفاده نیاز به احراز هویت است؟*\n\n"
-                    "بله؛ جهت جلوگیری از تخلفات مالی و تسویه بانکی، تایید کد ملی و مطابقت آن با شماره کارت بانکی الزامی است\."
+                    r"🆔 *آیا برای استفاده نیاز به احراز هویت است؟*" + "\n\n" +
+                    r"بله؛ جهت جلوگیری از تخلفات مالی و تسویه بانکی، تایید کد ملی و مطابقت آن با شماره کارت بانکی الزامی است."
                 )
             }
             bot.edit_message_text(
-                answers.get(q_idx, "موردی یافت نشد\."),
+                answers.get(q_idx, "موردی یافت نشد."),
                 call.message.chat.id, call.message.message_id,
-                parse_mode="MarkdownV2",
+                parse_mode="Markdown",
                 reply_markup=kb.get_faq_back_inline()
             )
         elif data == "back_to_help":
             bot.answer_callback_query(call.id)
             help_text = (
-                "🎧 *مرکز پشتیبانی و راهنمای میانجی*\n"
-                "──────────────────\n"
-                "برای راهنمایی، قوانین یا گفتگو با کارشناسان از پنل زیر استفاده کنید\.\n\n"
-                "📍 *پاسخگویی سریع:* ۸ الی ۲۴"
+                r"🎧 *مرکز پشتیبانی و راهنمای میانجی*" + "\n" +
+                r"──────────────────" + "\n" +
+                r"برای راهنمایی، قوانین یا گفتگو با کارشناسان از پنل زیر استفاده کنید." + "\n\n" +
+                r"📍 *پاسخگویی سریع:* ۸ الی ۲۴"
             )
-            bot.edit_message_text(help_text, call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2", reply_markup=kb.get_help_center_inline())
+            bot.edit_message_text(help_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=kb.get_help_center_inline())
         elif data == "main_menu":
             bot.answer_callback_query(call.id)
             user_id = call.from_user.id
