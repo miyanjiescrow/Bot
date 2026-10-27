@@ -557,6 +557,49 @@ def archive_document(bot, file_id, content_type: str = "document", caption: str 
         logger.error(f"❌ Error in archive_document: {e}")
         return False
 
+def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_id: int, amount: float, file_id: str):
+    """
+    ارسال اعلان فیش جدید برای ادمین‌ها.
+    receipt_type: 'wallet' or 'contract'
+    """
+    from config import config
+    import database as db
+    
+    user_info = db.get_user(user_id)
+    name = user_info.get("full_name") if user_info else f"کاربر {user_id}"
+    
+    type_fa = "شارژ کیف پول" if receipt_type == 'wallet' else "پرداخت معامله"
+    text = (
+        f"🧾 **فیش واریزی جدید دریافت شد**\n"
+        f"──────────────────\n"
+        f"📂 نوع: **{type_fa}**\n"
+        f"📌 شناسه: `{related_id}`\n"
+        f"👤 فرستنده: {name} (`{user_id}`)\n"
+        f"💰 مبلغ: `{format_currency(amount)}`\n"
+        f"📅 زمان: `{get_tehran_now_jalali_str()}`\n"
+    )
+    
+    # تعیین دکمه‌ها برای ادمین
+    if receipt_type == 'wallet':
+        # استفاده از دکمه‌های مخصوص تراکنش کیف پول
+        import keyboards as kb
+        markup = kb.get_deposit_action_inline(related_id, user_id, amount)
+    else:
+        # استفاده از دکمه‌های مخصوص معامله
+        import keyboards as kb
+        markup = kb.get_receipt_admin_approval_inline(related_id, user_id)
+
+    # ارسال به تمام ادمین‌ها یا کانال مدیریت
+    admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
+    if getattr(config, 'ARCHIVE_CHANNEL_ID', None):
+         admin_targets.append(config.ARCHIVE_CHANNEL_ID)
+         
+    for target in {t for t in admin_targets if t}:
+        try:
+            bot.send_photo(target, file_id, caption=text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            logger.warning(f"Failed to notify admin {target} about receipt: {e}")
+
 def notify_archive(
     bot,
     content_type: str = "text",

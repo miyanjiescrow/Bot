@@ -374,8 +374,7 @@ def register_user_handlers(bot: TeleBot):
         "WAITING_WIZARD_AMOUNT", "WAITING_WIZARD_COMMISSION_PAYER", "WAITING_WIZARD_DEADLINE",
         "WAITING_WIZARD_DEADLINE_CUSTOM", "WAITING_WIZARD_MS_ASK", "WAITING_WIZARD_DESCRIPTION",
         "WAITING_FREE_EDITS_CHOICE", "WAITING_CUSTOM_FREE_EDITS", "WAITING_PREVIEW_CONFIRM",
-        "WAITING_FIELD_EDIT", "WAITING_SIGN_CONFIRM", "WAITING_SIGNATURE_OTP",
-        "AWAITING_TOPUP_AMOUNT", "WAITING_DEPOSIT_RECEIPT", "WAITING_WITHDRAW_AMOUNT",
+        "AWAITING_TOPUP_AMOUNT", "WAITING_FOR_PAYMENT_RECEIPT", "WAITING_DEPOSIT_RECEIPT", "WAITING_WITHDRAW_AMOUNT",
         "WAITING_WITHDRAW_SHEBA", "WAITING_WITHDRAW_HOLDER_NAME", "WAITING_AMBASSADOR_CASHOUT_INFO",
         "WAITING_KYC_PHONE", "WAITING_KYC_NATIONAL_ID", "WAITING_FULL_NAME",
         "WAITING_PROFILE_FULLNAME", "EDITING_FULLNAME", "EDITING_NATIONAL_ID",
@@ -2351,84 +2350,125 @@ def register_user_handlers(bot: TeleBot):
                 bot.send_message(message.chat.id, "⚠️ خطا در ثبت درخواست. لطفاً دقایقی دیگر تلاش کنید.")
                 return
 
-            # ۳. انتقال به مرحله بعد (فیش)
-            db.set_user_state(user_id, "WAITING_DEPOSIT_RECEIPT", {"tx_id": tx_id, "amount": amount})
-            
-            card_num = getattr(config, 'INTERMEDIARY_CARD', '6037-9975-7534-8211')
-            instruction = (
-                "✅ **درخواست شارژ ثبت شد**\n\n"
-                f"💰 مبلغ: `{utils.format_currency(amount)}` تومان\n\n"
-                "💳 شماره کارت جهت واریز:\n"
-                f"`{card_num}`\n"
-                "👤 بنام: میانجی\n\n"
-                "⚠️ **مهم:** پس از واریز، **تصویر فیش** را همین‌جا ارسال کنید."
-            )
-            bot.send_message(message.chat.id, instruction, parse_mode="Markdown", reply_markup=kb.get_cancel_keyboard())
+            # [CORE_UNIFICATION] استفاده از متد یکپارچه برای نمایش اطلاعات پرداخت
+            _send_unified_payment_instructions(bot, message.chat.id, user_id, amount, 'wallet_charge', str(tx_id))
             
         except Exception as e:
             logger.error(f"💥 [TOPUP_CRASH] User {user_id}: {e}", exc_info=True)
             bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
-    @bot.message_handler(content_types=['photo'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
-    def process_receipt_step(message: Message):
-        """دریافت تصویر فیش و ارسال به ادمین (FSM based)"""
+    def _send_unified_payment_instructions(bot: TeleBot, chat_id: int, user_id: int, amount: float, payment_type: str, related_id: str, milestone_idx: int = None):
+        """
+        [HELPER] نمایش شماره کارت و تنظیم وضعیت برای دریافت فیش (مشترک برای شارژ، معامله و مرحله)
+        """
+        card_num = getattr(config, 'INTERMEDIARY_CARD', '6037-9975-7534-8211')
+        card_holder = "میانجی (امیررضا مجتبایی)"
+        
+        state_data = {
+            "payment_type": payment_type,
+            "related_id": related_id,
+            "amount": amount
+        }
+        if milestone_idx is not None:
+            state_data["milestone_idx"] = milestone_idx
+
+        db.set_user_state(user_id, "WAITING_FOR_PAYMENT_RECEIPT", state_data)
+        
+        title = "🏦 **شارژ حساب کاربری**"
+        if payment_type == 'contract_payment':
+            title = f"💳 **پرداخت معامله `{related_id}`**"
+        elif payment_type == 'milestone_payment':
+            title = f"💎 **پرداخت مرحله {milestone_idx + 1} معامله `{related_id}`**"
+        
+        instruction = (
+            f"{title}\n"
+            "──────────────────\n"
+            f"💵 **مبلغ قابل واریز:** `{utils.format_currency(amount)}` تومان\n\n"
+            "💳 **اطلاعات کارت مقصد:**\n"
+            f"📌 شماره کارت: `{card_num}`\n"
+            f"👤 بنام: **{card_holder}**\n\n"
+            "⚠️ **مهم:** پس از انجام واریز، حتماً **تصویر فیش واریزی** را در همین‌جا ارسال کنید.\n"
+            "پس از تایید ادمین، عملیات نهایی خواهد شد."
+        )
+        
+        bot.send_message(chat_id, instruction, parse_mode="Markdown", reply_markup=kb.get_cancel_keyboard())
+
+    @bot.message_handler(content_types=['photo', 'document'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_FOR_PAYMENT_RECEIPT")
+    def handle_unified_payment_receipt(message: Message):
+        """[CORE_FIX] هندلر یکپارچه برای دریافت و ثبت فیش‌های واریزی (شارژ، معامله، مرحله)"""
         user_id = message.from_user.id
         _, data = db.get_user_state(user_id)
-        transaction_id = data.get("tx_id")
-
-        if not transaction_id:
+        
+        payment_type = data.get("payment_type")
+        related_id = data.get("related_id")
+        amount = data.get("amount")
+        ms_idx = data.get("milestone_idx")
+        
+        if not payment_type or not related_id:
             db.clear_user_state(user_id)
-            bot.send_message(message.chat.id, "❌ خطای سیستمی رخ داد. لطفاً دوباره تلاش کنید.")
+            bot.send_message(message.chat.id, "❌ خطای سیستمی در بازیابی اطلاعات پرداخت. لطفاً دوباره تلاش کنید.")
             return
+
+        file_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
+        if not file_id:
+            bot.reply_to(message, "⚠️ لطفا تصویر فیش را ارسال کنید (عکس یا فایل).")
+            return
+
+        proc_msg = bot.send_message(message.chat.id, "⏳ **در حال ثبت فیش و ارسال برای تایید...**")
         
         try:
-            proc_msg = bot.send_message(message.chat.id, "⏳ **در حال بررسی فایل و ثبت درخواست...**")
-            file_id = message.photo[-1].file_id
-            
-            # بروزرسانی دیتابیس
-            if db.update_deposit_receipt(transaction_id, file_id):
-                # ثبت در جدول متمرکز فیش‌های در انتظار (برای نظارت بهتر ادمین)
-                res_tx = db.supabase.table("transactions").select("amount, description").eq("id", transaction_id).execute()
-                tx_info = res_tx.data[0] if res_tx.data else {}
-                
-                # ثبت فیش در صورت موجود بودن متد در دیتابیس
+            # ۱. بروزرسانی دیتابیس بر اساس نوع پرداخت
+            if payment_type == 'wallet_charge':
+                db.update_deposit_receipt(int(related_id), file_id)
                 if hasattr(db, 'create_pending_receipt'):
-                    db.create_pending_receipt(
-                        receipt_type="wallet",
-                        related_id=str(transaction_id),
-                        user_id=user_id,
-                        file_id=file_id,
-                        amount=float(tx_info.get("amount", 0)),
-                        description=tx_info.get("description", "شارژ کیف پول")
-                    )
-                
-                db.clear_user_state(user_id)
-                bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=proc_msg.message_id,
-                    text="✅ **فیش واریزی شما دریافت شد.**\nپس از بررسی و تایید ادمین، کیف پول شما شارژ خواهد شد."
-                )
+                    db.create_pending_receipt(receipt_type="wallet", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="شارژ کیف پول")
+                utils.notify_admin_receipt(bot, "wallet", related_id, user_id, amount, file_id)
+            
+            elif payment_type == 'milestone_payment':
+                # پرداخت مرحله‌ای
+                contract = db.get_contract(related_id)
+                if contract:
+                    milestones = contract.get("milestones", [])
+                    if ms_idx is not None and ms_idx < len(milestones):
+                        milestones[ms_idx]["status"] = "awaiting_receipt_approval"
+                        milestones[ms_idx]["receipt_file_id"] = file_id
+                        db.update_contract(related_id, {"milestones": milestones})
+                        db.append_contract_history(related_id, f"📸 فیش واریزی مرحله {ms_idx+1} ارسال شد.", actor_id=user_id)
+                        
+                        if hasattr(db, 'create_pending_receipt'):
+                            db.create_pending_receipt(receipt_type="milestone", related_id=f"{related_id}:{ms_idx}", user_id=user_id, file_id=file_id, amount=float(amount), description=f"پرداخت مرحله {ms_idx+1} معامله {related_id}")
+                        
+                        # نوتیفیکیشن به ادمین (فرمت خاص برای مرحله)
+                        utils.notify_admin_receipt(bot, "contract", f"{related_id}:{ms_idx}", user_id, amount, file_id)
+            
             else:
-                bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=proc_msg.message_id,
-                    text="❌ خطایی در ثبت فیش رخ داد. لطفاً دوباره تلاش کنید."
-                )
-        except Exception as e:
-            logger.error(f"Error in process_receipt_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ متأسفانه در ثبت فیش خطایی رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
+                # پرداخت کل معامله
+                db.update_contract(related_id, {"status": "awaiting_receipt_approval", "receipt_file_id": file_id})
+                db.append_contract_history(related_id, "📸 فیش واریزی توسط کارفرما ارسال شد و در انتظار تایید ادمین است.", actor_id=user_id)
+                if hasattr(db, 'create_pending_receipt'):
+                    db.create_pending_receipt(receipt_type="contract", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description=f"پرداخت معامله {related_id}")
+                utils.notify_admin_receipt(bot, "contract", related_id, user_id, amount, file_id)
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_DEPOSIT_RECEIPT")
+            db.clear_user_state(user_id)
+            bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=proc_msg.message_id,
+                text="✅ **فیش واریزی شما با موفقیت ثبت شد.**\n\nپس از بررسی و تایید مدیریت (حداکثر ۲ ساعت)، عملیات نهایی خواهد شد. از شکیبایی شما سپاسگزاریم."
+            )
+        except Exception as e:
+            logger.error(f"Error in handle_unified_payment_receipt: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "❌ متأسفانه خطایی در ثبت فیش رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
+
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_FOR_PAYMENT_RECEIPT")
     def handle_receipt_non_photo(message: Message):
         """هندل کردن پیام‌های غیر عکس در مرحله دریافت فیش"""
         user_id = message.from_user.id
-        if message.text in ["❌ انصراف و بازگشت به منو", "/cancel"]:
+        if message.text in ["🔙 انصراف و بازگشت", "❌ انصراف", "انصراف"] or (message.text and message.text.startswith("/cancel")):
             db.clear_user_state(user_id)
-            is_admin = (user_id == config.ADMIN_ID or user_id in config.ADMIN_IDS)
-            bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=kb.get_main_menu(is_admin))
+            bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=kb.get_main_menu(is_admin_user(user_id)))
             return
             
-        bot.send_message(message.chat.id, "❌ لطفاً تصویر فیش واریزی خود را ارسال کنید (عکس):")
+        bot.send_message(message.chat.id, "📸 **لطفاً تصویر فیش واریزی خود را ارسال کنید.**\n\n(در صورت وجود مشکل در ارسال عکس، می‌توانید فایل آن را بفرستید)")
 
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_deposit:", "reject_deposit:")))
@@ -4054,6 +4094,7 @@ def register_user_handlers(bot: TeleBot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith("upload_ee_receipt_"))
     def handle_upload_ee_receipt_start(call: CallbackQuery):
         """شروع فرآیند ارسال فیش اختصاصی برای هزینه ویرایش اضافه"""
+        user_id = call.from_user.id
         cid = call.data.replace("upload_ee_receipt_", "", 1)
         contract = db.get_contract(cid)
         if not contract:
@@ -4061,19 +4102,10 @@ def register_user_handlers(bot: TeleBot):
             return
         
         price = float(contract.get("extra_edit_price", 0) or 0)
-        db.set_user_state(call.from_user.id, "WAITING_RECEIPT_PHOTO", {"receipt_cid": cid, "is_extra_edit": True})
-        
         bot.answer_callback_query(call.id)
-        bot.send_message(
-            call.message.chat.id,
-            f"📸 **ارسال فیش هزینه ویرایش**\n\n"
-            f"📌 معامله: `{cid}`\n"
-            f"💰 مبلغ ویرایش: **{utils.format_currency(price)}**\n\n"
-            f"💳 **اطلاعات حساب:**\n`{config.INTERMEDIARY_CARD}`\n\n"
-            "لطفاً تصویر فیش واریزی را ارسال کنید:",
-            parse_mode="Markdown",
-            reply_markup=kb.get_cancel_keyboard()
-        )
+        
+        # [CORE_UNIFICATION] استفاده از متد یکپارچه
+        _send_unified_payment_instructions(bot, call.message.chat.id, user_id, price, 'contract_payment', cid)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("upload_receipt_"))
     def handle_upload_receipt_start(call: CallbackQuery):
@@ -4102,131 +4134,14 @@ def register_user_handlers(bot: TeleBot):
             bot.answer_callback_query(call.id, "❌ فقط کارفرمای معامله می‌تواند فیش واریزی ارسال کند.", show_alert=True)
             return
 
-        db.set_user_state(user_id, "WAITING_RECEIPT_PHOTO", {"receipt_cid": cid})
+        db.set_user_state(user_id, "WAITING_FOR_PAYMENT_RECEIPT", {"receipt_cid": cid})
         bot.answer_callback_query(call.id)
-        bot.send_message(
-            call.message.chat.id,
-            f"📸 **ارسال فیش واریزی**\n\n"
-            f"📌 شناسه: `{cid}`\n"
-            f"💵 مبلغ: **{utils.format_currency(utils.safe_float(contract.get('amount', 0)))}**\n"
-            "──────────────────\n"
-            "💳 **اطلاعات واریز:**\n"
-            f"├ شماره کارت: `{config.INTERMEDIARY_CARD}`\n"
-            "└ بنام: **امیررضا مجتبایی**\n\n"
-            "💡 تصویر فیش را ارسال کنید. تایید فیش حداکثر ۲ ساعت زمان می‌برد.",
-            parse_mode="Markdown",
-            reply_markup=kb.get_cancel_keyboard()
-        )
+        
+        # [CORE_UNIFICATION] استفاده از متد یکپارچه برای نمایش اطلاعات پرداخت معامله
+        _send_unified_payment_instructions(bot, call.message.chat.id, user_id, amount, 'contract_payment', cid)
 
-    @bot.message_handler(
-        content_types=['photo', 'document'],
-        func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_RECEIPT_PHOTO"
-    )
-    def handle_receipt_photo(message: Message):
-        """دریافت تصویر فیش واریزی و ارسال آن برای تایید ادمین"""
-        user_id = message.from_user.id
-        proc_msg = bot.send_message(message.chat.id, "⏳ **در حال پردازش و ثبت فیش...**\nلطفاً چند لحظه معطل بمانید.")
-        try:
-            _, data = db.get_user_state(user_id)
-            cid = data.get("receipt_cid") if isinstance(data, dict) else None
-            is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+    # [CORE_CLEANUP] هندلر یکپارچه handle_unified_payment_receipt جایگزین هندلرهای قدیمی (handle_receipt_photo و غیره) شد.
 
-            if not cid:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "⚠️ خطایی رخ داد، لطفاً دوباره تلاش کنید.", reply_markup=kb.get_main_menu(is_admin))
-                return
-
-            contract = db.get_contract(cid)
-            if not contract:
-                db.clear_user_state(user_id)
-                bot.send_message(
-                    message.chat.id,
-                    "⚠️ معامله مرتبط با این فیش دیگر یافت نشد. لطفاً دوباره از «📜 معاملات من» اقدام کنید.",
-                    reply_markup=kb.get_main_menu(is_admin)
-                )
-                return
-
-            file_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
-            if not file_id:
-                bot.send_message(message.chat.id, "⚠️ لطفاً فقط تصویر یا فایل فیش واریزی را ارسال کنید.")
-                return
-
-            db.clear_user_state(user_id)
-            
-            is_extra_edit = False
-            if isinstance(data, dict) and data.get("is_extra_edit"):
-                is_extra_edit = True
-
-            if is_extra_edit:
-                price = utils.safe_float(contract.get('extra_edit_price', 0))
-                db.update_contract(cid, {"receipt_file_id": file_id, "status": "awaiting_extra_edit_receipt"})
-                db.append_contract_history(cid, f"💳 کارفرما فیش هزینه ویرایش اضافه ({utils.format_currency(price)}) را ارسال کرد.", actor_id=user_id, file_id=file_id)
-                # ثبت در جدول متمرکز
-                db.create_pending_receipt(
-                    receipt_type="milestone",
-                    related_id=cid,
-                    user_id=user_id,
-                    file_id=file_id,
-                    amount=price,
-                    description=f"هزینه ویرایش اضافه معامله {cid}"
-                )
-            else:
-                amount = utils.safe_float(contract.get("amount", 0))
-                db.update_contract(cid, {"receipt_file_id": file_id, "status": "awaiting_receipt_approval"})
-                db.append_contract_history(cid, "💳 کارفرما فیش واریزی جدید ارسال کرد.", actor_id=user_id, file_id=file_id, file_type="photo")
-                # ثبت در جدول متمرکز
-                db.create_pending_receipt(
-                    receipt_type="contract",
-                    related_id=cid,
-                    user_id=user_id,
-                    file_id=file_id,
-                    amount=amount,
-                    description=f"فعالسازی معامله {cid}: {contract.get('title')}"
-                )
-
-            # ارسال به ادمین
-            price_to_show = utils.safe_float(contract.get("extra_edit_price", 0)) if is_extra_edit else utils.safe_float(contract.get("amount", 0))
-            safe_title = utils.escape_html(contract.get('title', 'بدون عنوان'))
-            admin_caption = (
-                f"💳 <b>فیش واریزی جدید ({'هزینه ویرایش' if is_extra_edit else 'فعالسازی'})</b>\n\n"
-                f"📌 <b>کد معامله:</b> <code>{cid}</code>\n"
-                f"📝 <b>عنوان:</b> {safe_title}\n"
-                f"💵 <b>مبلغ مورد انتظار:</b> {utils.format_currency(price_to_show)}\n"
-                f"👤 <b>کارفرما:</b> <code>{user_id}</code>\n\n"
-                "لطفاً مبلغ واریزی را با مبلغ بالا مطابقت دهید."
-            )
-            
-            try:
-                bot.delete_message(message.chat.id, proc_msg.message_id)
-            except:
-                pass
-
-            # ارسال فوری پیام تایید دریافت فیش به کاربر
-            bot.send_message(
-                message.chat.id,
-                f"✅ **فیش واریزی معامله `{cid}` با موفقیت دریافت شد.**\n\n"
-                f"💰 **مبلغ فیش:** {utils.format_currency(price_to_show)}\n"
-                "⏳ فیش به همراه مشخصات معامله برای بررسی و تایید به تیم مدیریت ارسال گردید.\n"
-                "💡 به محض تایید توسط مدیریت، معامله فعال شده و پیام اطلاع‌رسانی برای شما و طرف مقابل ارسال خواهد شد.",
-                parse_mode="Markdown",
-                reply_markup=_get_main_menu_for_user(user_id, is_admin)
-            )
-
-            # ارسال مطمئن برای ادمین‌ها و کانال مدیریت به همراه دکمه‌های تایید و رد
-            callback_id = f"ee:{cid}" if is_extra_edit else cid
-            try:
-                utils.send_admin_alert(
-                    bot,
-                    content_type="photo" if message.photo else "document",
-                    file_id=file_id,
-                    text=admin_caption + f"\n\n📢 #فیش_{'ویرایش' if is_extra_edit else 'جدید'}",
-                    reply_markup=kb.get_receipt_admin_approval_inline(callback_id, user_id)
-                )
-            except Exception as e_alert:
-                logger.error(f"Error alerting admin of receipt for deal {cid}: {e_alert}")
-        except Exception as e:
-            logger.error(f"Critical error in handle_receipt_photo: {e}")
-            bot.send_message(message.chat.id, "⚠️ متأسفانه خطایی در فرآیند ثبت فیش رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
     # ====================================================
     # ۱۳.۸ مدیریت پرداخت (کیف پول / فیش)
@@ -4394,27 +4309,13 @@ def register_user_handlers(bot: TeleBot):
         """نمایش راهنمای شارژ حساب زمانی که موجودی کافی نیست و تنظیم وضعیت برای دریافت فیش"""
         cid = call.data.replace("wallet_low_balance_", "", 1)
         user_id = call.from_user.id
+        contract = db.get_contract(cid)
+        amount = utils.safe_float(contract.get("amount", 0)) if contract else 0
         
         bot.answer_callback_query(call.id, "⚠️ موجودی کیف پول شما کافی نیست.", show_alert=True)
         
-        # تنظیم وضعیت برای دریافت فیش معامله
-        db.set_user_state(user_id, "WAITING_RECEIPT_PHOTO", {"receipt_cid": cid})
-        
-        bot.send_message(
-            call.message.chat.id,
-            "⚠️ **موجودی کیف پول شما کافی نیست**\n\n"
-            "برای فعال‌سازی سریع این معامله، می‌توانید مبلغ را مستقیماً به حساب مدیریت واریز کنید.\n\n"
-            "💡 **مراحل پرداخت با فیش:**\n"
-            "۱. مبلغ معامله را به شماره کارت زیر واریز کنید.\n"
-            "۲. **تصویر فیش واریزی را همین‌جا ارسال کنید.**\n"
-            "۳. پس از تایید مدیریت، معامله بلافاصله فعال می‌شود.\n\n"
-            "💳 **اطلاعات حساب:**\n"
-            f"📌 شماره کارت: `{config.INTERMEDIARY_CARD}`\n"
-            "👤 به نام: **امیررضا مجتبایی** (مدیریت میانجی)\n"
-            "🏦 بانک: ملی ایران",
-            parse_mode="Markdown",
-            reply_markup=kb.get_cancel_keyboard()
-        )
+        # [CORE_UNIFICATION] استفاده از متد یکپارچه
+        _send_unified_payment_instructions(bot, call.message.chat.id, user_id, amount, 'contract_payment', cid)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("pay_with_receipt_"))
     def handle_pay_with_receipt_redirect(call: CallbackQuery):
@@ -4559,101 +4460,15 @@ def register_user_handlers(bot: TeleBot):
         contract = db.get_contract(cid)
         milestones = contract.get("milestones") or []
         ms = milestones[idx]
+        amount = utils.safe_float(ms.get("amount", 0))
         
-        db.set_user_state(call.from_user.id, "WAITING_MS_RECEIPT_PHOTO", {"receipt_cid": cid, "receipt_idx": idx})
-        bot.send_message(
-            call.message.chat.id, 
-            f"📸 **ارسال فیش مرحله {idx + 1}**\n\n"
-            f"💎 مرحله: **{ms.get('title')}**\n"
-            f"💵 مبلغ: **{utils.format_currency(utils.safe_float(ms.get('amount', 0)))}**\n\n"
-            "لطفاً تصویر فیش واریزی این مرحله را ارسال کنید:",
-            parse_mode="Markdown",
-            reply_markup=kb.get_cancel_keyboard()
-        )
+        bot.answer_callback_query(call.id)
+        # [CORE_UNIFICATION] استفاده از متد یکپارچه برای پرداخت مرحله
+        _send_unified_payment_instructions(bot, call.message.chat.id, call.from_user.id, amount, 'milestone_payment', cid, milestone_idx=idx)
 
-    @bot.message_handler(
-        content_types=['photo', 'document'],
-        func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_MS_RECEIPT_PHOTO"
-    )
-    def handle_ms_receipt_photo(message: Message):
-        """دریافت فیش واریزی یک مرحله و ارسال آن برای تایید ادمین"""
-        user_id = message.from_user.id
-        proc_msg = bot.send_message(message.chat.id, "⏳ **در حال ثبت فیش مرحله...**")
-        try:
-            _, data = db.get_user_state(user_id)
-            cid = data.get("receipt_cid") if isinstance(data, dict) else None
-            idx = data.get("receipt_idx") if isinstance(data, dict) else None
-            is_admin_u = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+    # [CORE_CLEANUP] هندلر یکپارچه handle_unified_payment_receipt جایگزین هندلرهای مرحله‌ای قدیمی شد.
 
-            if not cid or idx is None:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "⚠️ خطایی رخ داد، لطفاً دوباره تلاش کنید.", reply_markup=kb.get_main_menu(is_admin_u))
-                return
 
-            contract = db.get_contract(cid)
-            milestones = contract.get("milestones") if contract else None
-            if not contract or not milestones or idx >= len(milestones):
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "⚠️ این مرحله دیگر یافت نشد.", reply_markup=kb.get_main_menu(is_admin_u))
-                return
-
-            file_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
-            if not file_id:
-                bot.send_message(message.chat.id, "⚠️ لطفاً فقط تصویر یا فایل فیش واریزی را ارسال کنید.")
-                return
-
-            ms_amount = utils.safe_float(milestones[idx].get('amount', 0))
-            milestones[idx]["receipt_file_id"] = file_id
-            milestones[idx]["status"] = "receipt_submitted"
-            db.update_contract(cid, {"milestones": milestones})
-            db.clear_user_state(user_id)
-            db.append_contract_history(
-                cid,
-                f"💳 کارفرما فیش واریزی مرحله «{milestones[idx].get('title')}» (مرحله {idx + 1}) را ارسال کرد.",
-                actor_id=user_id, file_id=file_id, file_type="photo"
-            )
-            
-            # ثبت در جدول متمرکز جهت نظارت ادمین
-            db.create_pending_receipt(
-                receipt_type="milestone",
-                related_id=f"{cid}:{idx}", 
-                user_id=user_id,
-                file_id=file_id,
-                amount=ms_amount,
-                description=f"پرداخت مرحله {idx+1} معامله {cid}: {milestones[idx].get('title')}"
-            )
-
-            safe_ms_title = utils.escape_html(milestones[idx].get('title'))
-            admin_caption = (
-                f"💳 <b>فیش واریزی مرحله جدید</b>\n\n"
-                f"📌 <b>کد معامله:</b> <code>{cid}</code>\n"
-                f"📝 <b>مرحله:</b> {idx + 1} از {len(milestones)} — {safe_ms_title}\n"
-                f"💵 <b>مبلغ این مرحله:</b> {utils.format_currency(ms_amount)}\n"
-                f"👤 <b>کارفرما:</b> <code>{user_id}</code>\n\n"
-                "لطفاً مبلغ واریزی در تصویر فیش را با مبلغ بالا مطابقت دهید."
-            )
-            
-            utils.send_admin_alert(
-                bot,
-                content_type="photo",
-                file_id=file_id,
-                text=admin_caption + f"\n\n📢 #فیش_مرحله‌ای #مرحله_{idx+1}",
-                reply_markup=kb.get_ms_receipt_admin_inline(cid, idx, user_id)
-            )
-
-            try:
-                bot.delete_message(message.chat.id, proc_msg.message_id)
-            except:
-                pass
-
-            bot.send_message(
-                message.chat.id,
-                f"✅ **فیش واریزی مرحله {idx + 1} دریافت شد و جهت تایید برای مدیریت ارسال گردید.**",
-                reply_markup=kb.get_main_menu(is_admin_u)
-            )
-        except Exception as e:
-            logger.error(f"Critical error in handle_ms_receipt_photo: {e}")
-            bot.send_message(message.chat.id, "⚠️ متأسفانه خطایی در فرآیند ثبت فیش مرحله رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("msp_deliver_"))
     def handle_ms_deliver_start(call: CallbackQuery):
