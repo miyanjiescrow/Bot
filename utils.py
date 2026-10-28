@@ -254,37 +254,48 @@ def parse_amount_flexible(text: str) -> Optional[float]:
     """
     پارس مبلغ با هر فرمت ممکن:
     - اعداد فارسی/عربی → انگلیسی
+    - استخراج خودکار بخش عددی حتی اگر در قالب جمله یا با کلمات اضافی (مثل «مبلغ»، «شارژ»، «تومان») باشد
     - کاما، فاصله، نقطه هزارگان (۱،۰۰۰،۰۰۰ یا 1,000,000 یا 1 000 000) حذف می‌شوند
-    - کلمات «تومان»، «ریال»، «تومن» حذف می‌شوند
+    - پشتیبانی از پسوندهای مقیاس نظیر «هزار»، «میلیون»، «میلیارد»، «k»، «m»
+    - تبدیل خودکار ریال به تومان در صورت ذکر واحد «ریال» یا «IRR»
     - اگر عدد معتبر و مثبت بود برمی‌گردد وگرنه None
     """
     if not text:
         return None
-    cleaned = fa_to_en_digits(str(text).strip())
-    # حذف واحد پولی
-    for unit in ["تومان", "ریال", "تومن", "Toman", "toman"]:
-        cleaned = cleaned.replace(unit, "")
-    # حذف جداکننده‌های هزارگان (کاما، نقطه به‌عنوان جداکننده، فاصله، زیرخط)
-    # ابتدا باید نقطه‌ای که جداکننده هزارگان است را از نقطه اعشار تشخیص دهیم.
-    cleaned = re.sub(r"[،\s_]", "", cleaned)  # کاما فارسی، فاصله، زیرخط
-    cleaned = re.sub(r",", "", cleaned)         # کاما انگلیسی
-    # نقطه:
-    # - اگر عدد کامل به‌صورت گروه‌های ۳رقمی جدا‌شده با نقطه باشد (مثل 10.000.000
-    #   یا 8.000) → همه نقطه‌ها جداکننده هزارگانند و حذف می‌شوند (پشتیبانی از
-    #   چند نقطه پشت‌سرهم، نه فقط یک نقطه).
-    # - در غیر این صورت، اگر فقط یک نقطه وجود دارد و دقیقاً ۳ رقم بعد از آن
-    #   آمده، همچنان جداکننده هزارگان در نظر گرفته می‌شود (مبالغ تومانی اعشار
-    #   ندارند)؛ وگرنه نقطه به‌عنوان اعشار حفظ می‌شود.
-    if re.fullmatch(r"\d{1,3}(\.\d{3})+", cleaned):
-        cleaned = cleaned.replace(".", "")
-    elif cleaned.count(".") == 1:
-        left, right = cleaned.split(".")
+    raw = str(text).strip()
+    cleaned = fa_to_en_digits(raw)
+
+    is_rial = bool(re.search(r'(?:ریال|IRR)\b', raw, re.IGNORECASE) or 'ریال' in raw)
+
+    multiplier = 1.0
+    if re.search(r'(?:هزار|k|K)\b', cleaned, re.IGNORECASE) or 'هزار' in raw:
+        multiplier = 1000.0
+    elif re.search(r'(?:میلیون|m|M)\b', cleaned, re.IGNORECASE) or 'میلیون' in raw:
+        multiplier = 1000000.0
+    elif re.search(r'(?:میلیارد|b|B)\b', cleaned, re.IGNORECASE) or 'میلیارد' in raw:
+        multiplier = 1000000000.0
+
+    # استخراج بخش عددی با در نظر گرفتن کامای فارسی و انگلیسی و نقطه و فاصله
+    num_match = re.search(r'(\d+(?:[.,،_\s]\d+)*)', cleaned)
+    if not num_match:
+        return None
+    
+    num_str = num_match.group(1)
+    num_str = re.sub(r'[،,\s_]', '', num_str)
+
+    if re.fullmatch(r'\d{1,3}(\.\d{3})+', num_str):
+        num_str = num_str.replace('.', '')
+    elif num_str.count('.') == 1 and multiplier == 1.0:
+        left, right = num_str.split('.')
         if left.isdigit() and right.isdigit() and len(right) == 3:
-            cleaned = left + right
-    cleaned = cleaned.strip()
+            num_str = left + right
+
     try:
-        val = float(cleaned)
-        return val if val > 0 else None
+        val = float(num_str) * multiplier
+        if is_rial:
+            val = val / 10.0
+        val = round(val, 2)
+        return int(val) if val.is_integer() else val
     except (ValueError, TypeError):
         return None
 
