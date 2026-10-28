@@ -18,6 +18,11 @@ fi
 echo "📥 Installing dependencies from requirements.txt..."
 python3 -m pip install -r requirements.txt --user
 
+# Terminate any existing main.py instances to prevent 409 Polling Conflict
+echo "🧹 Ensuring no other main.py instances are running..."
+pkill -f "main.py" 2>/dev/null || true
+sleep 1
+
 # Run the bot in the background using nohup and log to bot.log
 echo "🤖 Starting main.py in background..."
 nohup python3 main.py > bot.log 2>&1 &

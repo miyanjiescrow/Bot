@@ -34,12 +34,15 @@ app = Flask(__name__)
 def health_check():
     return "Miyanji Bot is alive and polling!", 200
 
+@app.route('/healthz')
+def healthz():
+    return "OK", 200
+
 def run_flask():
     # Render provides the port via the PORT environment variable
     port = int(os.environ.get("PORT", 3000))
     logger.info(f"🌐 Starting health check server on port {port}...")
     try:
-        # Use a more robust way to run Flask in a thread
         from werkzeug.serving import make_server
         srv = make_server('0.0.0.0', port, app)
         srv.serve_forever()
@@ -47,28 +50,140 @@ def run_flask():
         logger.error(f"❌ Flask server failed: {e}")
 
 import signal
+import json
+import urllib.request
+import fcntl
+
+PID_FILE = "/tmp/miyanji_bot.pid"
+_flock_handle = None
+
+def acquire_single_instance_lock():
+    """
+    اطمینان از اجرای تنها یک اینستنس از ربات روی سرور و بستن پروسه‌های معلق قبلی.
+    از فایل PID و قفل fcntl برای تضمین عدم اجرای چندگانه استفاده می‌کند.
+    """
+    global _flock_handle
+    current_pid = os.getpid()
+
+    # ۱. بررسی پروسه قبلی از روی فایل PID
+    if os.path.exists(PID_FILE):
+        try:
+            with open(PID_FILE, "r") as f:
+                content = f.read().strip()
+                old_pid = int(content) if content.isdigit() else None
+            if old_pid and old_pid != current_pid:
+                logger.warning(f"⚠️ Found existing bot process with PID {old_pid}. Terminating it...")
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    time.sleep(1.5)
+                    os.kill(old_pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.warning(f"Notice handling PID lock file: {e}")
+
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(current_pid))
+    except Exception as e:
+        logger.warning(f"Notice writing PID lock: {e}")
+
+    # ۲. ثبت قفل سیستمی غیرمسدودکننده (System File Lock)
+    try:
+        _flock_handle = open("/tmp/miyanji_bot.flock", "w")
+        fcntl.flock(_flock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception:
+        logger.warning("Another process might be holding the flock lock.")
+
+def cleanup_and_reset_telegram_session(token: str):
+    """
+    پاکسازی کامل و تضمینی نشست‌های قبلی تلگرام:
+    ۱. حذف وبهوک و دور ریختن پیام‌های قدیمی انباشته‌شده (drop_pending_updates)
+    ۲. قطع اتصال باز لانگ‌پولینگ اینستنس‌های قبلی با متد getUpdates سریع (timeout=0)
+    """
+    if not token:
+        logger.warning("BOT_TOKEN is empty, skipping session reset.")
+        return
+
+    base_url = f"https://api.telegram.org/bot{token}"
+    logger.info("🧹 Initiating Telegram session cleanup and reset...")
+    
+    # ۱. حذف کامل وبهوک و پیام‌های صف
+    try:
+        url = f"{base_url}/deleteWebhook?drop_pending_updates=true"
+        req = urllib.request.Request(url, headers={"User-Agent": "MiyanjiEscrowBot/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            logger.info(f"✅ Webhook purged & pending updates dropped: {res.get('description', 'OK')}")
+    except Exception as e:
+        logger.warning(f"⚠️ Webhook purge via urllib notice: {e}")
+        try:
+            telebot.apihelper.delete_webhook(token, drop_pending_updates=True)
+            logger.info("✅ Webhook purged via telebot.apihelper.")
+        except Exception as e2:
+            logger.warning(f"⚠️ Webhook purge via apihelper notice: {e2}")
+
+    # ۲. بستن اتصال لانگ‌پولینگ اینستنس‌های قبلی با فراخوانی getUpdates آفست منفی و تایم‌اوت صفر
+    try:
+        url = f"{base_url}/getUpdates?offset=-1&limit=1&timeout=0"
+        req = urllib.request.Request(url, headers={"User-Agent": "MiyanjiEscrowBot/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            logger.info(f"✅ Existing polling session flushed. Status: {res.get('ok')}")
+    except Exception as e:
+        logger.warning(f"⚠️ Polling flush via urllib notice: {e}")
+        try:
+            telebot.apihelper.get_updates(token, offset=-1, limit=1, timeout=0)
+            logger.info("✅ Polling flushed via telebot.apihelper.")
+        except Exception as e2:
+            logger.warning(f"⚠️ Polling flush via apihelper notice: {e2}")
+
+    # مکث کوتاه جهت بازنشانی سوکت‌ها در سرورهای ابری تلگرام
+    time.sleep(3)
+
+class BotWorkerExceptionHandler(telebot.ExceptionHandler):
+    def handle(self, exception):
+        logger.error(f"🚨 [BOT_WORKER_ERROR] Unhandled exception in handler thread: {exception}", exc_info=True)
+        return True
 
 def main():
-    # ۱. راه‌اندازی سریع سرور سلامت (Health Check) برای Render
+    # ۱. ثبت قفل تک‌نسخه‌ای جهت جلوگیری از اجرای چندگانه روی یک سرور
+    acquire_single_instance_lock()
+
+    # ۲. راه‌اندازی سریع سرور سلامت (Health Check) برای Render
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
     logger.info("🚀 Starting Miyanji Smart Escrow Application...")
     
-    # ۲. بررسی اتصال دیتابیس
+    # ۳. بررسی اتصال دیتابیس
     if not db.supabase:
         logger.error("❌ Critical: Supabase client failed to initialize!")
     else:
         logger.info("🔗 Supabase connection established.")
 
-    # ۳. پیکربندی ربات
-    bot = telebot.TeleBot(config.BOT_TOKEN, threaded=True, num_threads=40)
+    # ۴. پیکربندی ربات تلگرام با هندلر خطا برای تردها
+    bot = telebot.TeleBot(
+        config.BOT_TOKEN, 
+        threaded=True, 
+        num_threads=40,
+        exception_handler=BotWorkerExceptionHandler()
+    )
 
-    # مدیریت سیگنال‌های سیستمی جهت خروج امن و آزادسازی نشست در Render
+    # مدیریت سیگنال‌های سیستمی جهت خروج امن و آزادسازی فوری نشست در Render (Rolling Update)
     def shutdown_handler(signum, frame):
-        logger.info("🛑 Received termination signal (SIGTERM/SIGINT). Stopping polling...")
+        logger.info(f"🛑 Received termination signal ({signum}). Stopping polling and releasing session...")
         try:
             bot.stop_polling()
+        except Exception:
+            pass
+        try:
+            cleanup_and_reset_telegram_session(config.BOT_TOKEN)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(PID_FILE):
+                os.remove(PID_FILE)
         except Exception:
             pass
         sys.exit(0)
@@ -76,7 +191,7 @@ def main():
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
 
-    # ۴. ثبت تمامی هندلرها با ترتیب اولویت
+    # ۵. ثبت تمامی هندلرها با ترتیب اولویت
     try:
         logger.info("🛠 Registering handlers...")
         auth_handlers.register_auth_handlers(bot)
@@ -89,32 +204,50 @@ def main():
         logger.error(f"💥 Failed to register handlers: {e}", exc_info=True)
         return
 
-    # ۵. پاکسازی نشست‌های قبلی و حذف وب‌هوک
-    try:
-        bot.remove_webhook()
-        bot.delete_webhook(drop_pending_updates=True)
-        logger.info("🧹 Webhooks cleared and pending updates dropped.")
-        time.sleep(3) 
-    except Exception as e:
-        logger.warning(f"⚠️ Webhook notice: {e}")
+    # ۶. پاکسازی تضمینی نشست‌های قبلی و ریست اتصال تلگرام پیش از آغاز پولینگ
+    cleanup_and_reset_telegram_session(config.BOT_TOKEN)
 
-    # ۶. شروع پولینگ بی‌نهایت با مدیریت خطای ۴۰۹
-    logger.info("📡 Bot is now polling for updates...")
+    # ۷. شروع پولینگ کنترل‌شده با مدیریت تخصصی خطای ۴۰۹ (Conflict)
+    conflict_count = 0
     while True:
         try:
-            bot.infinity_polling(
-                timeout=20, 
-                long_polling_timeout=10, 
-                skip_pending=True,
-                logger_level=logging.ERROR
+            logger.info("📡 Bot is now polling for updates...")
+            bot.polling(
+                none_stop=False,
+                timeout=20,
+                long_polling_timeout=10,
+                skip_pending=True
             )
+            conflict_count = 0
+            time.sleep(1)
+        except telebot.apihelper.ApiTelegramException as e:
+            if e.error_code == 409 or "Conflict" in str(e) or "terminated by other getUpdates" in str(e):
+                conflict_count += 1
+                wait_time = min(15 + conflict_count * 10, 60)
+                logger.warning(
+                    f"⚔️ Polling Conflict (409) detected [Attempt #{conflict_count}]: {e.description}. "
+                    f"Waiting {wait_time}s and resetting Telegram session..."
+                )
+                time.sleep(wait_time)
+                cleanup_and_reset_telegram_session(config.BOT_TOKEN)
+            else:
+                conflict_count = 0
+                logger.error(f"💥 Telegram API error ({e.error_code}): {e.description}")
+                time.sleep(5)
         except Exception as e:
             err_msg = str(e)
-            if "409" in err_msg or "Conflict" in err_msg:
-                logger.warning("⚔️ Polling Conflict (409) detected. Waiting 15s to release session...")
-                time.sleep(15)
+            if "409" in err_msg or "Conflict" in err_msg or "terminated by other getUpdates" in err_msg:
+                conflict_count += 1
+                wait_time = min(15 + conflict_count * 10, 60)
+                logger.warning(
+                    f"⚔️ Polling Conflict (409) string matched [Attempt #{conflict_count}]: {err_msg}. "
+                    f"Waiting {wait_time}s and resetting Telegram session..."
+                )
+                time.sleep(wait_time)
+                cleanup_and_reset_telegram_session(config.BOT_TOKEN)
             else:
-                logger.error(f"💥 Polling Error: {e}")
+                conflict_count = 0
+                logger.error(f"💥 General Polling Error: {e}", exc_info=True)
                 time.sleep(5)
 
 if __name__ == "__main__":

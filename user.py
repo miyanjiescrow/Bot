@@ -523,6 +523,46 @@ def register_user_handlers(bot: TeleBot):
             logger.warning(f"Failed to send HTML instruction, fallback to plain text: {e}")
             bot.send_message(chat_id, instruction_plain, reply_markup=kb.get_cancel_keyboard())
 
+    def start_topup_flow(chat_id: int, user_id: int):
+        """شروع فرآیند شارژ حساب کاربری با اعتبارسنجی احراز هویت و پایداری وضعیت"""
+        user_info = db.get_user(user_id)
+        if not (user_info and user_info.get("is_verified")):
+            bot.send_message(
+                chat_id,
+                "⚠️ <b>احراز هویت الزامی است</b>\n\nبرای امنیت تراکنش‌های مالی، لطفاً ابتدا حساب کاربری خود را احراز هویت کنید.",
+                parse_mode="HTML"
+            )
+            start_kyc_process(chat_id, user_id, resume_data="deposit_wallet")
+            return
+
+        db.set_user_state(user_id, "AWAITING_TOPUP_AMOUNT")
+        msg_text = (
+            "🏦 <b>شارژ حساب کاربری (کارت به کارت)</b>\n\n"
+            "لطفاً مبلغی که قصد واریز دارید را به <b>تومان</b> وارد کنید:\n"
+            "<i>(حداقل مبلغ: ۵۰,۰۰۰ تومان)</i>\n\n"
+            "💡 مثال: <code>5000000</code> یا <code>۵۰۰۰۰۰۰</code>"
+        )
+        try:
+            bot.send_message(
+                chat_id,
+                msg_text,
+                parse_mode="HTML",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send HTML topup prompt, fallback plain text: {e}")
+            bot.send_message(
+                chat_id,
+                "شارژ حساب کاربری\n\nلطفاً مبلغ مورد نظر را به تومان وارد کنید (حداقل ۵۰,۰۰۰ تومان):",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+
+    @bot.message_handler(func=lambda msg: msg.text and any(x == msg.text.strip() for x in ["💳 شارژ حساب", "شارژ حساب", "شارژ کیف پول", "شارژ حساب کاربری"]))
+    def handle_text_topup_start(message: Message):
+        if not maintenance_check(message): return
+        user_id = message.from_user.id if message.from_user else message.chat.id
+        start_topup_flow(message.chat.id, user_id)
+
     @bot.message_handler(func=lambda msg: (
         db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] == "AWAITING_TOPUP_AMOUNT"
     ))
@@ -2525,41 +2565,36 @@ def register_user_handlers(bot: TeleBot):
     @bot.callback_query_handler(func=lambda call: call.data == "deposit_wallet")
     def wallet_charge_handler(call: CallbackQuery):
         """شروع فرآیند شارژ حساب با بررسی احراز هویت"""
-        user_id = call.from_user.id
-        user_info = db.get_user(user_id)
-        
-        # بررسی احراز هویت برای شارژ حساب
-        if not (user_info and user_info.get("is_verified")):
-            bot.answer_callback_query(call.id, "⚠️ برای امنیت تراکنش‌ها، ابتدا باید احراز هویت کنید.", show_alert=True)
-            start_kyc_process(call.message.chat.id, user_id, resume_data=call.data)
-            return
-
-        db.set_user_state(user_id, "AWAITING_TOPUP_AMOUNT")
         try:
             bot.answer_callback_query(call.id)
         except Exception:
             pass
+        start_topup_flow(call.message.chat.id, call.from_user.id)
 
-        msg_text = (
-            "🏦 <b>شارژ حساب کاربری (کارت به کارت)</b>\n\n"
-            "لطفاً مبلغی که قصد واریز دارید را به <b>تومان</b> وارد کنید:\n"
-            "<i>(حداقل مبلغ: ۵۰,۰۰۰ تومان)</i>\n\n"
-            "💡 مثال: <code>5000000</code> یا <code>۵۰۰۰۰۰۰</code>"
-        )
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("auto_topup:"))
+    def handle_auto_topup_confirm(call: CallbackQuery):
+        """تایید شارژ خودکار پس از بازیابی از Fallback"""
         try:
-            bot.send_message(
-                call.message.chat.id,
-                msg_text,
-                parse_mode="HTML",
-                reply_markup=kb.get_cancel_keyboard()
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send HTML topup prompt, fallback plain text: {e}")
-            bot.send_message(
-                call.message.chat.id,
-                "شارژ حساب کاربری\n\nلطفاً مبلغ مورد نظر را به تومان وارد کنید (حداقل ۵۰,۰۰۰ تومان):",
-                reply_markup=kb.get_cancel_keyboard()
-            )
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        user_id = call.from_user.id
+        amount_str = call.data.split(":")[1]
+        try:
+            amount = int(amount_str)
+        except (ValueError, TypeError):
+            return
+        tx_id = db.create_deposit_transaction(user_id, amount)
+        _send_unified_payment_instructions(bot, call.message.chat.id, user_id, amount, 'wallet_charge', str(tx_id))
+
+    @bot.callback_query_handler(func=lambda call: call.data == "cancel_auto_topup")
+    def handle_cancel_auto_topup(call: CallbackQuery):
+        """انصراف از شارژ خودکار"""
+        try:
+            bot.answer_callback_query(call.id, "عملیات لغو شد.")
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
 
     # (Logic moved to priority handlers at the top of register_user_handlers)
 
@@ -7521,6 +7556,46 @@ def register_user_handlers(bot: TeleBot):
         state, _ = db.get_user_state(user_id)
         if state == "AWAITING_TOPUP_AMOUNT":
             process_deposit_amount_step(message)
+            return
+
+        # بازیابی هوشمند ۱: پاسخ به پیام درخواست شارژ حساب (Reply to Message)
+        if message.reply_to_message:
+            reply_text = getattr(message.reply_to_message, 'text', '') or getattr(message.reply_to_message, 'caption', '') or ''
+            if any(k in reply_text for k in ["شارژ حساب", "حداقل مبلغ", "واریز دارید"]):
+                parsed_reply_amt = utils.parse_amount_flexible(text)
+                if parsed_reply_amt and parsed_reply_amt >= 50000:
+                    db.set_user_state(user_id, "AWAITING_TOPUP_AMOUNT")
+                    process_deposit_amount_step(message)
+                    return
+
+        # بازیابی هوشمند ۲: تشخیص ارسال مستقیم مبلغ شارژ (حتی در صورت ریستارت سرور یا از بین رفتن موقت State)
+        parsed_direct_amt = utils.parse_amount_flexible(text)
+        if parsed_direct_amt and 50000 <= parsed_direct_amt <= 2000000000:
+            user_info = db.get_user(user_id)
+            if not (user_info and user_info.get("is_verified")):
+                bot.send_message(
+                    message.chat.id,
+                    "⚠️ <b>احراز هویت الزامی است</b>\n\nبرای شارژ حساب و ثبت تراکنش، ابتدا حساب خود را احراز هویت کنید.",
+                    parse_mode="HTML"
+                )
+                start_kyc_process(message.chat.id, user_id, resume_data="deposit_wallet")
+                return
+
+            amt_int = int(parsed_direct_amt)
+            amt_fmt = utils.format_currency(amt_int)
+            recov_kb = InlineKeyboardMarkup(row_width=1)
+            recov_kb.add(
+                InlineKeyboardButton(f"💳 تایید شارژ حساب به مبلغ {amt_fmt} تومان", callback_data=f"auto_topup:{amt_int}"),
+                InlineKeyboardButton("❌ انصراف", callback_data="cancel_auto_topup")
+            )
+            bot.send_message(
+                message.chat.id,
+                f"💡 <b>درخواست شارژ حساب کاربری</b>\n\n"
+                f"شما مبلغ <b>{amt_fmt} تومان</b> را ارسال کرده‌اید.\n"
+                f"آیا مایلید این مبلغ را به کیف پول حساب خود واریز کنید؟",
+                parse_mode="HTML",
+                reply_markup=recov_kb
+            )
             return
 
         # اگر متن دقیقاً شبیه شناسه یک معامله بود (مثل DEV-2508-1234)،
