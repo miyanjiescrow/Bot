@@ -476,37 +476,59 @@ def register_user_handlers(bot: TeleBot):
         
         state_data = {
             "payment_type": payment_type,
-            "related_id": related_id,
-            "amount": amount
+            "related_id": str(related_id),
+            "amount": float(amount)
         }
         if milestone_idx is not None:
             state_data["milestone_idx"] = milestone_idx
 
         db.set_user_state(user_id, "WAITING_FOR_PAYMENT_RECEIPT", state_data)
         
-        title = "🏦 **شارژ حساب کاربری**"
-        if payment_type == 'contract_payment':
-            title = f"💳 **پرداخت معامله `{related_id}`**"
+        if payment_type == 'wallet_charge':
+            title_html = "🏦 <b>شارژ حساب کاربری</b>"
+        elif payment_type == 'contract_payment':
+            title_html = f"💳 <b>پرداخت معامله <code>{related_id}</code></b>"
         elif payment_type == 'milestone_payment':
-            title = f"💎 **پرداخت مرحله {milestone_idx + 1} معامله `{related_id}`**"
+            title_html = f"💎 <b>پرداخت مرحله {milestone_idx + 1} معامله <code>{related_id}</code></b>"
+        else:
+            title_html = "💳 <b>پرداخت وجه</b>"
         
-        instruction = (
-            f"{title}\n"
+        amount_fmt = utils.format_currency(amount)
+        
+        instruction_html = (
+            f"{title_html}\n"
             "──────────────────\n"
-            f"💵 **مبلغ قابل واریز:** `{utils.format_currency(amount)}` تومان\n\n"
-            "💳 **اطلاعات کارت مقصد:**\n"
-            f"📌 شماره کارت: `{card_num}`\n"
-            f"👤 بنام: **{card_holder}**\n\n"
-            "⚠️ **مهم:** پس از انجام واریز، حتماً **تصویر فیش واریزی** را در همین‌جا ارسال کنید.\n"
-            "پس از تایید ادمین، عملیات نهایی خواهد شد."
+            f"💵 <b>مبلغ قابل واریز:</b> <code>{amount_fmt}</code> تومان\n\n"
+            "💳 <b>اطلاعات کارت مقصد میانجی:</b>\n"
+            f"📌 شماره کارت (لمس برای کپی):\n<code>{card_num}</code>\n"
+            f"👤 بنام: <b>{card_holder}</b>\n"
+            f"🔢 شناسه پیگیری سیستم: <code>#{related_id}</code>\n\n"
+            "⚠️ <b>مهم:</b> پس از انجام کارت‌به‌کارت، حتماً <b>تصویر فیش واریزی</b> را در همین‌جا ارسال کنید.\n"
+            "به محض تایید توسط مدیریت، عملیات نهایی و شارژ اعمال خواهد شد."
+        )
+
+        instruction_plain = (
+            f"شارژ حساب کاربری / پرداخت وجه\n"
+            "──────────────────\n"
+            f"مبلغ قابل واریز: {amount_fmt} تومان\n\n"
+            f"شماره کارت میانجی: {card_num}\n"
+            f"بنام: {card_holder}\n"
+            f"شناسه پیگیری: #{related_id}\n\n"
+            "مهم: پس از انجام واریز، حتماً تصویر فیش واریزی را در همین‌جا ارسال کنید."
         )
         
-        bot.send_message(chat_id, instruction, parse_mode="Markdown", reply_markup=kb.get_cancel_keyboard())
+        try:
+            bot.send_message(chat_id, instruction_html, parse_mode="HTML", reply_markup=kb.get_cancel_keyboard())
+        except Exception as e:
+            logger.warning(f"Failed to send HTML instruction, fallback to plain text: {e}")
+            bot.send_message(chat_id, instruction_plain, reply_markup=kb.get_cancel_keyboard())
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "AWAITING_TOPUP_AMOUNT")
+    @bot.message_handler(func=lambda msg: (
+        db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] == "AWAITING_TOPUP_AMOUNT"
+    ))
     def process_deposit_amount_step(message: Message):
-        """[CORE_FIX] دریافت و پردازش مبلغ شارژ با اولویت بالا و لاگ دقیق"""
-        user_id = message.from_user.id
+        """[CORE_FIX] دریافت و پردازش مبلغ شارژ با اولویت بالا و عملکرد آنی"""
+        user_id = message.from_user.id if message.from_user else message.chat.id
         text = (message.text or "").strip()
         
         state, _ = db.get_user_state(user_id)
@@ -514,59 +536,102 @@ def register_user_handlers(bot: TeleBot):
         
         if text in ["🔙 انصراف و بازگشت", "❌ انصراف", "انصراف ❌", "انصراف"] or text.startswith("/cancel"):
             db.clear_user_state(user_id)
-            bot.send_message(message.chat.id, "❌ عملیات شارژ لغو شد.", reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id)))
+            bot.send_message(
+                message.chat.id, 
+                "❌ عملیات شارژ حساب لغو شد و به منوی اصلی بازگشتید.", 
+                reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id))
+            )
             return
 
         parsed_amount = utils.parse_amount_flexible(text)
         if not parsed_amount:
-            bot.send_message(message.chat.id, "❌ مبلغ وارد شده نامعتبر است.\n\nلطفاً فقط عدد (به تومان) وارد کنید (مثلاً ۵۰۰۰۰):", reply_markup=kb.get_cancel_keyboard())
+            bot.send_message(
+                message.chat.id, 
+                "❌ <b>مبلغ وارد شده نامعتبر است.</b>\n\n"
+                "لطفاً مبلغ را فقط به صورت عدد (به تومان) وارد کنید.\n"
+                "💡 مثال: <code>5000000</code> یا <code>۵,۰۰۰,۰۰۰</code>",
+                parse_mode="HTML",
+                reply_markup=kb.get_cancel_keyboard()
+            )
             return
 
         amount = int(parsed_amount)
         if amount < 50000:
-            bot.send_message(message.chat.id, "❌ حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است. لطفاً مبلغ بیشتری وارد کنید:", reply_markup=kb.get_cancel_keyboard())
+            bot.send_message(
+                message.chat.id, 
+                "❌ <b>حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است.</b>\n\n"
+                "لطفاً مبلغی مساوی یا بیشتر از ۵۰,۰۰۰ تومان وارد کنید:",
+                parse_mode="HTML",
+                reply_markup=kb.get_cancel_keyboard()
+            )
             return
 
         try:
             bot.send_chat_action(message.chat.id, 'typing')
             tx_id = db.create_deposit_transaction(user_id, amount)
-            if not tx_id:
-                bot.send_message(message.chat.id, "⚠️ خطا در ثبت درخواست. لطفاً دقایقی دیگر تلاش کنید.")
-                return
             _send_unified_payment_instructions(bot, message.chat.id, user_id, amount, 'wallet_charge', str(tx_id))
         except Exception as e:
             logger.error(f"💥 [TOPUP_CRASH] User {user_id}: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطایی در سیستم رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
+            bot.send_message(
+                message.chat.id, 
+                "❌ خطایی در ثبت موقت درخواست رخ داد. لطفاً چند لحظه بعد مجدداً تلاش کنید.",
+                reply_markup=kb.get_cancel_keyboard()
+            )
 
-    @bot.message_handler(content_types=['photo', 'document'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_FOR_PAYMENT_RECEIPT")
+    @bot.message_handler(content_types=['photo', 'document'], func=lambda msg: (
+        db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] == "WAITING_FOR_PAYMENT_RECEIPT"
+    ))
     def handle_unified_payment_receipt(message: Message):
         """هندلر یکپارچه برای دریافت و ثبت فیش‌های واریزی"""
-        user_id = message.from_user.id
+        user_id = message.from_user.id if message.from_user else message.chat.id
         _, data = db.get_user_state(user_id)
         
         payment_type = data.get("payment_type")
-        related_id = data.get("related_id")
-        amount = data.get("amount")
+        related_id = str(data.get("related_id") or "")
+        amount = utils.safe_float(data.get("amount"), 0.0)
         ms_idx = data.get("milestone_idx")
         
         if not payment_type or not related_id:
             db.clear_user_state(user_id)
-            bot.send_message(message.chat.id, "❌ خطای سیستمی در بازیابی اطلاعات پرداخت.")
+            bot.send_message(
+                message.chat.id, 
+                "❌ خطای سیستمی در بازیابی اطلاعات پرداخت. لطفاً دوباره از منوی کیف پول یا معامله اقدام کنید.",
+                reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id))
+            )
             return
 
         file_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
         if not file_id:
-            bot.reply_to(message, "⚠️ لطفا تصویر فیش را ارسال کنید.")
+            bot.reply_to(message, "⚠️ لطفاً تصویر یا فایل فیش واریزی خود را ارسال کنید.")
             return
 
-        proc_msg = bot.send_message(message.chat.id, "⏳ **در حال ثبت فیش و ارسال برای تایید...**")
+        proc_msg = bot.send_message(message.chat.id, "⏳ <b>در حال ثبت فیش و ارسال به واحد مالی مدیریت...</b>", parse_mode="HTML")
         
         try:
             if payment_type == 'wallet_charge':
-                db.update_deposit_receipt(int(related_id), file_id)
+                try:
+                    db.update_deposit_receipt(int(related_id), file_id)
+                except Exception:
+                    pass
                 if hasattr(db, 'create_pending_receipt'):
-                    db.create_pending_receipt(receipt_type="wallet", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="شارژ کیف پول")
+                    try:
+                        db.create_pending_receipt(receipt_type="wallet", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="شارژ کیف پول")
+                    except Exception:
+                        pass
                 utils.notify_admin_receipt(bot, "wallet", related_id, user_id, amount, file_id)
+                db.clear_user_state(user_id)
+                
+                success_text = (
+                    "✅ <b>فیش واریزی شما با موفقیت دریافت و ثبت شد.</b>\n\n"
+                    f"🔢 شناسه تراکنش: <code>#{related_id}</code>\n"
+                    f"💵 مبلغ واریزی: <code>{utils.format_currency(amount)}</code> تومان\n\n"
+                    "درخواست شما برای مدیریت ارسال گردید. به محض بررسی و تایید، مبلغ مستقیماً به موجودی کیف پول شما افزوده شده و پیام تایید برایتان ارسال خواهد شد."
+                )
+                try:
+                    bot.edit_message_text(chat_id=message.chat.id, message_id=proc_msg.message_id, text=success_text, parse_mode="HTML")
+                except Exception:
+                    bot.send_message(message.chat.id, success_text, parse_mode="HTML", reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id)))
+                return
             
             elif payment_type == 'milestone_payment':
                 contract = db.get_contract(related_id)
@@ -578,31 +643,59 @@ def register_user_handlers(bot: TeleBot):
                         db.update_contract(related_id, {"milestones": milestones})
                         db.append_contract_history(related_id, f"📸 فیش واریزی مرحله {ms_idx+1} ارسال شد.", actor_id=user_id)
                         if hasattr(db, 'create_pending_receipt'):
-                            db.create_pending_receipt(receipt_type="milestone", related_id=f"{related_id}:{ms_idx}", user_id=user_id, file_id=file_id, amount=float(amount), description=f"پرداخت مرحله {ms_idx+1}")
+                            try:
+                                db.create_pending_receipt(receipt_type="milestone", related_id=f"{related_id}:{ms_idx}", user_id=user_id, file_id=file_id, amount=float(amount), description=f"پرداخت مرحله {ms_idx+1}")
+                            except Exception:
+                                pass
                         utils.notify_admin_receipt(bot, "contract", f"{related_id}:{ms_idx}", user_id, amount, file_id)
+                db.clear_user_state(user_id)
+                try:
+                    bot.edit_message_text(chat_id=message.chat.id, message_id=proc_msg.message_id, text=f"✅ <b>فیش واریزی مرحله {ms_idx+1} با موفقیت ثبت شد.</b>\n\nپس از بررسی و تایید مدیریت، مرحله فعال خواهد شد.", parse_mode="HTML")
+                except Exception:
+                    bot.send_message(message.chat.id, f"✅ <b>فیش واریزی مرحله {ms_idx+1} با موفقیت ثبت شد.</b>\n\nپس از بررسی و تایید مدیریت، مرحله فعال خواهد شد.", parse_mode="HTML")
+                return
             
             else:
                 db.update_contract(related_id, {"status": "awaiting_receipt_approval", "receipt_file_id": file_id})
                 db.append_contract_history(related_id, "📸 فیش واریزی توسط کارفرما ارسال شد.", actor_id=user_id)
                 if hasattr(db, 'create_pending_receipt'):
-                    db.create_pending_receipt(receipt_type="contract", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="پرداخت معامله")
+                    try:
+                        db.create_pending_receipt(receipt_type="contract", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="پرداخت معامله")
+                    except Exception:
+                        pass
                 utils.notify_admin_receipt(bot, "contract", related_id, user_id, amount, file_id)
+                db.clear_user_state(user_id)
+                try:
+                    bot.edit_message_text(chat_id=message.chat.id, message_id=proc_msg.message_id, text="✅ <b>فیش واریزی شما با موفقیت ثبت شد.</b>\n\nپس از بررسی مدیریت، معامله فعال خواهد شد.", parse_mode="HTML")
+                except Exception:
+                    bot.send_message(message.chat.id, "✅ <b>فیش واریزی شما با موفقیت ثبت شد.</b>\n\nپس از بررسی مدیریت، معامله فعال خواهد شد.", parse_mode="HTML")
+                return
 
-            db.clear_user_state(user_id)
-            bot.edit_message_text(chat_id=message.chat.id, message_id=proc_msg.message_id, text="✅ **فیش واریزی شما با موفقیت ثبت شد.**\n\nپس از بررسی مدیریت، عملیات نهایی خواهد شد.")
         except Exception as e:
             logger.error(f"Error in receipt handling: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطایی در ثبت فیش رخ داد.")
+            bot.send_message(message.chat.id, "❌ خطایی در ثبت فیش رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_FOR_PAYMENT_RECEIPT")
+    @bot.message_handler(func=lambda msg: (
+        db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] == "WAITING_FOR_PAYMENT_RECEIPT"
+    ))
     def handle_receipt_non_photo(message: Message):
-        user_id = message.from_user.id
+        user_id = message.from_user.id if message.from_user else message.chat.id
         text = (message.text or "").strip()
         if text in ["🔙 انصراف و بازگشت", "❌ انصراف", "انصراف ❌", "انصراف"] or text.startswith("/cancel"):
             db.clear_user_state(user_id)
-            bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id)))
+            bot.send_message(
+                message.chat.id, 
+                "❌ عملیات پرداخت لغو شد و به منوی اصلی بازگشتید.", 
+                reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id))
+            )
             return
-        bot.send_message(message.chat.id, "📸 **لطفاً تصویر فیش واریزی خود را ارسال کنید.**")
+        bot.send_message(
+            message.chat.id, 
+            "📸 <b>لطفاً تصویر یا فایل فیش واریزی خود را ارسال کنید.</b>\n\n"
+            "یا در صورت انصراف، دکمه «❌ انصراف» را لمس کنید.",
+            parse_mode="HTML",
+            reply_markup=kb.get_cancel_keyboard()
+        )
 
     # ====================================================
     # ۲. دستور /start (به همراه پردازش لینک دعوت معامله)
@@ -2442,15 +2535,31 @@ def register_user_handlers(bot: TeleBot):
             return
 
         db.set_user_state(user_id, "AWAITING_TOPUP_AMOUNT")
-        bot.send_message(
-            call.message.chat.id,
-            "🏦 **شارژ حساب کاربری**\n\n"
-            "لطفاً مبلغی که قصد واریز دارید را به **تومان** وارد کنید:\n"
-            "*(حداقل مبلغ: ۵۰,۰۰۰ تومان)*",
-            parse_mode="Markdown",
-            reply_markup=kb.get_cancel_keyboard()
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+
+        msg_text = (
+            "🏦 <b>شارژ حساب کاربری (کارت به کارت)</b>\n\n"
+            "لطفاً مبلغی که قصد واریز دارید را به <b>تومان</b> وارد کنید:\n"
+            "<i>(حداقل مبلغ: ۵۰,۰۰۰ تومان)</i>\n\n"
+            "💡 مثال: <code>5000000</code> یا <code>۵۰۰۰۰۰۰</code>"
         )
-        bot.answer_callback_query(call.id)
+        try:
+            bot.send_message(
+                call.message.chat.id,
+                msg_text,
+                parse_mode="HTML",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send HTML topup prompt, fallback plain text: {e}")
+            bot.send_message(
+                call.message.chat.id,
+                "شارژ حساب کاربری\n\nلطفاً مبلغ مورد نظر را به تومان وارد کنید (حداقل ۵۰,۰۰۰ تومان):",
+                reply_markup=kb.get_cancel_keyboard()
+            )
 
     # (Logic moved to priority handlers at the top of register_user_handlers)
 
@@ -7399,11 +7508,20 @@ def register_user_handlers(bot: TeleBot):
             reply_markup=kb.get_admin_panel_keyboard(quick_stats, is_owner_u)
         )
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] not in _ACTIVE_FSM_STATES and db.get_user_state(msg.from_user.id)[0] not in {"REG_PHONE", "REG_PASSWORD", "REG_NAME", "LOGIN_PHONE", "LOGIN_PASSWORD", "CHANGE_PWD_OLD", "CHANGE_PWD_NEW", "CHANGE_PHONE_NEW"})
+    @bot.message_handler(func=lambda msg: (
+        db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] not in _ACTIVE_FSM_STATES and 
+        db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] not in {"REG_PHONE", "REG_PASSWORD", "REG_NAME", "LOGIN_PHONE", "LOGIN_PASSWORD", "CHANGE_PWD_OLD", "CHANGE_PWD_NEW", "CHANGE_PHONE_NEW"}
+    ))
     def handle_fallback_text(message: Message):
-        user_id = message.from_user.id
+        user_id = message.from_user.id if message.from_user else message.chat.id
         text = (message.text or "").strip()
         is_admin_u = (user_id == getattr(config, 'OWNER_ID', 0) or user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+
+        # بررسی هوشمند: اگر کاربر در وضعیت شارژ حساب بود ولی به این هندلر رسید
+        state, _ = db.get_user_state(user_id)
+        if state == "AWAITING_TOPUP_AMOUNT":
+            process_deposit_amount_step(message)
+            return
 
         # اگر متن دقیقاً شبیه شناسه یک معامله بود (مثل DEV-2508-1234)،
         # مستقیم کارت همان معامله را نشان بده — نیازی به رفتن به «معاملات من» نیست
@@ -7449,14 +7567,26 @@ def register_user_handlers(bot: TeleBot):
     @bot.message_handler(func=lambda msg: True, content_types=['text', 'photo', 'document', 'video'])
     def debug_catch_all(message: Message):
         """[DEBUG] هندلر نهایی برای ردیابی پیام‌های پردازش‌نشده"""
-        user_id = message.from_user.id
+        user_id = message.from_user.id if message.from_user else message.chat.id
         state, _ = db.get_user_state(user_id)
         text = message.text or f"[{message.content_type} data]"
         
         logger.warning(f"🕵️ [DEBUG_CATCH_ALL] Unhandled message: '{text}' | User: {user_id} | State: {state}")
         
+        # اگر کاربر در وضعیت شارژ بود، مستقیم پردازش کن
+        if state == "AWAITING_TOPUP_AMOUNT":
+            process_deposit_amount_step(message)
+            return
+
+        if state == "WAITING_FOR_PAYMENT_RECEIPT":
+            if message.content_type in ['photo', 'document']:
+                handle_unified_payment_receipt(message)
+            else:
+                handle_receipt_non_photo(message)
+            return
+
         # اگر کاربر در وضعیتی بود که باید پیامی می‌گرفت ولی نگرفت، راهنمایی‌اش می‌کنیم
         if state != "START":
-            bot.reply_to(message, f"⚠️ شما در وضعیت `{state}` هستید اما این ورودی معتبر نیست.\nبرای لغو از دکمه انصراف استفاده کنید.")
+            bot.reply_to(message, f"⚠️ شما در مرحله‌ای از فرآیند ربات هستید.\nبرای انصراف و بازگشت به منو، دکمه «❌ انصراف» را لمس کنید.")
         else:
-            bot.send_message(message.chat.id, "❌ دستور نامعتبر است. لطفاً از منو استفاده کنید.")
+            bot.send_message(message.chat.id, "❌ دستور نامعتبر است. لطفاً از منوی اصلی استفاده کنید.")

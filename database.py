@@ -4,6 +4,9 @@ import re
 import threading
 import uuid
 import unicodedata
+import sqlite3
+import json
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Union, Tuple
 from functools import lru_cache
@@ -13,6 +16,28 @@ import utils
 from phone_utils import normalize_phone_number
 
 logger = logging.getLogger("Miyanji_Database")
+
+# Local SQLite Database for persistent FSM State Management
+_FSM_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miyanji_fsm.db")
+
+def _init_local_fsm_db():
+    try:
+        conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_states (
+                user_id INTEGER PRIMARY KEY,
+                state TEXT NOT NULL,
+                data TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Notice init local fsm sqlite: {e}")
+
+_init_local_fsm_db()
 
 
 # ====================================================
@@ -87,86 +112,151 @@ def is_user_blacklisted(user_id: int) -> bool:
 
 def set_user_state(user_id: int, state: str, data: Optional[Dict[str, Any]] = None) -> None:
     """
-    تنظیم وضعیت و داده‌های موقت کاربر با اولویت حافظه و همگام‌سازی دیتابیس.
+    تنظیم وضعیت و داده‌های موقت کاربر با اولویت حافظه، پشتیبان محلی SQLite و همگام‌سازی دیتابیس.
     """
-    if not user_id: return
+    if not user_id:
+        return
+    try:
+        user_id_int = int(user_id)
+    except (ValueError, TypeError):
+        return
     
     clean_data = dict(data) if data else {}
-    logger.info(f"💾 [FSM_SAVE] User {user_id} -> State: {state} | Data: {list(clean_data.keys())}")
+    now_ts = time.time()
+    logger.info(f"💾 [FSM_SAVE] User {user_id_int} -> State: {state} | Data keys: {list(clean_data.keys())}")
     
+    # ۱. کش حافظه رم (فوق سریع با پشتیبانی همزمان از کلید int و str)
     with db_lock:
-        _user_states[user_id] = {
+        state_dict = {
             "current_state": state,
             "state_data": clean_data,
-            "last_updated": time.time()
+            "last_updated": now_ts
         }
-    
-    # ذخیره غیرهمزمان در Supabase
+        _user_states[user_id_int] = state_dict
+        _user_states[str(user_id_int)] = state_dict
+
+    # ۲. ذخیره پایدار در SQLite محلی (تضمین بقای وضعیت هنگام ریستارت سرور یا اختلال شبکه)
+    try:
+        conn = sqlite3.connect(_FSM_DB_PATH, timeout=2.0)
+        c = conn.cursor()
+        c.execute("""
+            INSERT OR REPLACE INTO user_states (user_id, state, data, updated_at)
+            VALUES (?, ?, ?, ?)
+        """, (user_id_int, state, json.dumps(clean_data, ensure_ascii=False), now_ts))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Local sqlite save notice for {user_id_int}: {e}")
+
+    # ۳. ذخیره غیرهمزمان در Supabase (در پس‌زمینه بدون مسدودسازی پروسه اصلی تلگرام)
     if supabase:
         def _persist_task():
             try:
-                # استفاده از upsert برای ستون id که کلید اصلی است
                 supabase.table("user_states").upsert({
-                    "id": user_id,
+                    "id": user_id_int,
                     "state": state,
                     "data": clean_data,
                     "updated_at": "now()"
                 }).execute()
             except Exception as e:
-                logger.error(f"❌ [FSM_DB_ERR] Failed to persist state for {user_id}: {e}")
+                logger.debug(f"Supabase user_states upsert notice for {user_id_int}: {e}")
         
         db_pool.submit(_persist_task)
 
 
 def get_user_state(user_id: int) -> Tuple[str, Dict[str, Any]]:
     """
-    دریافت وضعیت جاری کاربر (ابتدا حافظه، سپس دیتابیس).
+    دریافت وضعیت جاری کاربر (حافظه رم -> پایگاه محلی SQLite -> دیتابیس Supabase).
     خروجی همیشه یک تاپل (State, Data) است.
     """
-    if not user_id: return "START", {}
+    if not user_id:
+        return "START", {}
+    try:
+        user_id_int = int(user_id)
+    except (ValueError, TypeError):
+        return "START", {}
     
-    # ۱. چک کردن حافظه (بسیار سریع)
-    state_obj = _user_states.get(user_id)
-    if state_obj:
-        return state_obj.get("current_state", "START"), state_obj.get("state_data", {})
+    # ۱. بررسی کش حافظه رم (بسیار سریع در کسری از میلی‌ثانیه)
+    with db_lock:
+        state_obj = _user_states.get(user_id_int) or _user_states.get(str(user_id_int))
+        if state_obj:
+            return state_obj.get("current_state", "START"), state_obj.get("state_data", {})
     
-    # ۲. چک کردن دیتابیس در صورت نبودن در حافظه
+    # ۲. بررسی دیتابیس محلی SQLite
+    try:
+        conn = sqlite3.connect(_FSM_DB_PATH, timeout=1.0)
+        c = conn.cursor()
+        c.execute("SELECT state, data FROM user_states WHERE user_id = ?", (user_id_int,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            st = row[0]
+            try:
+                dt = json.loads(row[1]) if row[1] else {}
+            except Exception:
+                dt = {}
+            with db_lock:
+                obj = {"current_state": st, "state_data": dt, "last_updated": time.time()}
+                _user_states[user_id_int] = obj
+                _user_states[str(user_id_int)] = obj
+            return st, dt
+    except Exception as e:
+        logger.debug(f"Local sqlite read notice for {user_id_int}: {e}")
+
+    # ۳. بررسی Supabase در صورت نیاز
     if supabase:
         try:
-            res = supabase.table("user_states").select("*").eq("id", user_id).execute()
+            res = supabase.table("user_states").select("*").eq("id", user_id_int).execute()
             if res.data and len(res.data) > 0:
                 row = res.data[0]
                 state = row.get("state", "START")
                 data = row.get("data") or {}
                 
-                # بروزرسانی حافظه جهت مراجعات بعدی
                 with db_lock:
-                    _user_states[user_id] = {
+                    obj = {
                         "current_state": state,
                         "state_data": data,
                         "last_updated": time.time()
                     }
+                    _user_states[user_id_int] = obj
+                    _user_states[str(user_id_int)] = obj
                 return state, data
         except Exception as e:
-            logger.error(f"⚠️ [FSM_GET_ERR] Error fetching state for {user_id}: {e}")
+            logger.debug(f"Supabase get_user_state notice for {user_id_int}: {e}")
             
     return "START", {}
 
 
 def clear_user_state(user_id: int) -> None:
     """پاکسازی کامل وضعیت کاربر و بازگشت به منوی اصلی"""
-    if not user_id: return
-    logger.info(f"🧹 [FSM_CLEAR] Resetting state for user {user_id}")
+    if not user_id:
+        return
+    try:
+        user_id_int = int(user_id)
+    except (ValueError, TypeError):
+        return
+    logger.info(f"🧹 [FSM_CLEAR] Resetting state for user {user_id_int}")
     
     with db_lock:
-        _user_states[user_id] = {
+        reset_obj = {
             "current_state": "START",
             "state_data": {},
             "last_updated": time.time()
         }
+        _user_states[user_id_int] = reset_obj
+        _user_states[str(user_id_int)] = reset_obj
     
+    try:
+        conn = sqlite3.connect(_FSM_DB_PATH, timeout=1.0)
+        c = conn.cursor()
+        c.execute("DELETE FROM user_states WHERE user_id = ?", (user_id_int,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Local sqlite delete notice for {user_id_int}: {e}")
+
     if supabase:
-        db_pool.submit(lambda: supabase.table("user_states").delete().eq("id", user_id).execute())
+        db_pool.submit(lambda: supabase.table("user_states").delete().eq("id", user_id_int).execute())
 
 
 def get_user_draft(user_id: int) -> Optional[Dict[str, Any]]:
@@ -790,13 +880,18 @@ def update_wallet_balance(
 # ====================================================
 
 def create_deposit_transaction(user_id: int, amount: float) -> Optional[int]:
-    """ایجاد یک تراکنش شارژ در وضعیت در انتظار (Pending) با فال‌بک مطمئن حافظه"""
+    """ایجاد یک تراکنش شارژ در وضعیت در انتظار (Pending) با پاسخ آنی و ثبت پس‌زمینه"""
+    try:
+        user_id_int = int(user_id)
+    except (ValueError, TypeError):
+        user_id_int = user_id
+
     # ایجاد شناسه عددی یکتا
     tx_id = int(time.time() * 1000) % 10000000 + 100000
     tx_record = {
         "id": tx_id,
-        "user_id": user_id,
-        "amount": amount,
+        "user_id": user_id_int,
+        "amount": float(amount),
         "type": "deposit",
         "status": "pending",
         "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان",
@@ -804,31 +899,28 @@ def create_deposit_transaction(user_id: int, amount: float) -> Optional[int]:
     }
     with db_lock:
         _in_memory_transactions[tx_id] = tx_record
+        _in_memory_transactions[str(tx_id)] = tx_record
 
-    if not supabase:
-        return tx_id
+    # ذخیره در Supabase در پس‌زمینه بدون مسدودسازی ترد تعاملی تلگرام
+    if supabase:
+        def _persist_tx():
+            try:
+                ensure_user_exists(user_id_int)
+                data = {
+                    "id": tx_id,
+                    "user_id": user_id_int,
+                    "amount": float(amount),
+                    "type": "deposit",
+                    "status": "pending",
+                    "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان"
+                }
+                supabase.table("transactions").upsert(data, on_conflict="id").execute()
+            except Exception as e:
+                logger.debug(f"Notice async inserting deposit transaction: {e}")
 
-    try:
-        ensure_user_exists(user_id)
-        data = {
-            "user_id": user_id,
-            "amount": amount,
-            "type": "deposit",
-            "status": "pending",
-            "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان"
-        }
-        logger.info(f"📡 [DB_DEBUG] Inserting deposit transaction to Supabase for user {user_id}...")
-        res = supabase.table("transactions").insert(data).execute()
-        logger.info(f"✅ [DB_DEBUG] Supabase response received.")
-        if res.data:
-            actual_id = res.data[0]["id"]
-            with db_lock:
-                _in_memory_transactions[actual_id] = res.data[0]
-            return actual_id
-        return tx_id
-    except Exception as e:
-        logger.warning(f"Notice creating deposit transaction in Supabase for user {user_id} (using memory fallback): {e}")
-        return tx_id
+        db_pool.submit(_persist_tx)
+
+    return tx_id
 
 def update_deposit_receipt(transaction_id: int, file_id: str) -> bool:
     """بروزرسانی تراکنش با آیدی فایل فیش واریزی"""

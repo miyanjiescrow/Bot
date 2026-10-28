@@ -46,6 +46,8 @@ def run_flask():
     except Exception as e:
         logger.error(f"❌ Flask server failed: {e}")
 
+import signal
+
 def main():
     # ۱. راه‌اندازی سریع سرور سلامت (Health Check) برای Render
     flask_thread = threading.Thread(target=run_flask, daemon=True)
@@ -62,6 +64,18 @@ def main():
     # ۳. پیکربندی ربات
     bot = telebot.TeleBot(config.BOT_TOKEN, threaded=True, num_threads=40)
 
+    # مدیریت سیگنال‌های سیستمی جهت خروج امن و آزادسازی نشست در Render
+    def shutdown_handler(signum, frame):
+        logger.info("🛑 Received termination signal (SIGTERM/SIGINT). Stopping polling...")
+        try:
+            bot.stop_polling()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+
     # ۴. ثبت تمامی هندلرها با ترتیب اولویت
     try:
         logger.info("🛠 Registering handlers...")
@@ -75,11 +89,12 @@ def main():
         logger.error(f"💥 Failed to register handlers: {e}", exc_info=True)
         return
 
-    # ۵. پاکسازی نشست‌های قبلی
+    # ۵. پاکسازی نشست‌های قبلی و حذف وب‌هوک
     try:
+        bot.remove_webhook()
         bot.delete_webhook(drop_pending_updates=True)
         logger.info("🧹 Webhooks cleared and pending updates dropped.")
-        time.sleep(5) 
+        time.sleep(3) 
     except Exception as e:
         logger.warning(f"⚠️ Webhook notice: {e}")
 
@@ -88,19 +103,19 @@ def main():
     while True:
         try:
             bot.infinity_polling(
-                timeout=90, 
-                long_polling_timeout=20, 
+                timeout=20, 
+                long_polling_timeout=10, 
                 skip_pending=True,
                 logger_level=logging.ERROR
             )
         except Exception as e:
             err_msg = str(e)
             if "409" in err_msg or "Conflict" in err_msg:
-                logger.warning("⚔️ Polling Conflict (409) detected. Waiting 30s to release session...")
-                time.sleep(30)
+                logger.warning("⚔️ Polling Conflict (409) detected. Waiting 15s to release session...")
+                time.sleep(15)
             else:
                 logger.error(f"💥 Polling Error: {e}")
-                time.sleep(10)
+                time.sleep(5)
 
 if __name__ == "__main__":
     main()
