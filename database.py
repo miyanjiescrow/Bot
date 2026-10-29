@@ -19,7 +19,7 @@ logger = logging.getLogger("Miyanji_Database")
 
 # Local SQLite Database for persistent FSM State Management
 _FSM_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miyanji_fsm.db")
-_fsm_lock = threading.Lock()
+_fsm_lock = threading.RLock()
 _user_states: Dict[int, Dict[str, Any]] = {}
 
 def _init_local_fsm_db():

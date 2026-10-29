@@ -7898,21 +7898,8 @@ def register_user_handlers(bot: TeleBot):
         # بازیابی هوشمند ۲: تشخیص ارسال مستقیم مبلغ شارژ (حتی در صورت ریستارت سرور یا از بین رفتن موقت State)
         parsed_direct_amt = utils.parse_amount_flexible(text)
         if parsed_direct_amt and 50000 <= parsed_direct_amt <= 2000000000:
-            amt_int = int(parsed_direct_amt)
-            amt_fmt = utils.format_currency(amt_int)
-            recov_kb = InlineKeyboardMarkup(row_width=1)
-            recov_kb.add(
-                InlineKeyboardButton(f"💳 تایید شارژ حساب به مبلغ {amt_fmt} تومان", callback_data=f"auto_topup:{amt_int}"),
-                InlineKeyboardButton("❌ انصراف", callback_data="cancel_auto_topup")
-            )
-            bot.send_message(
-                message.chat.id,
-                f"💡 <b>درخواست شارژ حساب کاربری</b>\n\n"
-                f"شما مبلغ <b>{amt_fmt} تومان</b> را ارسال کرده‌اید.\n"
-                f"آیا مایلید این مبلغ را به کیف پول حساب خود واریز کنید؟",
-                parse_mode="HTML",
-                reply_markup=recov_kb
-            )
+            logger.info(f"💡 [FALLBACK_TOPUP_DIRECT] Auto-routing direct amount '{text}' ({parsed_direct_amt}) to deposit flow for user {user_id}")
+            process_deposit_amount_step(message)
             return
 
         if parsed_direct_amt and 0 < parsed_direct_amt < 50000:
