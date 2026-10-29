@@ -217,6 +217,29 @@ def validate_iranian_sheba(sheba: str) -> bool:
             
     return int(numeric_str) % 97 == 1
 
+def validate_iranian_national_code(code: str) -> bool:
+    """
+    اعتبارسنجی دقیق الگوریتم کد ملی ۱۰ رقمی ایران:
+    - دقیقاً ۱۰ رقم عددی
+    - رقم کنترل (Check Digit) با ضریب ۱۰ تا ۲ به مد ۱۱
+    - رد کدهای نامعتبر یکسان (مثل 0000000000، 1111111111 و...)
+    """
+    if not code:
+        return False
+    clean = fa_to_en_digits(str(code)).strip()
+    if not re.fullmatch(r"^\d{10}$", clean):
+        return False
+    
+    # رد کدهای ده رقمی یکسان تکراری
+    if len(set(clean)) == 1:
+        return False
+
+    check = int(clean[9])
+    s = sum(int(clean[i]) * (10 - i) for i in range(9))
+    r = s % 11
+    return (r < 2 and check == r) or (r >= 2 and check == 11 - r)
+
+
 def sanitize_bank_input(text: str) -> str:
     """پاکسازی فوق‌حرفه‌ای ورودی بانک (تبدیل اعداد، حذف فواصل و کاراکترهای مزاحم)"""
     if not text:
@@ -619,6 +642,52 @@ def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_
             bot.send_photo(target, file_id, caption=text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             logger.warning(f"Failed to notify admin {target} about receipt: {e}")
+
+def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: str, national_id: str):
+    """
+    ارسال اعلان درخواست احراز هویت جدید (کد ملی) به ادمین‌ها با دکمه‌های شیشه‌ای تایید و رد.
+    همانند زیرساخت تایید فیش واریزی، امکان تایید یا رد مستقیم برای مدیریت را فراهم می‌کند.
+    """
+    import keyboards as kb
+    from config import config
+    
+    clean_nid = fa_to_en_digits(str(national_id or "")).strip()
+    clean_phone = str(phone_number or "ثبت نشده").strip()
+    safe_name = escape_html(str(full_name or f"کاربر {user_id}").strip())
+    
+    valid_format = validate_iranian_national_code(clean_nid)
+    status_fmt = "✅ رقم کنترل معتبر" if valid_format else "⚠️ ساختار غیرمعیار"
+    
+    text = (
+        f"🆔 <b>درخواست احراز هویت جدید (کد ملی)</b>\n"
+        f"──────────────────\n"
+        f"👤 نام و نام خانوادگی: <b>{safe_name}</b>\n"
+        f"🔢 کد ملی: <code>{clean_nid}</code> ({status_fmt})\n"
+        f"📱 شماره موبایل: <code>{clean_phone}</code>\n"
+        f"🆔 شناسه کاربر (ID): <code>{user_id}</code>\n"
+        f"📅 زمان ثبت درخواست: <code>{get_tehran_now_jalali_str()}</code>\n"
+        f"──────────────────\n"
+        f"جهت بررسی و ثبت نظر، لطفاً از دکمه‌های زیر استفاده فرمایید:"
+    )
+    
+    markup = kb.get_kyc_admin_action_inline(user_id, clean_nid)
+    
+    admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
+    if getattr(config, 'ARCHIVE_CHANNEL_ID', None):
+        admin_targets.append(config.ARCHIVE_CHANNEL_ID)
+    if getattr(config, 'LOG_CHANNEL_ID', None):
+        admin_targets.append(config.LOG_CHANNEL_ID)
+        
+    sent_any = False
+    for target in {t for t in admin_targets if t}:
+        try:
+            bot.send_message(target, text, parse_mode="HTML", reply_markup=markup)
+            sent_any = True
+        except Exception as e:
+            logger.warning(f"Failed to notify admin {target} about KYC: {e}")
+            
+    return sent_any
+
 
 def notify_archive(
     bot,

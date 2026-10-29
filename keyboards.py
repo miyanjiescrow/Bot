@@ -530,6 +530,38 @@ def get_deposit_action_inline(tx_id: str, user_id: int, amount: float) -> Inline
     return markup
 
 
+def get_kyc_admin_action_inline(user_id: int, national_id: str = "") -> InlineKeyboardMarkup:
+    """دکمه‌های تصمیم‌گیری تایید یا رد کد ملی برای ادمین (زیرساخت اختصاصی احراز هویت)"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    nid_str = str(national_id or "").strip()
+    markup.add(
+        InlineKeyboardButton("✅ تایید احراز هویت", callback_data=f"adm:kyc:appr:{user_id}:{nid_str}"),
+        InlineKeyboardButton("❌ رد احراز هویت", callback_data=f"adm:kyc:rej:{user_id}:{nid_str}")
+    )
+    markup.add(
+        InlineKeyboardButton("📋 لیست احراز هویت‌ها", callback_data="adm:pending_kyc"),
+        InlineKeyboardButton("🏠 بازگشت به پنل", callback_data="adm:home")
+    )
+    return markup
+
+
+def get_pending_kyc_list_inline(requests: list) -> InlineKeyboardMarkup:
+    """لیست دکمه‌ای درخواست‌های احراز هویت در انتظار تایید ادمین"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    for req in requests:
+        uid = req.get("id") or req.get("user_id")
+        name = req.get("full_name") or f"کاربر {uid}"
+        nid = req.get("national_id") or "---"
+        markup.add(InlineKeyboardButton(
+            f"🆔 {name} | کد ملی: {nid} | ID: {uid}",
+            callback_data=f"adm:kyc:view:{uid}"
+        ))
+    markup.add(InlineKeyboardButton("🔄 بروزرسانی لیست", callback_data="adm:pending_kyc"))
+    markup.add(InlineKeyboardButton("🔙 بازگشت به پنل ادمین", callback_data="adm:home"))
+    return markup
+
+
+
 def get_withdrawal_action_inline(req_id) -> InlineKeyboardMarkup:
     """دکمه‌های تصمیم‌گیری روی یک درخواست برداشت مشخص"""
     markup = InlineKeyboardMarkup(row_width=2)
@@ -1061,6 +1093,7 @@ def get_admin_panel_keyboard(quick_stats: dict = None, is_owner: bool = False) -
     withdrawals_badge = f" 🔴{qs.get('withdrawals', 0)}" if qs.get("withdrawals") else ""
     deal_receipts_badge = f" 🔴{qs.get('deal_receipts', 0)}" if qs.get("deal_receipts") else ""
     deposit_receipts_badge = f" 🔴{qs.get('deposit_receipts', 0)}" if qs.get("deposit_receipts") else ""
+    kyc_badge = f" 🔴{qs.get('kyc_requests', 0)}" if qs.get("kyc_requests") else ""
 
     markup = InlineKeyboardMarkup(row_width=2)
     
@@ -1076,23 +1109,24 @@ def get_admin_panel_keyboard(quick_stats: dict = None, is_owner: bool = False) -
         InlineKeyboardButton(f"💰 تراکنش‌های معلق{deposit_receipts_badge}", callback_data="adm:pending_deposits")
     )
     
-    # ردیف ۳: برداشت و نمودار تراکنش‌ها
+    # ردیف ۳: برداشت و احراز هویت کاربران
     markup.add(
         InlineKeyboardButton(f"💸 درخواست‌های برداشت{withdrawals_badge}", callback_data="adm:withdrawals"),
-        InlineKeyboardButton("📊 نمودار تراکنش‌ها", callback_data="adm:stats_chart")
+        InlineKeyboardButton(f"🆔 احراز هویت‌ها{kyc_badge}", callback_data="adm:pending_kyc")
     )
     
-    # ردیف ۴: لیست سیاه و پیام همگانی
+    # ردیف ۴: نمودار و لیست سیاه
     markup.add(
-        InlineKeyboardButton("🚫 لیست سیاه", callback_data="adm:blacklist"),
-        InlineKeyboardButton("📢 پیام همگانی", callback_data="adm:broadcast")
+        InlineKeyboardButton("📊 نمودار تراکنش‌ها", callback_data="adm:stats_chart"),
+        InlineKeyboardButton("🚫 لیست سیاه", callback_data="adm:blacklist")
     )
     
-    # ردیف ۵: پیام مستقیم و مدیریت سفیران
+    # ردیف ۵: پیام همگانی و پیام مستقیم
     markup.add(
-        InlineKeyboardButton("✉️ پیام مستقیم", callback_data="adm:direct_msg"),
-        InlineKeyboardButton("🤝 مدیریت سفیران", callback_data="adm:ambassadors")
+        InlineKeyboardButton("📢 پیام همگانی", callback_data="adm:broadcast"),
+        InlineKeyboardButton("✉️ پیام مستقیم", callback_data="adm:direct_msg")
     )
+
     
     # ردیف ۶: بونوس و گزارش مالی
     markup.add(

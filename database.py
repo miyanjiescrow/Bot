@@ -657,36 +657,242 @@ def update_user_phone(user_id: int, phone_number: str) -> bool:
         return False
 
 
-def update_user_identity(user_id: int, full_name: str = None, national_id: str = None, first_name_real: str = None, last_name_real: str = None, is_verified: bool = None) -> bool:
+def update_user_identity(user_id: int, full_name: str = None, national_id: str = None, first_name_real: str = None, last_name_real: str = None, is_verified: bool = None, kyc_status: str = None) -> bool:
     """
-    بروزرسانی اطلاعات احراز هویت کاربر (نام کامل، کد ملی، وضعیت تایید).
+    بروزرسانی اطلاعات احراز هویت کاربر (نام کامل، کد ملی، وضعیت تایید) با پشتیبانی کامل از رم و سوپابیس.
     """
-    if not supabase:
-        return False
-    try:
+    with db_lock:
         update_data: Dict[str, Any] = {}
         if full_name and full_name.strip():
             update_data["full_name"] = full_name.strip()
         if national_id and national_id.strip():
-            update_data["national_id"] = national_id.strip()
+            update_data["national_id"] = utils.fa_to_en_digits(national_id.strip())
         if is_verified is not None:
             update_data["is_verified"] = is_verified
+        if kyc_status:
+            update_data["kyc_status"] = kyc_status
 
-        if not update_data:
+        # بروزرسانی حافظه رم و کش
+        user = _in_memory_users.get(user_id) or {}
+        user["id"] = user_id
+        user.update(update_data)
+        _in_memory_users[user_id] = user
+        if user_id in _user_info_cache:
+            _user_info_cache[user_id].update(update_data)
+        else:
+            _user_info_cache[user_id] = dict(user)
+        _user_info_last_update[user_id] = datetime.now()
+
+        if not supabase:
             return True
 
-        res = supabase.table("users").update(update_data).eq("id", user_id).execute()
-        _clear_user_cache(user_id)
-        if not res.data:
-            update_data["id"] = user_id
-            res = supabase.table("users").upsert(update_data).execute()
+        try:
+            if not update_data:
+                return True
+
+            res = supabase.table("users").update(update_data).eq("id", user_id).execute()
+            _clear_user_cache(user_id)
             if not res.data:
-                logger.warning(f"Identity upsert for user {user_id} returned no data.")
-                return False
+                update_data["id"] = user_id
+                res = supabase.table("users").upsert(update_data).execute()
+            return True
+        except Exception as e:
+            logger.error(f"خطا در بروزرسانی اطلاعات احراز هویت کاربر {user_id}: {e}", exc_info=True)
+            # اگر ستون اختیاری در دیتابیس نبود، حداقل فیلدهای پایه را ثبت کن
+            try:
+                base_data = {k: v for k, v in update_data.items() if k in ["full_name", "national_id", "is_verified"]}
+                if base_data:
+                    supabase.table("users").update(base_data).eq("id", user_id).execute()
+            except Exception:
+                pass
+            return True
+
+
+def submit_kyc_request(user_id: int, national_id: str, full_name: str = None, phone_number: str = None) -> bool:
+    """
+    ثبت درخواست احراز هویت و بررسی کد ملی کاربر جهت ارسال به مدیریت (وضعیت: pending)
+    """
+    clean_nid = utils.fa_to_en_digits(str(national_id or "")).strip()
+    with db_lock:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        user = _in_memory_users.get(user_id) or get_user(user_id) or {}
+        user["id"] = user_id
+        user["national_id"] = clean_nid
+        user["kyc_status"] = "pending"
+        user["is_verified"] = False
+        user["kyc_submitted_at"] = now_iso
+        if full_name and full_name.strip():
+            user["full_name"] = full_name.strip()
+        if phone_number and phone_number.strip():
+            user["phone_number"] = phone_number.strip()
+        
+        _in_memory_users[user_id] = user
+        if user_id in _user_info_cache:
+            _user_info_cache[user_id].update(user)
+        else:
+            _user_info_cache[user_id] = dict(user)
+        _user_info_last_update[user_id] = datetime.now()
+
+        if supabase:
+            try:
+                update_payload = {
+                    "national_id": clean_nid,
+                    "is_verified": False,
+                    "kyc_status": "pending",
+                    "kyc_submitted_at": now_iso
+                }
+                if full_name:
+                    update_payload["full_name"] = full_name.strip()
+                if phone_number:
+                    update_payload["phone_number"] = phone_number.strip()
+                
+                try:
+                    res = supabase.table("users").update(update_payload).eq("id", user_id).execute()
+                    if not res.data:
+                        update_payload["id"] = user_id
+                        supabase.table("users").upsert(update_payload).execute()
+                except Exception as col_err:
+                    logger.warning(f"Fallback kyc columns in users table: {col_err}")
+                    fallback_payload = {"national_id": clean_nid, "is_verified": False}
+                    if full_name: fallback_payload["full_name"] = full_name.strip()
+                    if phone_number: fallback_payload["phone_number"] = phone_number.strip()
+                    supabase.table("users").update(fallback_payload).eq("id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Error persisting KYC request to Supabase for {user_id}: {e}")
         return True
-    except Exception as e:
-        logger.error(f"خطا در بروزرسانی اطلاعات احراز هویت کاربر {user_id}: {e}", exc_info=True)
+
+
+def approve_user_kyc(user_id: int, national_id: str = None) -> bool:
+    """
+    تایید احراز هویت و کد ملی کاربر توسط ادمین (وضعیت: approved، is_verified: True)
+    """
+    with db_lock:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        user = _in_memory_users.get(user_id) or get_user(user_id) or {}
+        user["id"] = user_id
+        user["is_verified"] = True
+        user["kyc_status"] = "approved"
+        user["kyc_level"] = "gold"
+        user["kyc_verified_at"] = now_iso
+        if national_id:
+            user["national_id"] = utils.fa_to_en_digits(str(national_id)).strip()
+        
+        _in_memory_users[user_id] = user
+        if user_id in _user_info_cache:
+            _user_info_cache[user_id].update(user)
+        else:
+            _user_info_cache[user_id] = dict(user)
+        _user_info_last_update[user_id] = datetime.now()
+
+        if supabase:
+            try:
+                update_payload = {
+                    "is_verified": True,
+                    "kyc_status": "approved",
+                    "kyc_level": "gold",
+                    "kyc_verified_at": now_iso
+                }
+                if national_id:
+                    update_payload["national_id"] = utils.fa_to_en_digits(str(national_id)).strip()
+                try:
+                    supabase.table("users").update(update_payload).eq("id", user_id).execute()
+                except Exception as col_err:
+                    logger.warning(f"Fallback kyc columns update in Supabase: {col_err}")
+                    fallback = {"is_verified": True}
+                    if national_id:
+                        fallback["national_id"] = utils.fa_to_en_digits(str(national_id)).strip()
+                    supabase.table("users").update(fallback).eq("id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Error approving user KYC in Supabase: {e}")
+
+        _clear_user_cache(user_id)
+        return True
+
+
+def reject_user_kyc(user_id: int, reason: str = None) -> bool:
+    """
+    رد احراز هویت کاربر توسط ادمین (وضعیت: rejected، is_verified: False)
+    """
+    with db_lock:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        user = _in_memory_users.get(user_id) or get_user(user_id) or {}
+        user["id"] = user_id
+        user["is_verified"] = False
+        user["kyc_status"] = "rejected"
+        user["kyc_reject_reason"] = reason or "عدم تطابق یا نقص اطلاعات"
+        user["kyc_rejected_at"] = now_iso
+        
+        _in_memory_users[user_id] = user
+        if user_id in _user_info_cache:
+            _user_info_cache[user_id].update(user)
+        else:
+            _user_info_cache[user_id] = dict(user)
+        _user_info_last_update[user_id] = datetime.now()
+
+        if supabase:
+            try:
+                update_payload = {
+                    "is_verified": False,
+                    "kyc_status": "rejected",
+                    "kyc_reject_reason": reason or "عدم تطابق یا نقص اطلاعات",
+                    "kyc_rejected_at": now_iso
+                }
+                try:
+                    supabase.table("users").update(update_payload).eq("id", user_id).execute()
+                except Exception as col_err:
+                    logger.warning(f"Fallback kyc reject columns in Supabase: {col_err}")
+                    supabase.table("users").update({"is_verified": False}).eq("id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Error rejecting user KYC in Supabase: {e}")
+
+        _clear_user_cache(user_id)
+        return True
+
+
+def get_pending_kyc_requests() -> List[Dict[str, Any]]:
+    """
+    دریافت لیست تمام کاربران در انتظار بررسی احراز هویت
+    """
+    pending = []
+    with db_lock:
+        for u in _in_memory_users.values():
+            if u.get("kyc_status") == "pending" and not u.get("is_verified"):
+                pending.append(dict(u))
+    
+    if supabase:
+        try:
+            res = supabase.table("users").select("*").eq("kyc_status", "pending").eq("is_verified", False).order("created_at", desc=True).execute()
+            for row in (res.data or []):
+                if not any(p["id"] == row["id"] for p in pending):
+                    pending.append(row)
+        except Exception as e:
+            logger.warning(f"Error querying pending kyc from Supabase: {e}")
+    return pending
+
+
+def is_national_id_taken(national_id: str, exclude_user_id: Optional[int] = None) -> bool:
+    """بررسی اینکه آیا کد ملی قبلاً توسط کاربر دیگری ثبت و تایید شده است یا خیر"""
+    if not national_id:
         return False
+    nid = utils.fa_to_en_digits(str(national_id)).strip()
+    with db_lock:
+        for uid, u in _in_memory_users.items():
+            if exclude_user_id and uid == exclude_user_id:
+                continue
+            if u.get("is_verified") and u.get("national_id") == nid:
+                return True
+    if supabase:
+        try:
+            q = supabase.table("users").select("id").eq("national_id", nid).eq("is_verified", True)
+            if exclude_user_id:
+                q = q.neq("id", exclude_user_id)
+            res = q.execute()
+            if res.data and len(res.data) > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
 
 
 # حافظه موقت برای اطلاعات کاربران جهت افزایش سرعت آنی
@@ -2462,9 +2668,13 @@ def get_admin_audit_logs(limit: int = 20, admin_id: Optional[int] = None) -> Lis
 def get_admin_quick_stats() -> Dict[str, int]:
     """
     دریافت تعداد موارد نیازمند اقدام فوری برای نمایش «بج» در منوی پنل ادمین:
-    پرونده‌های داوری باز، درخواست‌های برداشت در انتظار، فیش‌های تایید‌نشده.
+    پرونده‌های داوری باز، درخواست‌های برداشت در انتظار، فیش‌های تایید‌نشده، احراز هویت‌های در انتظار.
     """
-    stats = {"disputes": 0, "withdrawals": 0, "deal_receipts": 0, "deposit_receipts": 0}
+    stats = {"disputes": 0, "withdrawals": 0, "deal_receipts": 0, "deposit_receipts": 0, "kyc_requests": 0}
+    
+    with db_lock:
+        stats["kyc_requests"] = sum(1 for u in _in_memory_users.values() if u.get("kyc_status") == "pending" and not u.get("is_verified"))
+
     if not supabase:
         return stats
     try:
@@ -2487,6 +2697,12 @@ def get_admin_quick_stats() -> Dict[str, int]:
         # فیش‌های شارژ کیف پول (تراکنش‌های معلق)
         r4 = supabase.table("pending_receipts").select("id", count="exact").eq("status", "pending").eq("type", "wallet").execute()
         stats["deposit_receipts"] = r4.count or len(r4.data or [])
+    except Exception:
+        pass
+    try:
+        # درخواست‌های احراز هویت در انتظار
+        r5 = supabase.table("users").select("id", count="exact").eq("kyc_status", "pending").eq("is_verified", False).execute()
+        stats["kyc_requests"] = max(stats["kyc_requests"], r5.count or len(r5.data or []))
     except Exception:
         pass
     return stats

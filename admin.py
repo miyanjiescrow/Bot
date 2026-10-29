@@ -558,6 +558,190 @@ def register_admin_handlers(bot: TeleBot):
         else:
             bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
+    # ۳.۲ احراز هویت و بررسی کدهای ملی کاربران (KYC Verification Infrastructure)
+    @bot.callback_query_handler(func=lambda call: call.data == "adm:pending_kyc")
+    def show_pending_kyc(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ دسترسی ندارید.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+
+        try:
+            pending_kyc = db.get_pending_kyc_requests()
+        except Exception as e:
+            logger.error(f"خطا در دریافت درخواست‌های احراز هویت: {e}")
+            pending_kyc = []
+
+        if not pending_kyc:
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🏠 بازگشت به پنل ادمین", callback_data="adm:home"))
+            bot.edit_message_text(
+                "🆔 **درخواست احراز هویتی در انتظار تایید وجود ندارد.**",
+                call.message.chat.id, call.message.message_id,
+                parse_mode="Markdown", reply_markup=markup
+            )
+            return
+
+        bot.edit_message_text(
+            f"🆔 **درخواست‌های احراز هویت در انتظار بررسی ({len(pending_kyc)})**\n"
+            "برای بررسی و تصمیم‌گیری، کاربر موردنظر را انتخاب کنید:",
+            call.message.chat.id, call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=kb.get_pending_kyc_list_inline(pending_kyc)
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("adm:kyc:view:"))
+    def view_kyc_request(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ دسترسی ندارید.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        
+        try:
+            uid = int(call.data.replace("adm:kyc:view:", "", 1))
+        except ValueError:
+            bot.answer_callback_query(call.id, "❌ شناسه نامعتبر است.", show_alert=True)
+            return
+
+        user = db.get_user(uid)
+        if not user:
+            bot.answer_callback_query(call.id, "❌ کاربر یافت نشد.", show_alert=True)
+            return
+
+        nid = user.get("national_id", "---")
+        full_name = user.get("full_name") or f"کاربر {uid}"
+        phone = user.get("phone_number") or "ثبت‌نشده"
+        reg_time = user.get("created_at") or user.get("kyc_submitted_at") or "---"
+        balance = utils.format_currency(float(user.get("wallet_balance", 0) or 0))
+        
+        valid_nid = utils.validate_iranian_national_code(nid)
+        status_fmt = "✅ رقم کنترل معتبر" if valid_nid else "⚠️ نیازمند بررسی دستی"
+
+        text = (
+            f"🆔 <b>بررسی درخواست احراز هویت کاربر</b>\n"
+            f"──────────────────\n"
+            f"👤 نام و نام خانوادگی: <b>{utils.escape_html(full_name)}</b>\n"
+            f"🔢 کد ملی: <code>{nid}</code> ({status_fmt})\n"
+            f"📱 شماره موبایل: <code>{phone}</code>\n"
+            f"🆔 شناسه کاربر (ID): <code>{uid}</code>\n"
+            f"💰 موجودی کیف پول: <code>{balance}</code> تومان\n"
+            f"📅 تاریخ ثبت: <code>{reg_time}</code>\n"
+            f"──────────────────\n"
+            f"تصمیم مدیریت:"
+        )
+
+        markup = kb.get_kyc_admin_action_inline(uid, nid)
+        bot.edit_message_text(
+            text,
+            call.message.chat.id, call.message.message_id,
+            parse_mode="HTML", reply_markup=markup
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("adm:kyc:appr:", "approve_kyc:")))
+    def admin_approve_kyc(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ دسترسی ندارید.", show_alert=True)
+            return
+
+        parts = call.data.split(":")
+        if call.data.startswith("adm:kyc:appr:"):
+            target_uid = int(parts[3])
+            national_id = parts[4] if len(parts) > 4 else ""
+        else:
+            target_uid = int(parts[1])
+            national_id = parts[2] if len(parts) > 2 else ""
+
+        user_info = db.get_user(target_uid) or {}
+        if not national_id:
+            national_id = user_info.get("national_id", "")
+        admin_name = call.from_user.first_name or "مدیریت"
+
+        if db.approve_user_kyc(target_uid, national_id):
+            bot.answer_callback_query(call.id, "✅ احراز هویت کاربر تایید شد.", show_alert=True)
+            new_text = (call.message.text or call.message.caption or "") + f"\n\n✅ <b>احراز هویت و کد ملی تایید شد توسط {utils.escape_html(admin_name)}</b>"
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("📋 لیست احراز هویت‌ها", callback_data="adm:pending_kyc"))
+            markup.add(InlineKeyboardButton("🏠 بازگشت به پنل", callback_data="adm:home"))
+            try:
+                bot.edit_message_text(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                try:
+                    bot.edit_message_caption(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+                except Exception:
+                    pass
+
+            full_name = user_info.get("full_name") or f"کاربر {target_uid}"
+            user_msg = (
+                "🎉 **تبریک! احراز هویت شما با موفقیت تایید شد.**\n"
+                "──────────────────\n"
+                f"👤 **نام و نام خانوادگی:** {full_name}\n"
+                f"🔢 **کد ملی تایید شده:** `{national_id}`\n\n"
+                "✅ حساب کاربری شما اکنون **احراز هویت شده (طلایی)** است و دسترسی کامل به تمامی امکانات سامانه (ثبت معامله، کیف پول و برداشت وجه) برای شما فعال گردید."
+            )
+            try:
+                is_adm = is_admin(target_uid)
+                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_main_menu(is_adm))
+            except Exception as e:
+                logger.warning(f"Error notifying user {target_uid} of KYC approval: {e}")
+
+            db.log_admin_action(call.from_user.id, "approve_kyc", f"user={target_uid} nid={national_id}", target_id=target_uid)
+        else:
+            bot.answer_callback_query(call.id, "❌ خطا در تایید احراز هویت.", show_alert=True)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("adm:kyc:rej:", "reject_kyc:")))
+    def admin_reject_kyc(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ دسترسی ندارید.", show_alert=True)
+            return
+
+        parts = call.data.split(":")
+        if call.data.startswith("adm:kyc:rej:"):
+            target_uid = int(parts[3])
+            national_id = parts[4] if len(parts) > 4 else ""
+        else:
+            target_uid = int(parts[1])
+            national_id = parts[2] if len(parts) > 2 else ""
+
+        user_info = db.get_user(target_uid) or {}
+        if not national_id:
+            national_id = user_info.get("national_id", "")
+        admin_name = call.from_user.first_name or "مدیریت"
+
+        if db.reject_user_kyc(target_uid, reason="عدم تطابق مشخصات یا نقص مدارک"):
+            bot.answer_callback_query(call.id, "❌ احراز هویت کاربر رد شد.", show_alert=True)
+            new_text = (call.message.text or call.message.caption or "") + f"\n\n❌ <b>احراز هویت رد شد توسط {utils.escape_html(admin_name)}</b>"
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("📋 لیست احراز هویت‌ها", callback_data="adm:pending_kyc"))
+            markup.add(InlineKeyboardButton("🏠 بازگشت به پنل", callback_data="adm:home"))
+            try:
+                bot.edit_message_text(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                try:
+                    bot.edit_message_caption(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+                except Exception:
+                    pass
+
+            user_msg = (
+                "⚠️ **نتیجه بررسی احراز هویت**\n"
+                "──────────────────\n"
+                f"کاربر گرامی، اطلاعات کد ملی ارسالی شما (`{national_id}`) توسط مدیریت سامانه مورد تایید قرار نگرفت.\n\n"
+                "📌 **علل احتمالی:**\n"
+                "• عدم تطابق شماره سیم‌کارت با کد ملی ارائه‌شده\n"
+                "• اشتباه تایپی در ارقام کد ملی\n"
+                "• عدم تطابق نام و نام خانوادگی با شناسنامه\n\n"
+                "💡 لطفاً از بخش «👤 پروفایل کاربری» -> «🔐 احراز هویت هوشمند» اقدام به ثبت مجدد اطلاعات صحیح نمایید یا به پشتیبانی پیام دهید."
+            )
+            try:
+                is_adm = is_admin(target_uid)
+                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_main_menu(is_adm))
+            except Exception as e:
+                logger.warning(f"Error notifying user {target_uid} of KYC rejection: {e}")
+
+            db.log_admin_action(call.from_user.id, "reject_kyc", f"user={target_uid} nid={national_id}", target_id=target_uid)
+        else:
+            bot.answer_callback_query(call.id, "❌ خطا در رد احراز هویت.", show_alert=True)
+
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("adm:receipt:view:"))
     def view_receipt(call: CallbackQuery):
         if not is_admin(call.from_user.id):
