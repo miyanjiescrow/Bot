@@ -475,6 +475,17 @@ def register_user_handlers(bot: TeleBot):
         card_holder = "امیررضا مجتبایی (میانجی)"
         amount_formatted = f"{amount:,.0f}"
 
+        # ثبت آنی وضعیت انتظار فیش پرداخت با داده‌های کامل
+        state_data = {
+            "payment_type": payment_type,
+            "related_id": str(related_id),
+            "amount": float(amount)
+        }
+        if milestone_idx is not None:
+            state_data["milestone_idx"] = milestone_idx
+
+        db.set_user_state(user_id, "WAITING_FOR_PAYMENT_RECEIPT", state_data)
+
         if payment_type == 'wallet_charge':
             title_html = "🏦 <b>شارژ حساب کاربری (کارت به کارت)</b>"
             # دکمه‌های اینلاین هوشمند برای ارسال فیش، تغییر مبلغ و انصراف
@@ -494,8 +505,8 @@ def register_user_handlers(bot: TeleBot):
                 f"👤 بنام: <b>{card_holder}</b>\n"
                 f"🔢 شناسه پیگیری سیستم: <code>#{related_id}</code>\n\n"
                 "⚠️ <b>مراحل بعدی:</b>\n"
-                "پس از انتقال وجه از طریق نرم‌افزار بانکی خود، روی دکمه <b>«📸 ارسال فیش واریزی»</b> در زیر کلیک کنید و تصویر فیش را ارسال نمایید.\n"
-                "به محض بررسی و تایید مدیریت، موجودی کیف پول شما فوراً شارژ خواهد شد."
+                "پس از انتقال وجه، <b>تصویر فیش واریزی را همین الان در این گفتگو ارسال نمایید</b> (یا دکمه «📸 ارسال فیش واریزی» زیر را لمس کنید).\n"
+                "به محض بررسی و تایید، موجودی کیف پول شما فوراً شارژ خواهد شد."
             )
 
             try:
@@ -508,36 +519,23 @@ def register_user_handlers(bot: TeleBot):
                     f"شماره کارت میانجی: {card_num}\n"
                     f"بنام: {card_holder}\n"
                     f"شناسه پیگیری: #{related_id}\n\n"
-                    "پس از واریز، روی دکمه «ارسال فیش واریزی» زیر کلیک کنید."
+                    "تصویر فیش واریزی را ارسال فرمایید یا دکمه ارسال فیش را لمس نمایید."
                 )
                 try:
                     bot.send_message(chat_id, plain_txt, reply_markup=inst_kb)
                 except Exception as e2:
                     logger.error(f"Failed plain fallback: {e2}")
 
-            # [ANTI-FREEZE] بازگرداندن کیبورد منوی اصلی به کاربر تا هرگز قفل نشود
             try:
-                is_adm = is_admin_user(user_id)
                 bot.send_message(
                     chat_id,
-                    "📋 <i>کیبورد منوی اصلی شما فعال است. پس از واریز، دکمه «📸 ارسال فیش واریزی» در پیام بالا را لمس نمایید.</i>",
+                    "📸 <i>سیستم آماده دریافت تصویر فیش شماست. عکس فیش را بفرستید، یا دکمه «❌ انصراف» را لمس نمایید:</i>",
                     parse_mode="HTML",
-                    reply_markup=_get_main_menu_for_user(user_id, is_adm)
+                    reply_markup=kb.get_cancel_keyboard()
                 )
             except Exception:
                 pass
             return
-
-        # برای پرداخت قراردادها و مراحل
-        state_data = {
-            "payment_type": payment_type,
-            "related_id": str(related_id),
-            "amount": float(amount)
-        }
-        if milestone_idx is not None:
-            state_data["milestone_idx"] = milestone_idx
-
-        db.set_user_state(user_id, "WAITING_FOR_PAYMENT_RECEIPT", state_data)
 
         if payment_type == 'contract_payment':
             title_html = f"💳 <b>پرداخت معامله <code>{related_id}</code></b>"
@@ -579,8 +577,8 @@ def register_user_handlers(bot: TeleBot):
         """
         logger.info(f"💳 [TOPUP_START] User {user_id} in Chat {chat_id} started deposit flow.")
         
-        # ۱. وضعیت کاربر بلافاصله و با اطمینان ۱۰۰٪ روی AWAITING_TOPUP_AMOUNT تنظیم می‌شود
-        db.set_user_state(user_id, "AWAITING_TOPUP_AMOUNT", {})
+        # ۱. وضعیت کاربر بلافاصله و با اطمینان ۱۰۰٪ روی WAITING_DEPOSIT_AMOUNT تنظیم می‌شود
+        db.set_user_state(user_id, "WAITING_DEPOSIT_AMOUNT", {})
 
         topup_cancel_inline = InlineKeyboardMarkup(row_width=1)
         topup_cancel_inline.add(
@@ -590,8 +588,9 @@ def register_user_handlers(bot: TeleBot):
         msg_text = (
             "🏦 <b>شارژ حساب کاربری (کارت به کارت)</b>\n\n"
             "لطفاً مبلغی که قصد واریز دارید را به <b>تومان</b> وارد کنید:\n"
-            "<i>(حداقل مبلغ شارژ: ۵۰,۰۰۰ تومان)</i>\n\n"
+            "<i>(حداقل مبلغ شارژ: ۱۰,۰۰۰ تومان)</i>\n\n"
             "💡 <b>مثال‌های معتبر:</b>\n"
+            "• <code>10000</code>\n"
             "• <code>50000</code>\n"
             "• <code>۱۰۰,۰۰۰</code>\n"
             "• <code>۵۰ هزار</code>\n"
@@ -609,7 +608,7 @@ def register_user_handlers(bot: TeleBot):
             logger.warning(f"Failed to send HTML topup prompt, fallback plain text: {e}")
             bot.send_message(
                 chat_id,
-                "شارژ حساب کاربری\n\nلطفاً مبلغ مورد نظر را به تومان وارد کنید (حداقل ۵۰,۰۰۰ تومان):\nمثال: 50000\n\nیا ارسال 'انصراف' برای بازگشت",
+                "شارژ حساب کاربری\n\nلطفاً مبلغ مورد نظر را به تومان وارد کنید (حداقل ۱۰,۰۰۰ تومان):\nمثال: 50000\n\nیا ارسال 'انصراف' برای بازگشت",
                 reply_markup=kb.get_cancel_keyboard()
             )
 
@@ -630,13 +629,13 @@ def register_user_handlers(bot: TeleBot):
             uid = msg.from_user.id if getattr(msg, 'from_user', None) else getattr(msg.chat, 'id', None)
             if not uid: return False
             st, _ = db.get_user_state(uid)
-            return st in ["AWAITING_TOPUP_AMOUNT", "WAITING_DEPOSIT_AMOUNT"]
+            return st in ["WAITING_DEPOSIT_AMOUNT", "AWAITING_TOPUP_AMOUNT"]
         except Exception:
             return False
 
     @bot.message_handler(func=_is_in_deposit_state, content_types=['text'])
     def process_deposit_amount_step(message: Message):
-        """[CORE_FIX] دریافت و پردازش مبلغ شارژ با اولویت بالا، پاکسازی آنی State و اعتبارسنجی کامل ورودی"""
+        """[CORE_FIX] دریافت و پردازش مبلغ شارژ با اولویت بالا و انتقال بی‌درنگ به مرحله فیش پرداخت"""
         user_id = message.from_user.id if message.from_user else message.chat.id
         text = (message.text or "").strip()
         state, _ = db.get_user_state(user_id)
@@ -688,8 +687,9 @@ def register_user_handlers(bot: TeleBot):
                 message.chat.id, 
                 "❌ <b>مبلغ وارد شده نامعتبر است.</b>\n\n"
                 "لطفاً مبلغ شارژ را فقط به‌صورت <b>عدد (به تومان)</b> وارد کنید.\n"
-                "<i>(حداقل مبلغ شارژ: ۵۰,۰۰۰ تومان)</i>\n\n"
+                "<i>(حداقل مبلغ شارژ: ۱۰,۰۰۰ تومان)</i>\n\n"
                 "💡 <b>نمونه‌های معتبر:</b>\n"
+                "• <code>10000</code>\n"
                 "• <code>50000</code>\n"
                 "• <code>100,000</code>\n"
                 "• <code>۵۰ هزار</code>\n"
@@ -701,18 +701,18 @@ def register_user_handlers(bot: TeleBot):
             return
 
         amount = int(parsed_amount)
-        # ۴. بررسی سقف حداقل ۵۰,۰۰۰ تومان
-        if amount < 50000:
+        # ۴. بررسی سقف حداقل ۱۰,۰۰۰ تومان
+        if amount < 10000:
             err_kb = InlineKeyboardMarkup(row_width=1)
             err_kb.add(
                 InlineKeyboardButton("❌ انصراف و بازگشت به منوی اصلی", callback_data="cancel_topup_action")
             )
             bot.send_message(
                 message.chat.id, 
-                "⚠️ <b>حداقل مبلغ شارژ ۵۰,۰۰۰ تومان است.</b>\n\n"
+                "⚠️ <b>حداقل مبلغ شارژ ۱۰,۰۰۰ تومان است.</b>\n\n"
                 f"مبلغ وارد شده (<b>{amount:,.0f} تومان</b>) کمتر از حداقل مجاز است.\n"
-                "لطفاً مبلغی معادل ۵۰,۰۰۰ تومان یا بیشتر وارد کنید:\n\n"
-                "💡 مثال: <code>50000</code> یا <code>۱۰۰۰۰۰</code>\n\n"
+                "لطفاً مبلغی معادل ۱۰,۰۰۰ تومان یا بیشتر وارد کنید:\n\n"
+                "💡 مثال: <code>10000</code> یا <code>50000</code> یا <code>۱۰۰۰۰۰</code>\n\n"
                 "یا در صورت انصراف، دکمه زیر را لمس نمایید:",
                 parse_mode="HTML",
                 reply_markup=err_kb
@@ -735,10 +735,7 @@ def register_user_handlers(bot: TeleBot):
             )
             return
 
-        # ۶. [CRITICAL_FIX] پاکسازی آنی State تا ربات در چرخه قفل نشود
-        db.clear_user_state(user_id)
-
-        # ۷. ایجاد تراکنش شارژ در دیتابیس / مموری با محافظت کامل در برابر خطای اتصال
+        # ۶. ایجاد تراکنش شارژ در دیتابیس / مموری با محافظت کامل در برابر خطای اتصال
         tx_id = None
         try:
             try:
@@ -768,6 +765,14 @@ def register_user_handlers(bot: TeleBot):
                     db._in_memory_transactions[str(tx_id)] = tx_record
             except Exception:
                 pass
+
+        # ۷. [SMART_TRANSITION] انتقال سریع و مطمئن کاربر به وضعیت انتظار فیش پرداخت
+        deposit_state_data = {
+            "payment_type": "wallet_charge",
+            "related_id": str(tx_id),
+            "amount": float(amount)
+        }
+        db.set_user_state(user_id, "WAITING_FOR_PAYMENT_RECEIPT", deposit_state_data)
 
         # ۸. ارسال دستورالعمل پرداخت کارت به کارت و فعال‌سازی مجدد رابط کاربری
         try:
@@ -2941,12 +2946,11 @@ def register_user_handlers(bot: TeleBot):
             return
 
         # دریافت اطلاعات تراکنش برای اطلاع‌رسانی به کاربر
-        res = db.supabase.table("transactions").select("*").eq("id", tx_id).execute()
-        if not res.data:
+        tx = db.get_transaction(tx_id)
+        if not tx:
             bot.answer_callback_query(call.id, "❌ تراکنش یافت نشد.")
             return
         
-        tx = res.data[0]
         user_id = tx["user_id"]
         amount_formatted = utils.format_currency(tx["amount"])
 
@@ -2954,7 +2958,10 @@ def register_user_handlers(bot: TeleBot):
             if db.approve_deposit_transaction(tx_id):
                 # آپدیت جدول متمرکز
                 try:
-                    db.supabase.table("pending_receipts").update({"status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", str(tx_id)).eq("type", "wallet").eq("status", "pending").execute()
+                    if db.supabase:
+                        db.supabase.table("pending_receipts").update({"status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", str(tx_id)).eq("type", "wallet").eq("status", "pending").execute()
+                    elif hasattr(db, 'update_pending_receipt_status'):
+                        db.update_pending_receipt_status(str(tx_id), "approved")
                 except: pass
 
                 bot.edit_message_caption(
@@ -2977,7 +2984,10 @@ def register_user_handlers(bot: TeleBot):
             if db.reject_deposit_transaction(tx_id):
                 # آپدیت جدول متمرکز
                 try:
-                    db.supabase.table("pending_receipts").update({"status": "rejected", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", str(tx_id)).eq("type", "wallet").eq("status", "pending").execute()
+                    if db.supabase:
+                        db.supabase.table("pending_receipts").update({"status": "rejected", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", str(tx_id)).eq("type", "wallet").eq("status", "pending").execute()
+                    elif hasattr(db, 'update_pending_receipt_status'):
+                        db.update_pending_receipt_status(str(tx_id), "rejected")
                 except: pass
 
                 bot.edit_message_caption(

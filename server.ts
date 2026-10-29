@@ -178,12 +178,61 @@ app.get('/api/bot/logs', (req: Request, res: Response) => {
   res.json({ logs: ['لاگی ثبت نشده است یا ربات تازه شروع به کار کرده است.'] });
 });
 
+let simulatorState: {
+  state: 'IDLE' | 'WAITING_DEPOSIT_AMOUNT' | 'WAITING_DEPOSIT_RECEIPT';
+  depositAmount: number;
+  txId: number;
+} = {
+  state: 'IDLE',
+  depositAmount: 0,
+  txId: 0
+};
+
+function parseFlexibleAmount(str: string): number | null {
+  if (!str) return null;
+  // Convert Persian/Arabic digits
+  const faDigits = '۰۱۲۳۴۵۶۷۸۹';
+  const arDigits = '٠١٢٣٤٥٦٧٨٩';
+  let cleaned = str;
+  for (let i = 0; i < 10; i++) {
+    cleaned = cleaned.replace(new RegExp(faDigits[i], 'g'), String(i));
+    cleaned = cleaned.replace(new RegExp(arDigits[i], 'g'), String(i));
+  }
+
+  let multiplier = 1;
+  if (/هزار|k|K/i.test(cleaned)) multiplier = 1000;
+  else if (/میلیون|m|M/i.test(cleaned)) multiplier = 1000000;
+  else if (/میلیارد|b|B/i.test(cleaned)) multiplier = 1000000000;
+
+  const numMatch = cleaned.match(/(\d+(?:[.,،_\s]\d+)*)/);
+  if (!numMatch) return null;
+
+  const rawNum = numMatch[1].replace(/[،,\s_]/g, '');
+  const val = parseFloat(rawNum) * multiplier;
+  return isNaN(val) || val <= 0 ? null : Math.round(val);
+}
+
 // Telegram Bot Command Simulator (allows testing bot directly from web console)
 app.post('/api/bot/simulate', (req: Request, res: Response) => {
   const { command, text } = req.body;
   const input = (text || command || '').trim();
 
+  // Cancel and Return to Main Menu
+  if (['انصراف', 'لغو', 'بازگشت', '🔙 بازگشت به منوی اصلی', '🔙 انصراف و بازگشت', '/cancel'].includes(input)) {
+    simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
+    return res.json({
+      reply: '🔙 **عملیات لغو شد و به منوی اصلی بازگشتید.**',
+      keyboard: [
+        ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
+        ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
+        ['🎧 پشتیبانی و راهنمای استفاده 📖'],
+        ['💎 پنل سفیران']
+      ]
+    });
+  }
+
   if (input === '/start' || input === 'شروع') {
+    simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
     return res.json({
       reply: 'سلام! به سامانه جامع اسکرو میانجی (Miyanji Escrow) خوش آمدید.\nپلتفرم ثبت قراردادهای الکترونیک و واسطه‌گری امن در بستر تلگرام و وب.',
       keyboard: [
@@ -191,6 +240,105 @@ app.post('/api/bot/simulate', (req: Request, res: Response) => {
         ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
         ['🎧 پشتیبانی و راهنمای استفاده 📖'],
         ['💎 پنل سفیران']
+      ]
+    });
+  }
+
+  // Handle Deposit Amount Input State
+  if (simulatorState.state === 'WAITING_DEPOSIT_AMOUNT') {
+    const parsed = parseFlexibleAmount(input);
+    if (!parsed) {
+      return res.json({
+        reply: '❌ **مبلغ وارد شده نامعتبر است.**\n\nلطفاً مبلغ شارژ را فقط به‌صورت عدد (به تومان) وارد کنید یا یکی از مقادیر زیر را انتخاب کنید:\n*(حداقل مبلغ: ۱۰,۰۰۰ تومان)*',
+        keyboard: [
+          ['50,000 تومان', '100,000 تومان'],
+          ['200,000 تومان', '500,000 تومان'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    if (parsed < 10000) {
+      return res.json({
+        reply: `⚠️ **حداقل مبلغ شارژ ۱۰,۰۰۰ تومان است.**\nمبلغ وارد شده (${formatCurrency(parsed)}) کمتر از سقف مجاز است.`,
+        keyboard: [
+          ['50,000 تومان', '100,000 تومان'],
+          ['200,000 تومان', '500,000 تومان'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    const txId = Math.floor(Date.now() % 10000000) + 100000;
+    simulatorState = {
+      state: 'WAITING_DEPOSIT_RECEIPT',
+      depositAmount: parsed,
+      txId
+    };
+
+    return res.json({
+      reply: `🏦 **شارژ حساب کاربری (کارت به کارت)**\n──────────────────\n` +
+             `💵 **مبلغ قابل واریز:** ${formatCurrency(parsed)}\n\n` +
+             `💳 **اطلاعات کارت مقصد میانجی:**\n` +
+             `📌 شماره کارت: \`6037-9975-7534-8211\`\n` +
+             `👤 بنام: **امیررضا مجتبایی (میانجی)**\n` +
+             `🔢 شناسه پیگیری سیستم: \`#${txId}\`\n\n` +
+             `⚠️ **مراحل بعدی:**\n` +
+             `پس از انتقال وجه از نرم‌افزار بانکی خود، روی دکمه «📸 ارسال فیش واریزی» کلیک کنید.`,
+      keyboard: [
+        ['📸 ارسال فیش واریزی'],
+        ['🔄 تغییر مبلغ شارژ', '🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // Handle Receipt Submission State
+  if (simulatorState.state === 'WAITING_DEPOSIT_RECEIPT') {
+    if (input.includes('تغییر مبلغ')) {
+      simulatorState.state = 'WAITING_DEPOSIT_AMOUNT';
+      return res.json({
+        reply: '🔄 **تغییر مبلغ شارژ:**\nلطفاً مبلغ جدید مورد نظر خود را به تومان وارد کنید:',
+        keyboard: [
+          ['50,000 تومان', '100,000 تومان'],
+          ['200,000 تومان', '500,000 تومان'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    // Receipt submission confirmation
+    const amount = simulatorState.depositAmount;
+    const txId = simulatorState.txId;
+    depositWallet(getCurrentUserId(), amount, `شارژ کیف پول - پیگیری #${txId}`);
+    simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
+
+    return res.json({
+      reply: `✅ **فیش واریزی شما با موفقیت دریافت و تایید شد.**\n\n` +
+             `🔢 شناسه تراکنش: \`#${txId}\`\n` +
+             `💰 مبلغ واریزی: **${formatCurrency(amount)}**\n\n` +
+             `موجودی کیف پول شما به‌صورت آنی افزایش یافت.`,
+      keyboard: [
+        ['💳 کیف پول و اعتبار', '🤝 ثبت معامله جدید'],
+        ['📜 لیست معاملات من', '👤 پروفایل کاربری']
+      ]
+    });
+  }
+
+  // Trigger Deposit Flow from Topup buttons
+  if (input.includes('شارژ') || input.includes('deposit') || input.includes('topup') || input.includes('افزایش موجودی')) {
+    simulatorState.state = 'WAITING_DEPOSIT_AMOUNT';
+    return res.json({
+      reply: '🏦 **شارژ حساب کاربری (کارت به کارت)**\n\n' +
+             'لطفاً مبلغی که قصد واریز دارید را به **تومان** وارد کنید:\n' +
+             '*(حداقل مبلغ شارژ: ۱۰,۰۰۰ تومان)*\n\n' +
+             '💡 **نمونه‌های معتبر:**\n' +
+             '• `50000` یا `100,000`\n' +
+             '• `۵۰ هزار` یا `۱ میلیون`\n\n' +
+             'یا یکی از مبالغ پیشنهادی زیر را لمس نمایید:',
+      keyboard: [
+        ['50,000 تومان', '100,000 تومان'],
+        ['200,000 تومان', '500,000 تومان'],
+        ['🔙 انصراف و بازگشت']
       ]
     });
   }

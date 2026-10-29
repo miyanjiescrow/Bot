@@ -2423,8 +2423,11 @@ def register_admin_handlers(bot: TeleBot):
                         # آپدیت وضعیت تراکنش
                         if req_id:
                             try:
-                                db.supabase.table("transactions").update({"status": "completed"}).eq("id", req_id).execute()
-                                db.supabase.table("pending_receipts").update({"status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", str(req_id)).eq("type", "wallet").execute()
+                                if db.supabase:
+                                    db.supabase.table("transactions").update({"status": "completed"}).eq("id", req_id).execute()
+                                    db.supabase.table("pending_receipts").update({"status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", str(req_id)).eq("type", "wallet").execute()
+                                else:
+                                    db.approve_deposit_transaction(req_id)
                             except: pass
                             
                         msg = f"✅ **کیف‌پول شما شارژ شد**\n\nمبلغ {utils.format_currency(amount)} به کیف‌پول شما اضافه شد."
