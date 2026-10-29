@@ -198,7 +198,6 @@ def main():
 
     # ۷. شروع پولینگ پایدار و دائمی بدون دور ریختن پیام‌های ورودی
     conflict_count = 0
-    first_poll = True
     while True:
         try:
             logger.info("📡 Bot is now polling for updates...")
@@ -206,9 +205,8 @@ def main():
                 none_stop=True,
                 timeout=25,
                 long_polling_timeout=20,
-                skip_pending=first_poll
+                skip_pending=False
             )
-            first_poll = False
             conflict_count = 0
             time.sleep(1)
         except telebot.apihelper.ApiTelegramException as e:

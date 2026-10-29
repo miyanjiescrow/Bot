@@ -265,6 +265,15 @@ def parse_amount_flexible(text: str) -> Optional[float]:
     raw = str(text).strip()
     cleaned = fa_to_en_digits(raw)
 
+    # تبدیل کلمات متداول شمارشی فارسی به عدد
+    word_map = {
+        'یک': '1', 'دو': '2', 'سه': '3', 'چهار': '4', 'پنج': '5',
+        'شش': '6', 'هفت': '7', 'هشت': '8', 'نه': '9', 'ده': '10',
+        'پانصد': '500', 'دویست': '200', 'سیصد': '300', 'صد': '100'
+    }
+    for w, d in word_map.items():
+        cleaned = re.sub(r'(?:^|[\s،,])' + w + r'(?=[\s،,]|$)', ' ' + d + ' ', cleaned)
+
     is_rial = bool(re.search(r'(?:ریال|IRR)\b', raw, re.IGNORECASE) or 'ریال' in raw)
 
     multiplier = 1.0
