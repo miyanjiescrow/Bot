@@ -1119,14 +1119,22 @@ def register_user_handlers(bot: TeleBot):
             return
 
         # -----------------------------------------------
-        # پردازش لینک قرارداد (c_ یا contract_ یا deliver_)
+        # پردازش لینک قرارداد (deal_ یا c_ یا contract_ یا deliver_)
         # -----------------------------------------------
         args = message.text.split()
         if len(args) > 1:
             start_param = args[1]
-            if start_param.startswith(("c_", "contract_")):
+            if start_param.startswith(("c_", "contract_", "deal_")):
                 contract_id = start_param.replace("c_", "").replace("contract_", "")
+                # جستجو ابتدا بر اساس contract_id و سپس بر اساس invite_token
                 contract = db.get_contract(contract_id)
+                if not contract and start_param.startswith("deal_"):
+                    with db.db_lock:
+                        for cid_key, c_val in db._in_memory_contracts.items():
+                            if isinstance(c_val, dict) and (c_val.get("invite_token") == start_param or c_val.get("contract_id") == start_param):
+                                contract = c_val
+                                contract_id = c_val.get("contract_id", contract_id)
+                                break
                 if contract:
                     # بررسی دسترسی: پس از امضای طرفین، فقط ادمین و طرفین قرارداد اجازه دسترسی دارند
                     is_both_signed = bool((contract.get("buyer_signed_at") or contract.get("employer_signed_at")) and 

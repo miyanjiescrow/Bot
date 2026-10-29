@@ -98,6 +98,14 @@ export interface Contract {
   seller_signed_at?: string;
   seller_otp_verified?: boolean;
   
+  // Advanced Optional Fields (فیلدهای پیشرفته و اختیاری)
+  has_inspection_period?: boolean;
+  inspection_period_hours?: number; // 0 for instant, 24, 48, 72 or custom
+  has_free_revisions?: boolean;
+  free_revisions_count?: number; // 0, 1, 2, or custom
+  invite_token?: string;
+  escrow_deposit_status?: 'unpaid' | 'paid_locked' | 'released' | 'refunded';
+
   // Staged Milestones & Deliverables
   milestones?: Milestone[];
   staged_payment?: boolean;

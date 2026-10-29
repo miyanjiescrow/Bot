@@ -178,10 +178,27 @@ app.get('/api/bot/logs', (req: Request, res: Response) => {
   res.json({ logs: ['لاگی ثبت نشده است یا ربات تازه شروع به کار کرده است.'] });
 });
 
+interface DealDraftState {
+  role?: 'employer' | 'freelancer';
+  category?: string;
+  categoryLabel?: string;
+  title?: string;
+  amount?: number;
+  commission_payer?: 'employer' | 'freelancer' | 'split_50_50';
+  has_inspection_period?: boolean;
+  inspection_period_hours?: number;
+  has_free_revisions?: boolean;
+  free_revisions_count?: number;
+  contract_id?: string;
+  invite_token?: string;
+}
+
 let simulatorState: {
-  state: 'IDLE' | 'WAITING_DEPOSIT_AMOUNT' | 'WAITING_DEPOSIT_RECEIPT';
+  state: string;
   depositAmount: number;
   txId: number;
+  dealDraft?: DealDraftState;
+  activeDealToken?: string;
 } = {
   state: 'IDLE',
   depositAmount: 0,
@@ -200,9 +217,9 @@ function parseFlexibleAmount(str: string): number | null {
   }
 
   let multiplier = 1;
-  if (/هزار|k|K/i.test(cleaned)) multiplier = 1000;
+  if (/میلیارد|b|B/i.test(cleaned)) multiplier = 1000000000;
   else if (/میلیون|m|M/i.test(cleaned)) multiplier = 1000000;
-  else if (/میلیارد|b|B/i.test(cleaned)) multiplier = 1000000000;
+  else if (/هزار|k|K/i.test(cleaned)) multiplier = 1000;
 
   const numMatch = cleaned.match(/(\d+(?:[.,،_\s]\d+)*)/);
   if (!numMatch) return null;
@@ -213,7 +230,7 @@ function parseFlexibleAmount(str: string): number | null {
 }
 
 // Telegram Bot Command Simulator (allows testing bot directly from web console)
-app.post('/api/bot/simulate', (req: Request, res: Response) => {
+app.post('/api/bot/simulate', async (req: Request, res: Response) => {
   const { command, text } = req.body;
   const input = (text || command || '').trim();
 
@@ -234,7 +251,7 @@ app.post('/api/bot/simulate', (req: Request, res: Response) => {
   if (input === '/start' || input === 'شروع') {
     simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
     return res.json({
-      reply: 'سلام! به سامانه جامع اسکرو میانجی (Miyanji Escrow) خوش آمدید.\nپلتفرم ثبت قراردادهای الکترونیک و واسطه‌گری امن در بستر تلگرام و وب.',
+      reply: '🤖 **سلام! به سامانه جامع اسکرو و واسطه‌گری میانجی (Miyanji Escrow) خوش آمدید.**\n\nپلتفرم رسمی پرداخت امن، داوری حقوقی و قراردادهای فریلنسری تحت پوشش قانون تجارت الکترونیک.',
       keyboard: [
         ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
         ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
@@ -243,6 +260,393 @@ app.post('/api/bot/simulate', (req: Request, res: Response) => {
       ]
     });
   }
+
+  // ====================================================
+  // جریان جدید و هوشمند ایجاد معامله (New Smart Deal Flow)
+  // ====================================================
+
+  // گام ۱: کلیک روی ایجاد معامله جدید
+  if (input.includes('ثبت معامله') || input.includes('ایجاد معامله') || input === '/newdeal') {
+    simulatorState = {
+      state: 'DEAL_ROLE',
+      depositAmount: 0,
+      txId: 0,
+      dealDraft: {}
+    };
+
+    return res.json({
+      reply: '🤝 **روند جدید و هوشمند ایجاد معامله میانجی (کمتر از ۴۵ ثانیه)**\n──────────────────\n' +
+             'لطفاً نقش خود را در این معامله مشخص کنید:',
+      keyboard: [
+        ['💼 کارفرما (خریدار)', '🛠 مجری (پیمانکار)'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۲: انتخاب نقش و سوال دسته‌بندی
+  if (simulatorState.state === 'DEAL_ROLE') {
+    const isEmployer = input.includes('کارفرما') || input.includes('خریدار');
+    const isFreelancer = input.includes('مجری') || input.includes('پیمانکار') || input.includes('فروشنده');
+
+    if (!isEmployer && !isFreelancer) {
+      return res.json({
+        reply: '⚠️ لطفاً نقش خود را از گزینه‌های زیر انتخاب فرمایید:',
+        keyboard: [
+          ['💼 کارفرما (خریدار)', '🛠 مجری (پیمانکار)'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      role: isEmployer ? 'employer' : 'freelancer'
+    };
+    simulatorState.state = 'DEAL_CATEGORY';
+
+    return res.json({
+      reply: '📂 **مرحله ۲ از ۶ — دسته‌بندی خدمت:**\n\nحوزه فعالیت و زمینه پروژه خود را انتخاب کنید:',
+      keyboard: [
+        ['🎨 طراحی و گرافیک', '💻 برنامه‌نویسی'],
+        ['🎓 خدمات دانشجویی', '✍️ تولید محتوا'],
+        ['📑 سایر خدمات دیجیتال'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۳: انتخاب دسته‌بندی و دریافت عنوان کوتاه
+  if (simulatorState.state === 'DEAL_CATEGORY') {
+    let cat = 'GEN';
+    let catLabel = 'سایر خدمات دیجیتال';
+
+    if (input.includes('طراحی') || input.includes('گرافیک')) {
+      cat = 'DS';
+      catLabel = 'طراحی و گرافیک (لوگو، بنر، هویت بصری)';
+    } else if (input.includes('برنامه‌نویسی') || input.includes('کد')) {
+      cat = 'DEV';
+      catLabel = 'برنامه‌نویسی و IT (وبسایت، اپلیکیشن، ربات)';
+    } else if (input.includes('دانشجویی') || input.includes('پژوهشی')) {
+      cat = 'ACAD';
+      catLabel = 'خدمات دانشجویی و آکادمیک (ترجمه، سمینار، ویراستاری)';
+    } else if (input.includes('محتوا') || input.includes('سئو')) {
+      cat = 'CNT';
+      catLabel = 'تولید محتوا و سئو';
+    }
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      category: cat,
+      categoryLabel: catLabel
+    };
+    simulatorState.state = 'DEAL_TITLE';
+
+    return res.json({
+      reply: `✍️ **مرحله ۳ از ۶ — عنوان کوتاه پروژه:**\n(دسته‌بندی: ${catLabel})\n\n` +
+             'لطفاً یک عنوان خلاصه و گویا برای این معامله ارسال کنید:\n\n' +
+             '💡 *نمونه‌ها:*\n' +
+             '• «طراحی لوگو و هویت بصری استارتاپ»\n' +
+             '• «کدنویسی بک‌اند ربات تلگرام با پایتون»\n' +
+             '• «ترجمه و ویرایش مقاله تخصصی ۵۰۰۰ کلمه‌ای»',
+      keyboard: [
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۴: دریافت عنوان و سوال مبلغ
+  if (simulatorState.state === 'DEAL_TITLE') {
+    const title = input.trim();
+    if (title.length < 3) {
+      return res.json({
+        reply: '⚠️ عنوان وارد شده خیلی کوتاه است. لطفاً حداقل ۳ حرف بنویسید:',
+        keyboard: [['🔙 انصراف و بازگشت']]
+      });
+    }
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      title
+    };
+    simulatorState.state = 'DEAL_AMOUNT';
+
+    return res.json({
+      reply: `💵 **مرحله ۴ از ۶ — مبلغ کل معامله:**\n\n` +
+             `پروژه: «${title}»\n` +
+             `لطفاً مبلغ کل را به **تومان** وارد کنید:\n\n` +
+             `💡 *مثال‌های معتبر:*\n` +
+             `• \`2500000\` یا \`2,500,000\`\n` +
+             `• \`۲.۵ میلیون\` یا \`۵۰۰ هزار\`\n\n` +
+             `یا یکی از مبالغ پیشنهادی زیر را انتخاب کنید:`,
+      keyboard: [
+        ['1,000,000 تومان', '2,500,000 تومان'],
+        ['5,000,000 تومان', '10,000,000 تومان'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۵: دریافت مبلغ و سوال تعیین‌کننده کارمزد
+  if (simulatorState.state === 'DEAL_AMOUNT') {
+    const parsedAmount = parseFlexibleAmount(input);
+    if (!parsedAmount || parsedAmount < 10000) {
+      return res.json({
+        reply: '⚠️ **مبلغ نامعتبر است.** حداقل مبلغ معامله ۱۰,۰۰۰ تومان می‌باشد. لطفاً مجدداً وارد فرمایید:',
+        keyboard: [
+          ['1,000,000 تومان', '2,500,000 تومان'],
+          ['5,000,000 تومان', '10,000,000 تومان'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      amount: parsedAmount
+    };
+    simulatorState.state = 'DEAL_COMMISSION_PAYER';
+
+    const fee = Math.round(parsedAmount * 0.05);
+
+    return res.json({
+      reply: `⚖️ **مرحله ۵ از ۶ — پرداخت‌کننده کارمزد میانجی:**\n\n` +
+             `💰 مبلغ پروژه: **${formatCurrency(parsedAmount)}**\n` +
+             `📊 کل کارمزد اسکرو (۵٪): **${formatCurrency(fee)}**\n\n` +
+             `چه کسی کارمزد خدمات امنیتی اسکرو را پرداخت می‌کند؟`,
+      keyboard: [
+        ['💼 کارفرما (افزودن به واریزی کارفرما)'],
+        ['🛠 مجری (کسر از دریافتی مجری)'],
+        ['⚖️ توافقی (۵۰٪ کارفرما / ۵۰٪ مجری)'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۶: بخش اختیاری پیشرفته ۱ - مهلت بررسی و تست (Inspection Period)
+  if (simulatorState.state === 'DEAL_COMMISSION_PAYER') {
+    let payer: 'employer' | 'freelancer' | 'split_50_50' = 'split_50_50';
+    if (input.includes('کارفرما')) payer = 'employer';
+    else if (input.includes('مجری')) payer = 'freelancer';
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      commission_payer: payer
+    };
+    simulatorState.state = 'DEAL_INSPECTION';
+
+    return res.json({
+      reply: `🛡 **بخش‌های اختیاری پیشرفته (۱/۲) — مهلت تست و بررسی (Inspection Period):**\n\n` +
+             `آیا کارفرما پس از اعلام تحویل پروژه توسط مجری، مهلت تست داشته باشد؟\n` +
+             `*(در طی این زمان، وجه در امانت میانجی محفوظ است تا خروجی تست و تایید شود)*`,
+      keyboard: [
+        ['⚡ تایید آنی (بدون مهلت تست)'],
+        ['⏱ ۲۴ ساعت مهلت تست', '⏱ ۴۸ ساعت مهلت تست'],
+        ['⏱ ۷۲ ساعت مهلت تست', '✍️ زمان دلخواه'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۷: بخش اختیاری پیشرفته ۲ - اصلاحیه رایگان (Free Revisions)
+  if (simulatorState.state === 'DEAL_INSPECTION') {
+    if (input.includes('زمان دلخواه')) {
+      simulatorState.state = 'DEAL_INSPECTION_CUSTOM';
+      return res.json({
+        reply: '✍️ لطفاً مهلت تست مورد نظر خود را به **ساعت** وارد فرمایید (مثلاً `36` یا `96`):',
+        keyboard: [['🔙 انصراف و بازگشت']]
+      });
+    }
+
+    let hours = 0;
+    if (input.includes('24') || input.includes('۲۴')) hours = 24;
+    else if (input.includes('48') || input.includes('۴۸')) hours = 48;
+    else if (input.includes('72') || input.includes('۷۲')) hours = 72;
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      has_inspection_period: hours > 0,
+      inspection_period_hours: hours
+    };
+    simulatorState.state = 'DEAL_REVISIONS';
+
+    return res.json({
+      reply: `🔄 **بخش‌های اختیاری پیشرفته (۲/۲) — اصلاحیه رایگان (Free Revisions):**\n\n` +
+             `آیا پروژه شامل ویرایش/اصلاحیه رایگان پس از تحویل است؟\n` +
+             `*(پس از اتمام این سهمیه، مجری می‌تواند برای اصلاحات بعدی هزینه جداگانه تعیین کند)*`,
+      keyboard: [
+        ['🚫 بدون ویرایش رایگان'],
+        ['۱ بار اصلاحیه رایگان', '۲ بار اصلاحیه رایگان'],
+        ['🤝 توافقی بین طرفین', '✍️ تعداد دلخواه'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  if (simulatorState.state === 'DEAL_INSPECTION_CUSTOM') {
+    const rawH = parseFlexibleAmount(input) || 24;
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      has_inspection_period: true,
+      inspection_period_hours: rawH
+    };
+    simulatorState.state = 'DEAL_REVISIONS';
+
+    return res.json({
+      reply: `🔄 **بخش‌های اختیاری پیشرفته (۲/۲) — اصلاحیه رایگان (Free Revisions):**\n\n` +
+             `آیا پروژه شامل ویرایش/اصلاحیه رایگان پس از تحویل است؟`,
+      keyboard: [
+        ['🚫 بدون ویرایش رایگان'],
+        ['۱ بار اصلاحیه رایگان', '۲ بار اصلاحیه رایگان'],
+        ['🤝 توافقی بین طرفین', '✍️ تعداد دلخواه'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۸: ثبت نهایی معامله، تولید یکتاکد و لینک دعوت
+  if (simulatorState.state === 'DEAL_REVISIONS' || simulatorState.state === 'DEAL_REVISIONS_CUSTOM') {
+    let revCount = 2;
+    if (input.includes('بدون ویرایش') || input.includes('0') || input.includes('۰')) revCount = 0;
+    else if (input.includes('1') || input.includes('۱ بار')) revCount = 1;
+    else if (input.includes('2') || input.includes('۲ بار')) revCount = 2;
+    else if (input.includes('توافقی')) revCount = -1;
+
+    const draft = simulatorState.dealDraft || {};
+    draft.has_free_revisions = revCount !== 0;
+    draft.free_revisions_count = revCount;
+
+    // ایجاد واقعی در دیتابیس
+    const amount = draft.amount || 2500000;
+    const cat = (draft.category as any) || 'GEN';
+    const contractId = generateContractId(cat);
+    const inviteToken = `deal_${Math.random().toString(36).substring(2, 9)}`;
+
+    const newDeal = await createContract({
+      contract_id: contractId,
+      title: draft.title || 'معامله هوشمند میانجی',
+      amount,
+      category: cat,
+      deadline: 7,
+      free_edits: revCount >= 0 ? revCount : 2,
+      free_edits_left: revCount >= 0 ? revCount : 2,
+      free_edits_total: revCount >= 0 ? revCount : 2,
+      commission_payer: draft.commission_payer || 'split_50_50',
+      has_inspection_period: draft.has_inspection_period || false,
+      inspection_period_hours: draft.inspection_period_hours || 0,
+      has_free_revisions: draft.has_free_revisions || false,
+      free_revisions_count: revCount,
+      invite_token: inviteToken,
+      description: `قرارداد دیجیتال تحت پوشش اسکرو میانجی. مهلت تست: ${draft.inspection_period_hours || 0} ساعت. اصلاحیه رایگان: ${revCount} بار.`
+    });
+
+    simulatorState = {
+      state: 'IDLE',
+      depositAmount: 0,
+      txId: 0,
+      activeDealToken: inviteToken
+    };
+
+    const botUser = process.env.BOT_USERNAME || 'mianji_ir_bot';
+    const inviteLink = `https://t.me/${botUser}?start=${inviteToken}`;
+
+    const inspFa = (draft.inspection_period_hours || 0) > 0
+      ? `⏱ ${draft.inspection_period_hours} ساعت پس از اعلام تحویل`
+      : '⚡ تایید آنی (بدون مهلت تست)';
+
+    const revFa = revCount === 0
+      ? '🚫 بدون ویرایش رایگان'
+      : (revCount === -1 ? '🤝 توافقی بین طرفین' : `✅ ${revCount} بار اصلاحیه رایگان`);
+
+    const payerFa = draft.commission_payer === 'employer'
+      ? 'کارفرما'
+      : (draft.commission_payer === 'freelancer' ? 'مجری' : 'توافقی ۵۰/۵۰');
+
+    return res.json({
+      reply: `🎉 **قرارداد دیجیتال با موفقیت تولید و در دیتابیس ثبت شد!**\n` +
+             `🆔 **شناسه قرارداد:** \`${contractId}\`\n` +
+             `────────────────────────────\n` +
+             `📝 **موضوع:** ${draft.title}\n` +
+             `📂 **دسته‌بندی:** ${draft.categoryLabel || 'خدمات دیجیتال'}\n` +
+             `💰 **مبلغ معامله:** ${formatCurrency(amount)}\n` +
+             `⚖️ **کارمزد:** ${payerFa}\n` +
+             `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
+             `🔄 **سهمیه اصلاحیه:** ${revFa}\n` +
+             `────────────────────────────\n` +
+             `🔗 **لینک دعوت اختصاصی طرف دوم:**\n\`${inviteLink}\`\n\n` +
+             `💡 با زدن دکمه زیر می‌توانید شبیه‌سازی ورود طرف دوم را انجام دهید تا قرارداد توسط او تایید شده و وارد فاز پرداخت امانی شود:`,
+      keyboard: [
+        ['🤝 شبیه‌سازی ورود طرف دوم (پذیرش قوانین)'],
+        ['📜 لیست معاملات من', '💳 کیف پول و اعتبار'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  // گام ۹: شبیه‌سازی ورود و پذیرش طرف دوم (Counterparty Join Flow)
+  if (input.includes('ورود طرف دوم') || input.startsWith('deal_') || input.includes('پذیرش قوانین')) {
+    const myDeals = getContracts();
+    const targetDeal = myDeals[0];
+
+    if (!targetDeal) {
+      return res.json({
+        reply: '⚠️ هیچ معامله فعالی برای بررسی یافت نشد.',
+        keyboard: [['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']]
+      });
+    }
+
+    simulatorState = {
+      state: 'WAITING_COUNTERPARTY_ACCEPT',
+      depositAmount: 0,
+      txId: 0,
+      activeDealToken: targetDeal.contract_id
+    };
+
+    return res.json({
+      reply: `👋 **سلام! شما به عنوان طرف دوم به معامله \`${targetDeal.contract_id}\` دعوت شدید.**\n` +
+             `────────────────────────────\n` +
+             `📝 **عنوان معامله:** ${targetDeal.title}\n` +
+             `💰 **مبلغ کل معامله:** ${formatCurrency(targetDeal.amount)}\n` +
+             `🛡 **مهلت بررسی و تست:** ${targetDeal.inspection_period_hours ? `${targetDeal.inspection_period_hours} ساعت` : 'تایید آنی'}\n` +
+             `🔄 **سهمیه اصلاحیه:** ${targetDeal.free_edits ? `${targetDeal.free_edits} بار رایگان` : 'بدون ویرایش'}\n\n` +
+             `⚖️ **قوانین و ضمانت اجرایی میانجی:**\n` +
+             `• وجوه تا زمان تحویل پروژه در صندوق امن امانت مسدود می‌ماند.\n` +
+             `• کارفرما تا تایید نهایی خروجی، امکان برداشت یکطرفه را ندارد.\n` +
+             `• در صورت بروز اختلاف، هیئت داوری حقوقی مستقر در سامانه رسیدگی قطعی خواهد کرد.\n\n` +
+             `جهت انعقاد رسمی قرارداد، دکمه «✅ تایید و پذیرش قوانین» را لمس کنید:`,
+      keyboard: [
+        ['✅ تایید و پذیرش قوانین میانجی (ورود به فاز پرداخت)'],
+        ['❌ انصراف و رد معامله']
+      ]
+    });
+  }
+
+  if (simulatorState.state === 'WAITING_COUNTERPARTY_ACCEPT' && (input.includes('تایید و پذیرش') || input.includes('پذیرش'))) {
+    const myDeals = getContracts();
+    const targetDeal = myDeals[0];
+    if (targetDeal) {
+      targetDeal.status = 'awaiting_payment';
+      targetDeal.seller_id = 290184712;
+      targetDeal.seller_fullname = 'سارا احمدی (پیمانکار تایید شده)';
+      targetDeal.seller_signed_at = new Date().toISOString();
+      targetDeal.seller_otp_verified = true;
+    }
+    simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
+
+    return res.json({
+      reply: `🤝 **قرارداد با موفقیت توسط طرف دوم پذیرفته شد!**\n\n` +
+             `وضعیت معامله: **در انتظار پرداخت امانی (Awaiting Escrow Deposit)** ⏳\n` +
+             `اکنون کارفرما می‌تواند با مراجعه به کیف پول یا درگاه، مبلغ را در صندوق امن میانجی قفل نماید تا مجری شروع به کار کند.`,
+      keyboard: [
+        ['💳 کیف پول و اعتبار', '📜 لیست معاملات من'],
+        ['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  // ====================================================
+  // سایر دستورات کیف پول و پروفایل
+  // ====================================================
 
   // Handle Deposit Amount Input State
   if (simulatorState.state === 'WAITING_DEPOSIT_AMOUNT') {
@@ -354,17 +758,6 @@ app.post('/api/bot/simulate', (req: Request, res: Response) => {
       keyboard: [
         ['➕ شارژ کیف پول', '💸 درخواست تسویه و برداشت'],
         ['📋 گزارش تراکنش‌ها', '🔙 بازگشت به منوی اصلی']
-      ]
-    });
-  }
-
-  if (input.includes('ثبت معامله')) {
-    return res.json({
-      reply: '🤝 **شروع ثبت معامله جدید در صندوق امانت میانجی**\n\n' +
-             'لطفاً نقش خود را در این معامله مشخص کنید:',
-      keyboard: [
-        ['💼 کارفرما (خریدار)', '🛠 مجری (پیمانکار)'],
-        ['🔙 انصراف و بازگشت']
       ]
     });
   }

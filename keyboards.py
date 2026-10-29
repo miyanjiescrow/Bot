@@ -1352,3 +1352,105 @@ def get_cancel_keyboard() -> ReplyKeyboardMarkup:
     markup.add(KeyboardButton("❌ انصراف"))
     return markup
 
+
+# ====================================================
+# کیبوردهای اختصاصی «روند هوشمند ایجاد معامله» (Smart Deal Creation Flow)
+# ====================================================
+
+def get_smart_deal_role_inline() -> InlineKeyboardMarkup:
+    """کیبورد انتخاب سریع نقش کارفرما یا مجری"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("💼 کارفرما (خریدار)", callback_data="smart_role:employer"),
+        InlineKeyboardButton("🛠 مجری (فروشنده)", callback_data="smart_role:freelancer")
+    )
+    markup.add(InlineKeyboardButton("❌ انصراف", callback_data="cancel_wizard"))
+    return markup
+
+
+def get_smart_deal_category_inline() -> InlineKeyboardMarkup:
+    """کیبورد انتخاب ۵ دسته‌بندی اصلی خدمات فریلنسری"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🎨 طراحی و گرافیک", callback_data="smart_cat:DS"),
+        InlineKeyboardButton("💻 برنامه‌نویسی و IT", callback_data="smart_cat:DEV")
+    )
+    markup.add(
+        InlineKeyboardButton("🎓 خدمات دانشجویی", callback_data="smart_cat:ACAD"),
+        InlineKeyboardButton("✍️ تولید محتوا و سئو", callback_data="smart_cat:CNT")
+    )
+    markup.add(InlineKeyboardButton("📑 سایر خدمات دیجیتال", callback_data="smart_cat:GEN"))
+    markup.add(InlineKeyboardButton("❌ انصراف", callback_data="cancel_wizard"))
+    return markup
+
+
+def get_smart_deal_fee_payer_inline() -> InlineKeyboardMarkup:
+    """کیبورد انتخاب پرداخت‌کننده کارمزد اسکرو میانجی"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("💼 کارفرما (افزودن به مبلغ واریزی)", callback_data="smart_payer:employer"),
+        InlineKeyboardButton("🛠 مجری (کسر از دریافتی مجری)", callback_data="smart_payer:freelancer"),
+        InlineKeyboardButton("⚖️ توافقی (۵۰٪ کارفرما / ۵۰٪ مجری)", callback_data="smart_payer:split_50_50"),
+        InlineKeyboardButton("❌ انصراف", callback_data="cancel_wizard")
+    )
+    return markup
+
+
+def get_smart_deal_inspection_inline() -> InlineKeyboardMarkup:
+    """کیبورد مهلت بررسی و تست خروجی توسط کارفرما"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("⚡ تایید آنی (بدون مهلت تست)", callback_data="smart_insp:0"))
+    markup.add(
+        InlineKeyboardButton("⏱ ۲۴ ساعت", callback_data="smart_insp:24"),
+        InlineKeyboardButton("⏱ ۴۸ ساعت", callback_data="smart_insp:48")
+    )
+    markup.add(
+        InlineKeyboardButton("⏱ ۷۲ ساعت", callback_data="smart_insp:72"),
+        InlineKeyboardButton("✍️ ساعت دلخواه", callback_data="smart_insp:custom")
+    )
+    markup.add(InlineKeyboardButton("❌ انصراف", callback_data="cancel_wizard"))
+    return markup
+
+
+def get_smart_deal_revisions_inline() -> InlineKeyboardMarkup:
+    """کیبورد تعداد اصلاحیه/ویرایش رایگان"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🚫 بدون ویرایش رایگان", callback_data="smart_rev:0"))
+    markup.add(
+        InlineKeyboardButton("۱ بار اصلاحیه", callback_data="smart_rev:1"),
+        InlineKeyboardButton("۲ بار اصلاحیه", callback_data="smart_rev:2")
+    )
+    markup.add(
+        InlineKeyboardButton("🤝 توافقی بین طرفین", callback_data="smart_rev:-1"),
+        InlineKeyboardButton("✍️ تعداد دلخواه", callback_data="smart_rev:custom")
+    )
+    markup.add(InlineKeyboardButton("❌ انصراف", callback_data="cancel_wizard"))
+    return markup
+
+
+def get_smart_deal_invite_inline(invite_token: str, contract_id: str, bot_username: str) -> InlineKeyboardMarkup:
+    """دکمه شیشه‌ای ارسال دعوت‌نامه به طرف دوم"""
+    import urllib.parse
+    share_link = f"https://t.me/{bot_username}?start={invite_token}"
+    share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد قرارداد: #{contract_id}\nجهت بررسی مشخصات، مهلت تست و امضا کلیک فرمایید:"
+    tg_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_text)}"
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("📤 ارسال دعوت‌نامه به طرف دوم (اشتراک‌گذاری)", url=tg_url),
+        InlineKeyboardButton("📑 مشاهده کارت و شرایط قرارداد", callback_data=f"view_contract_terms:{contract_id}"),
+        InlineKeyboardButton("🏠 بازگشت به منوی اصلی", callback_data="back_to_menu")
+    )
+    return markup
+
+
+def get_smart_counterparty_accept_inline(contract_id: str) -> InlineKeyboardMarkup:
+    """کیبورد تایید و پذیرش قرارداد توسط طرف دوم"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("🤝 تایید و پذیرش قوانین میانجی (ورود به فاز پرداخت)", callback_data=f"smart_accept:{contract_id}"),
+        InlineKeyboardButton("❌ رد قرارداد و انصراف", callback_data=f"smart_reject:{contract_id}")
+    )
+    return markup
+
+
