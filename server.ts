@@ -1,17 +1,52 @@
-// This is a complex change to replace all direct variable usages with db.
-// Since the file is huge and I cannot replace all occurrences safely in one go, 
-// I will start by ensuring the imports are correct and fix a key endpoint as example.
+/**
+ * Miyanji Smart Escrow Platform - Server & Python Bot Gateway
+ * Powers the Python Telegram Bot runtime, Supabase Synchronization, and Status API
+ */
 
-// Actually, I should have imported them directly in the import statement
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { UserProfile, Contract, WalletTransaction, DisputeCase, DisputeMessage, AffiliateStats, Milestone } from './src/types';
-import { users, contracts, transactions, disputes, currentUserId, setCurrentUserId, setContracts, setTransactions, setDisputes } from './src/db';
+
+import {
+  getUsers,
+  getUser,
+  getCurrentUser,
+  getCurrentUserId,
+  setCurrentUserId,
+  registerOrUpdateUser,
+  submitKyc,
+  getContracts,
+  getContract,
+  createContract,
+  updateContract,
+  deleteContract,
+  signContract,
+  payContractEscrow,
+  deliverContract,
+  approveContract,
+  cancelContract,
+  getTransactions,
+  depositWallet,
+  withdrawWallet,
+  getDisputes,
+  getDispute,
+  createDispute,
+  addDisputeMessage,
+  resolveDispute,
+  getAffiliateStats,
+  withdrawAffiliateEarnings,
+  getDashboardStats,
+  isValidIranianNationalId,
+  isValidIranianSheba,
+  generateContractId,
+  formatCurrency,
+} from './src/db';
+import { isSupabaseConfigured } from './src/lib/supabase';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,39 +62,244 @@ app.use(express.json({ limit: '10mb' }));
 app.use('/Font', express.static(path.join(__dirname, 'Font')));
 app.use('/fonts', express.static(path.join(__dirname, 'Font')));
 
-// Types are now imported from './src/types'
+// ====================================================
+// ۱. مدیریت پروسه ربات پایتون در پس‌زمینه (Python Bot Process)
+// ====================================================
+let pythonBotProcess: any = null;
+
+function ensurePythonBotRunning() {
+  const logFilePath = path.join(__dirname, 'bot.log');
+  const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
+  try {
+    // Check if main.py is already running
+    const check = spawn('pgrep', ['-f', 'main.py']);
+    check.on('close', (code) => {
+      if (code !== 0) {
+        console.log('🤖 Spawning Python Telegram Bot (python3 main.py)...');
+        pythonBotProcess = spawn('python3', ['main.py'], {
+          cwd: __dirname,
+          env: { ...process.env, PYTHONUNBUFFERED: '1' }
+        });
+
+        pythonBotProcess.stdout?.pipe(logStream);
+        pythonBotProcess.stderr?.pipe(logStream);
+
+        pythonBotProcess.on('exit', (exitCode: any, signal: any) => {
+          console.log(`⚠️ Python bot exited with code ${exitCode} (${signal}).`);
+        });
+      } else {
+        console.log('🤖 Python Telegram Bot is already active.');
+      }
+    });
+  } catch (err: any) {
+    console.error('Failed to spawn Python bot:', err.message);
+  }
+}
+
+// Start Python bot on server init
+ensurePythonBotRunning();
 
 // ====================================================
-// Data and helpers are imported from './src/db'
+// ۲. مسیرهای وضعیت و کنترل ربات پایتون (Bot Status & Diagnostics)
+// ====================================================
 
-// Get Current Logged In User Profile
+// Check Python Bot & Database Status
+app.get('/api/bot/status', (req: Request, res: Response) => {
+  const logFile = path.join(__dirname, 'bot.log');
+  let recentLogs = '';
+  if (fs.existsSync(logFile)) {
+    try {
+      const allLogs = fs.readFileSync(logFile, 'utf-8');
+      const lines = allLogs.trim().split('\n');
+      recentLogs = lines.slice(-25).join('\n');
+    } catch {
+      recentLogs = 'درحال خواندن لاگ‌ها...';
+    }
+  }
+
+  const pidFile = '/tmp/miyanji_bot.pid';
+  let botPid: string | null = null;
+  if (fs.existsSync(pidFile)) {
+    try {
+      botPid = fs.readFileSync(pidFile, 'utf-8').trim();
+    } catch {}
+  }
+
+  const stats = getDashboardStats();
+
+  res.json({
+    status: 'online',
+    runtime: 'Python 3.10 (pyTelegramBotAPI + Flask + SQLite WAL)',
+    bot_username: process.env.BOT_USERNAME || 'mianji_ir_bot',
+    bot_token_configured: Boolean(process.env.BOT_TOKEN && process.env.BOT_TOKEN.includes(':')),
+    supabase_configured: isSupabaseConfigured(),
+    supabase_url: process.env.SUPABASE_URL ? 'متصل (Supabase Cloud)' : 'پایگاه داده محلی WAL و حافظه پایدار',
+    pid: botPid,
+    stats,
+    active_modules: [
+      'هسته واسطه‌گری امن و صندوق امانت (Escrow)',
+      'ثبت و امضای الکترونیک قراردادها با OTP دیجیتال',
+      'احراز هویت هوشمند (سرویس شاهکار و استعلام شبا)',
+      'کیف پول داخلی و سیستم شارژ و تسویه حساب (شاپرک/پایا)',
+      'شورای حل اختلاف و داوری حقوقی سه جانبه',
+      'سیستم درآمدزایی و پنل سفیران (B2B Affiliate)',
+      'سیستم یادآور و اعلان خودکار تلگرام'
+    ],
+    recent_logs: recentLogs
+  });
+});
+
+// Trigger restart of Python bot
+app.post('/api/bot/restart', (req: Request, res: Response) => {
+  try {
+    spawn('pkill', ['-f', 'main.py']);
+    setTimeout(() => {
+      ensurePythonBotRunning();
+    }, 1500);
+    res.json({ success: true, message: 'دستور راه‌اندازی مجدد ربات تلگرام پایتون ارسال گردید.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Live Log Stream
+app.get('/api/bot/logs', (req: Request, res: Response) => {
+  const logFile = path.join(__dirname, 'bot.log');
+  if (fs.existsSync(logFile)) {
+    try {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      const lines = content.trim().split('\n');
+      return res.json({ logs: lines.slice(-60) });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+  res.json({ logs: ['لاگی ثبت نشده است یا ربات تازه شروع به کار کرده است.'] });
+});
+
+// Telegram Bot Command Simulator (allows testing bot directly from web console)
+app.post('/api/bot/simulate', (req: Request, res: Response) => {
+  const { command, text } = req.body;
+  const input = (text || command || '').trim();
+
+  if (input === '/start' || input === 'شروع') {
+    return res.json({
+      reply: 'سلام! به سامانه جامع اسکرو میانجی (Miyanji Escrow) خوش آمدید.\nپلتفرم ثبت قراردادهای الکترونیک و واسطه‌گری امن در بستر تلگرام و وب.',
+      keyboard: [
+        ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
+        ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
+        ['🎧 پشتیبانی و راهنمای استفاده 📖'],
+        ['💎 پنل سفیران']
+      ]
+    });
+  }
+
+  if (input.includes('کیف پول')) {
+    const user = getCurrentUser();
+    return res.json({
+      reply: `💳 **کیف پول و اعتبار شما**\n\n` +
+             `💰 موجودی در دسترس: ${formatCurrency(user.wallet_balance)}\n` +
+             `🔒 موجودی در امانت اسکرو: ${formatCurrency(user.escrow_locked_balance)}\n` +
+             `💳 شماره شبا: ${user.sheba || 'ثبت نشده'}\n` +
+             `سطح کاربری: ${user.kyc_level === 'gold' ? 'طلایی 🌟' : 'نقره‌ای 🥈'}`,
+      keyboard: [
+        ['➕ شارژ کیف پول', '💸 درخواست تسویه و برداشت'],
+        ['📋 گزارش تراکنش‌ها', '🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  if (input.includes('ثبت معامله')) {
+    return res.json({
+      reply: '🤝 **شروع ثبت معامله جدید در صندوق امانت میانجی**\n\n' +
+             'لطفاً نقش خود را در این معامله مشخص کنید:',
+      keyboard: [
+        ['💼 کارفرما (خریدار)', '🛠 مجری (پیمانکار)'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  if (input.includes('معاملات من')) {
+    const myDeals = getContracts({ userId: getCurrentUserId() });
+    return res.json({
+      reply: `📜 **لیست معاملات شما در میانجی**\n\nتعداد کل معاملات: ${myDeals.length}\nجهت مشاهده جزئیات یا دانلود سند رسمی PDF روی معامله مورد نظر کلیک کنید.`,
+      keyboard: myDeals.slice(0, 4).map(d => [`📄 ${d.contract_id}: ${d.title.slice(0, 30)}`]).concat([['🔙 بازگشت به منوی اصلی']])
+    });
+  }
+
+  if (input.includes('سفیران')) {
+    const stats = getAffiliateStats();
+    return res.json({
+      reply: `💎 **پنل سفیران و همکاران تجاری میانجی**\n\n` +
+             `🔗 لینک اختصاصی شما:\n\`${stats.referral_link}\`\n\n` +
+             `👥 تعداد کلیک: ${stats.total_clicks} | معرفی‌شده‌ها: ${stats.total_invited}\n` +
+             `💰 کل سود دریافتی: ${formatCurrency(stats.total_commission_earned)}\n` +
+             `💵 سود قابل برداشت: ${formatCurrency(stats.withdrawable_commission)}`,
+      keyboard: [
+        ['💸 برداشت سود سفیر به کیف پول'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  if (input.includes('پروفایل')) {
+    const user = getCurrentUser();
+    return res.json({
+      reply: `👤 **پروفایل کاربری میانجی**\n\n` +
+             `نام و نام‌خانوادگی: ${user.full_name}\n` +
+             `شماره تماس: ${user.phone_number}\n` +
+             `کد ملی: ${user.national_id ? `${user.national_id.slice(0, 3)}***${user.national_id.slice(-3)}` : 'ثبت نشده'}\n` +
+             `وضعیت احراز هویت: ${user.is_verified ? '✅ تایید شده (سطح طلایی)' : '⚠️ در انتظار احراز هویت'}`,
+      keyboard: [
+        ['🪪 احراز هویت هوشمند', '✏️ ویرایش مشخصات'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  return res.json({
+    reply: `پیام دریافت شد: "${input}"\nجهت استفاده از خدمات، یکی از گزینه‌های منو را انتخاب فرمایید.`,
+    keyboard: [
+      ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
+      ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار']
+    ]
+  });
+});
+
+// ====================================================
+// ۳. مسیرهای احراز هویت و سوییچ کاربر (Auth API)
+// ====================================================
+
+// Get Current User Profile
 app.get('/api/auth/me', (req: Request, res: Response) => {
-  const user = users.find(u => u.id === currentUserId) || users[0];
+  const user = getCurrentUser();
   res.json(user);
 });
 
-// Switch active user role (Buyer, Seller, Arbitrator) for convenient testing
+// Switch active user role for simulation testing
 app.post('/api/auth/switch_user', (req: Request, res: Response) => {
   const { user_id } = req.body;
-  const target = users.find(u => u.id === Number(user_id));
+  const target = getUser(Number(user_id));
   if (target) {
-    currentUserId = target.id;
+    setCurrentUserId(target.id);
     return res.json({ success: true, user: target });
   }
-  res.status(404).json({ error: 'کاربر مورد نظر یافت نشد' });
+  res.status(404).json({ error: 'کاربر مورد نظر یافت نشد.' });
 });
 
-// Phone & Password Login
-app.post('/api/auth/login', (req: Request, res: Response) => {
+// Login via Phone & Password
+app.post('/api/auth/login', async (req: Request, res: Response) => {
   const { phone_number, password } = req.body;
   if (!phone_number) {
     return res.status(400).json({ error: 'شماره تماس الزامی است.' });
   }
 
-  let user = users.find(u => u.phone_number === phone_number);
+  const allUsers = getUsers();
+  let user = allUsers.find(u => u.phone_number === phone_number);
   if (!user) {
-    // Auto-create user if not found for seamless onboarding
-    user = {
+    user = await registerOrUpdateUser({
       id: Math.floor(100000000 + Math.random() * 900000000),
       full_name: 'کاربر جدید میانجی',
       phone_number: phone_number,
@@ -67,14 +307,11 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       wallet_balance: 5000000,
       escrow_locked_balance: 0,
       kyc_level: 'basic',
-      kyc_status: 'unverified',
-      referral_code: `REF-${Math.floor(10000 + Math.random() * 90000)}`,
-      created_at: new Date().toISOString()
-    };
-    users.push(user);
+      kyc_status: 'unverified'
+    });
   }
 
-  currentUserId = user.id;
+  setCurrentUserId(user.id);
   res.json({
     success: true,
     message: 'ورود با موفقیت انجام شد.',
@@ -82,14 +319,14 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   });
 });
 
-// Telegram Mini App Automatic Auth
-app.post('/api/auth/telegram', (req: Request, res: Response) => {
-  const { tg_user_id, tg_username, tg_fullname, initData } = req.body;
+// Telegram WebApp Authentication
+app.post('/api/auth/telegram', async (req: Request, res: Response) => {
+  const { tg_user_id, tg_username, tg_fullname } = req.body;
   const tid = Number(tg_user_id) || 1802649782;
 
-  let user = users.find(u => u.telegram_id === tid);
+  let user = getUser(tid);
   if (!user) {
-    user = {
+    user = await registerOrUpdateUser({
       id: tid,
       telegram_id: tid,
       full_name: tg_fullname || (tg_username ? `@${tg_username}` : 'کاربر تلگرام'),
@@ -97,15 +334,12 @@ app.post('/api/auth/telegram', (req: Request, res: Response) => {
       role: 'employer',
       wallet_balance: 10000000,
       escrow_locked_balance: 0,
-      kyc_level: 'basic',
-      kyc_status: 'unverified',
-      referral_code: `TG-${tid.toString().slice(-4)}`,
-      created_at: new Date().toISOString()
-    };
-    users.push(user);
+      kyc_level: 'silver',
+      kyc_status: 'verified'
+    });
   }
 
-  currentUserId = user.id;
+  setCurrentUserId(user.id);
   res.json({
     success: true,
     authenticated_via: 'Telegram WebApp',
@@ -114,12 +348,12 @@ app.post('/api/auth/telegram', (req: Request, res: Response) => {
 });
 
 // ====================================================
-// Wallet & Financial Transactions Endpoints
+// ۴. مسیرهای کیف پول و تراکنش‌ها (Wallet API)
 // ====================================================
 
 // Get Wallet Balance & Summary
 app.get('/api/wallet/balance', (req: Request, res: Response) => {
-  const user = users.find(u => u.id === currentUserId) || users[0];
+  const user = getCurrentUser();
   res.json({
     total_balance: user.wallet_balance + user.escrow_locked_balance,
     available_balance: user.wallet_balance,
@@ -129,153 +363,67 @@ app.get('/api/wallet/balance', (req: Request, res: Response) => {
   });
 });
 
-// Get Transactions List
+// Get User Transactions
 app.get('/api/wallet/transactions', (req: Request, res: Response) => {
-  const userTx = transactions
-    .filter(t => t.user_id === currentUserId)
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const userTx = getTransactions(getCurrentUserId());
   res.json(userTx);
 });
 
 // Deposit into Wallet
-app.post('/api/wallet/deposit', (req: Request, res: Response) => {
-  const { amount, method = 'gateway', receipt_url } = req.body;
+app.post('/api/wallet/deposit', async (req: Request, res: Response) => {
+  const { amount, method = 'gateway' } = req.body;
   const numAmount = Number(amount);
   if (!numAmount || numAmount < 10000) {
     return res.status(400).json({ error: 'حداقل مبلغ واریز ۱۰,۰۰۰ تومان است.' });
   }
 
-  const user = users.find(u => u.id === currentUserId) || users[0];
-  user.wallet_balance += numAmount;
-
-  const newTx: WalletTransaction = {
-    id: `tx_${Date.now()}`,
-    user_id: user.id,
-    type: 'deposit',
-    amount: numAmount,
-    title: method === 'card_to_card' ? 'واریز کارت به کارت (تایید شده)' : 'شارژ کیف پول از طریق درگاه پرداخت امن شاپرک',
-    status: 'completed',
-    ref_id: `DEP-${Math.floor(100000 + Math.random() * 900000)}`,
-    created_at: new Date().toISOString()
-  };
-
-  transactions.unshift(newTx);
-
-  res.json({
-    success: true,
-    message: `مبلغ ${numAmount.toLocaleString('fa-IR')} تومان با موفقیت به موجودی کیف پول اضافه شد.`,
-    new_balance: user.wallet_balance,
-    transaction: newTx
-  });
+  const result = await depositWallet(getCurrentUserId(), numAmount, method);
+  res.json(result);
 });
 
 // Withdraw from Wallet to Sheba IBAN
-app.post('/api/wallet/withdraw', (req: Request, res: Response) => {
-  const { amount, sheba, account_owner } = req.body;
+app.post('/api/wallet/withdraw', async (req: Request, res: Response) => {
+  const { amount, sheba } = req.body;
   const numAmount = Number(amount);
-  const user = users.find(u => u.id === currentUserId) || users[0];
-
-  if (!numAmount || numAmount <= 0) {
-    return res.status(400).json({ error: 'مبلغ برداشت نامعتبر است.' });
-  }
-
-  if (numAmount > user.wallet_balance) {
-    return res.status(400).json({ error: 'موجودی قابل برداشت شما کمتر از مبلغ درخواستی است.' });
-  }
+  const user = getCurrentUser();
 
   const targetSheba = sheba || user.sheba;
   if (!targetSheba) {
     return res.status(400).json({ error: 'لطفاً شماره شبای معتبر بانکی خود را وارد کنید.' });
   }
 
-  // Deduct from available balance
-  user.wallet_balance -= numAmount;
-
-  const newTx: WalletTransaction = {
-    id: `tx_${Date.now()}`,
-    user_id: user.id,
-    type: 'withdraw',
-    amount: numAmount,
-    title: `درخواست برداشت وجه به شماره شبا ${targetSheba.slice(-8)}`,
-    status: 'completed',
-    ref_id: `WTH-${Math.floor(100000 + Math.random() * 900000)}`,
-    sheba: targetSheba,
-    created_at: new Date().toISOString()
-  };
-
-  transactions.unshift(newTx);
-
-  res.json({
-    success: true,
-    message: `درخواست برداشت ${numAmount.toLocaleString('fa-IR')} تومان به شماره شبا ثبت و واریز شد (پایا/ساتنا).`,
-    new_balance: user.wallet_balance,
-    transaction: newTx
-  });
-});
-
-// ====================================================
-// Escrow Contracts Management Endpoints
-// ====================================================
-
-// General Stats
-app.get('/api/stats', (req: Request, res: Response) => {
-  const active = contracts.filter(c => c.status === 'active' || c.status === 'work_submitted').length;
-  const pending = contracts.filter(c => c.status === 'pending_party_b' || c.status === 'awaiting_payment').length;
-  const drafts = contracts.filter(c => c.status === 'draft').length;
-  const completed = contracts.filter(c => c.status === 'completed').length;
-  const inDispute = contracts.filter(c => c.status === 'in_dispute').length;
-  const totalVolume = contracts
-    .filter(c => c.status !== 'cancelled' && c.status !== 'draft')
-    .reduce((sum, c) => sum + (c.amount || 0), 0);
-
-  res.json({
-    active,
-    pending,
-    drafts,
-    completed,
-    inDispute,
-    totalVolume,
-    contractsCount: contracts.length,
-    commissionRate: 10
-  });
-});
-
-// Get Contracts (Filterable by status, role, search)
-app.get('/api/contracts', (req: Request, res: Response) => {
-  const { status, category, search } = req.query;
-  let result = [...contracts];
-
-  if (status && status !== 'all') {
-    if (status === 'active') {
-      result = result.filter(c => c.status === 'active' || c.status === 'work_submitted');
-    } else if (status === 'pending') {
-      result = result.filter(c => c.status === 'pending_party_b' || c.status === 'awaiting_payment' || c.status === 'awaiting_receipt_approval');
-    } else {
-      result = result.filter(c => c.status === status);
-    }
+  const result = await withdrawWallet(getCurrentUserId(), numAmount, targetSheba);
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
   }
-
-  if (category && category !== 'all') {
-    result = result.filter(c => c.category === category);
-  }
-
-  if (search && typeof search === 'string') {
-    const q = search.toLowerCase().trim();
-    result = result.filter(c =>
-      c.title.toLowerCase().includes(q) ||
-      c.contract_id.toLowerCase().includes(q) ||
-      (c.buyer_fullname && c.buyer_fullname.toLowerCase().includes(q)) ||
-      (c.seller_fullname && c.seller_fullname.toLowerCase().includes(q)) ||
-      (c.description && c.description.toLowerCase().includes(q))
-    );
-  }
-
   res.json(result);
+});
+
+// ====================================================
+// ۵. مسیرهای قراردادهای اسکرو (Contracts API)
+// ====================================================
+
+// General Dashboard Stats
+app.get('/api/stats', (req: Request, res: Response) => {
+  const stats = getDashboardStats();
+  res.json(stats);
+});
+
+// Get Contracts (Filterable)
+app.get('/api/contracts', (req: Request, res: Response) => {
+  const { status, category, search, userId } = req.query;
+  const list = getContracts({
+    status: status as string,
+    category: category as string,
+    search: search as string,
+    userId: userId ? Number(userId) : undefined
+  });
+  res.json(list);
 });
 
 // Get Single Contract by ID
 app.get('/api/contracts/:id', (req: Request, res: Response) => {
-  const c = contracts.find(x => x.contract_id === req.params.id || x.id === req.params.id);
+  const c = getContract(req.params.id);
   if (!c) {
     return res.status(404).json({ error: 'قرارداد یا پیش‌نویس مورد نظر یافت نشد.' });
   }
@@ -283,345 +431,103 @@ app.get('/api/contracts/:id', (req: Request, res: Response) => {
 });
 
 // Create New Escrow Contract or Draft
-app.post('/api/contracts', (req: Request, res: Response) => {
-  const body = req.body || {};
-  const cat = body.category || 'GEN';
-  const cid = body.contract_id || generateContractId(cat);
-  const now = new Date().toISOString();
-  const user = users.find(u => u.id === currentUserId) || users[0];
-
-  const role = body.role || 'employer';
-  const isEmployer = role === 'employer';
-
-  const newContract: Contract = {
-    id: `c_${Date.now()}`,
-    contract_id: cid,
-    title: body.title || 'قرارداد جدید میانجی',
-    amount: Number(body.amount) || 0,
-    category: cat,
-    deadline: Number(body.deadline) || 7,
-    description: body.description || '',
-    free_edits: Number(body.free_edits) || 3,
-    free_edits_left: Number(body.free_edits) || 3,
-    commission_payer: body.commission_payer || 'freelancer',
-    creator_id: user.id,
-    created_by: user.id,
-    status: body.as_draft ? 'draft' : 'pending_party_b',
-    buyer_id: isEmployer ? user.id : undefined,
-    buyer_fullname: isEmployer ? (body.signer_fullname || user.full_name) : body.counterparty_name,
-    buyer_phone: isEmployer ? (body.signer_phone || user.phone_number) : body.counterparty_phone,
-    buyer_national_id: isEmployer ? (body.signer_national_id || user.national_id) : undefined,
-    buyer_signed_at: isEmployer && !body.as_draft ? now : undefined,
-    buyer_otp_verified: isEmployer && !body.as_draft ? true : false,
-    seller_id: !isEmployer ? user.id : undefined,
-    seller_fullname: !isEmployer ? (body.signer_fullname || user.full_name) : body.counterparty_name,
-    seller_phone: !isEmployer ? (body.signer_phone || user.phone_number) : body.counterparty_phone,
-    seller_national_id: !isEmployer ? (body.signer_national_id || user.national_id) : undefined,
-    seller_signed_at: !isEmployer && !body.as_draft ? now : undefined,
-    seller_otp_verified: !isEmployer && !body.as_draft ? true : false,
-    milestones: body.milestones || [],
-    staged_payment: Boolean(body.staged_payment),
-    history: [
-      { event: `قرارداد توسط ${user.full_name} ثبت گردید.`, timestamp: now, actor: isEmployer ? 'کارفرما' : 'مجری' }
-    ],
-    created_at: now
-  };
-
-  contracts.unshift(newContract);
-  res.status(201).json(newContract);
+app.post('/api/contracts', async (req: Request, res: Response) => {
+  try {
+    const newContract = await createContract(req.body || {});
+    res.status(201).json(newContract);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Update Contract / Draft
-app.put('/api/contracts/:id', (req: Request, res: Response) => {
-  const index = contracts.findIndex(x => x.contract_id === req.params.id || x.id === req.params.id);
-  if (index === -1) {
+app.put('/api/contracts/:id', async (req: Request, res: Response) => {
+  const updated = await updateContract(req.params.id, req.body || {});
+  if (!updated) {
     return res.status(404).json({ error: 'قرارداد یافت نشد.' });
   }
-
-  const existing = contracts[index];
-  const updates = req.body || {};
-  const updated: Contract = {
-    ...existing,
-    ...updates,
-    history: [
-      ...existing.history,
-      { event: 'مشخصات قرارداد به‌روزرسانی شد.', timestamp: new Date().toISOString(), actor: 'کاربر' }
-    ]
-  };
-
-  contracts[index] = updated;
   res.json(updated);
 });
 
 // Delete Draft
-app.delete('/api/contracts/:id', (req: Request, res: Response) => {
-  const cid = req.params.id;
-  const initialLen = contracts.length;
-  contracts = contracts.filter(c => c.contract_id !== cid && c.id !== cid);
-
-  if (contracts.length === initialLen) {
+app.delete('/api/contracts/:id', async (req: Request, res: Response) => {
+  const deleted = await deleteContract(req.params.id);
+  if (!deleted) {
     return res.status(404).json({ error: 'پیش‌نویس یافت نشد.' });
   }
-
   res.json({ success: true, message: 'پیش‌نویس با موفقیت حذف گردید.' });
 });
 
-// Sign Contract with OTP
-app.post('/api/contracts/:id/sign', (req: Request, res: Response) => {
-  const cid = req.params.id;
-  const c = contracts.find(x => x.contract_id === cid || x.id === cid);
-  if (!c) {
+// Sign Contract
+app.post('/api/contracts/:id/sign', async (req: Request, res: Response) => {
+  const { role = 'employer', fullname, phone, national_id } = req.body;
+  const updated = await signContract(req.params.id, role, { fullname, phone, national_id });
+  if (!updated) {
     return res.status(404).json({ error: 'قرارداد یافت نشد.' });
-  }
-
-  const { role, fullname, phone, national_id } = req.body;
-  const now = new Date().toISOString();
-
-  if (role === 'employer' || (!c.buyer_signed_at && c.status === 'draft')) {
-    c.buyer_fullname = fullname || c.buyer_fullname || 'کارفرما';
-    c.buyer_phone = phone || c.buyer_phone || '09121112233';
-    c.buyer_national_id = national_id || c.buyer_national_id || '0012345678';
-    c.buyer_signed_at = now;
-    c.buyer_otp_verified = true;
-    c.history.push({
-      event: `✍️ قرارداد توسط کارفرما (${c.buyer_fullname}) با تایید دیجیتال امضا شد.`,
-      timestamp: now,
-      actor: 'کارفرما'
-    });
-
-    if (c.seller_signed_at) {
-      c.status = 'awaiting_payment';
-      c.history.push({
-        event: 'هر دو طرف قرارداد را تایید کردند. در انتظار پرداخت وجه به صندوق امانت.',
-        timestamp: now,
-        actor: 'سیستم اسکرو'
-      });
-    } else {
-      c.status = 'pending_party_b';
-    }
-  } else {
-    c.seller_fullname = fullname || c.seller_fullname || 'مجری پروژه';
-    c.seller_phone = phone || c.seller_phone || '09359998877';
-    c.seller_national_id = national_id || c.seller_national_id || '0087654321';
-    c.seller_signed_at = now;
-    c.seller_otp_verified = true;
-    c.history.push({
-      event: `✍️ قرارداد توسط مجری (${c.seller_fullname}) با تایید دیجیتال امضا شد.`,
-      timestamp: now,
-      actor: 'مجری'
-    });
-
-    if (c.buyer_signed_at) {
-      c.status = 'awaiting_payment';
-      c.history.push({
-        event: 'هر دو طرف قرارداد را تایید کردند. در انتظار تامین وجه اسکرو.',
-        timestamp: now,
-        actor: 'سیستم اسکرو'
-      });
-    } else {
-      c.status = 'pending_party_b';
-    }
   }
 
   res.json({
     success: true,
-    contract: c,
-    pdf_ready: Boolean(c.buyer_signed_at && c.seller_signed_at),
-    pdf_url: `/api/contracts/${c.contract_id}/pdf`
+    contract: updated,
+    pdf_ready: Boolean(updated.buyer_signed_at && updated.seller_signed_at),
+    pdf_url: `/api/contracts/${updated.contract_id}/pdf`
   });
 });
 
 // Escrow Funding / Deposit
-app.post('/api/contracts/:id/pay', (req: Request, res: Response) => {
-  const c = contracts.find(x => x.contract_id === req.params.id || x.id === req.params.id);
-  if (!c) return res.status(404).json({ error: 'قرارداد یافت نشد.' });
-
-  const user = users.find(u => u.id === currentUserId) || users[0];
-  const now = new Date().toISOString();
-
-  // If user has enough balance in wallet, deduct from available and increase locked escrow
-  if (user.wallet_balance >= c.amount) {
-    user.wallet_balance -= c.amount;
-    user.escrow_locked_balance += c.amount;
+app.post('/api/contracts/:id/pay', async (req: Request, res: Response) => {
+  const result = await payContractEscrow(req.params.id, getCurrentUserId());
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
   }
-
-  c.status = 'active';
-  c.history.push({
-    event: `💳 مبلغ ${c.amount.toLocaleString('fa-IR')} تومان در صندوق امانت امن میانجی قفل شد. پروژه فعال گردید.`,
-    timestamp: now,
-    actor: 'کارفرما'
-  });
-
-  const newTx: WalletTransaction = {
-    id: `tx_${Date.now()}`,
-    user_id: user.id,
-    type: 'escrow_lock',
-    amount: c.amount,
-    title: `قفل شدن وجه در اسکرو برای قرارداد ${c.contract_id}`,
-    status: 'completed',
-    ref_id: `ESC-${Math.floor(100000 + Math.random() * 900000)}`,
-    contract_id: c.contract_id,
-    created_at: now
-  };
-  transactions.unshift(newTx);
-
-  res.json({ success: true, contract: c });
+  res.json(result);
 });
 
-// Submit Deliverables / Work Done
-app.post('/api/contracts/:id/deliver', (req: Request, res: Response) => {
-  const c = contracts.find(x => x.contract_id === req.params.id || x.id === req.params.id);
-  if (!c) return res.status(404).json({ error: 'قرارداد یافت نشد.' });
-
+// Deliver Project Work
+app.post('/api/contracts/:id/deliver', async (req: Request, res: Response) => {
   const { notes, links } = req.body || {};
-  const now = new Date().toISOString();
-
-  c.status = 'work_submitted';
-  c.deliverables = {
-    notes: notes || 'خروجی کار آماده شده و طبق توافقات تحویل گردید.',
-    links: links || [],
-    submitted_at: now
-  };
-
-  c.history.push({
-    event: '📦 مجری پروژه خروجی‌های کار را ارسال کرد و در انتظار بررسی و تایید کارفرماست.',
-    timestamp: now,
-    actor: 'مجری'
-  });
-
-  res.json({ success: true, contract: c });
+  const updated = await deliverContract(req.params.id, { notes, links });
+  if (!updated) {
+    return res.status(404).json({ error: 'قرارداد یافت نشد.' });
+  }
+  res.json({ success: true, contract: updated });
 });
 
-// Approve & Release Funds to Seller
-app.post('/api/contracts/:id/approve', (req: Request, res: Response) => {
-  const c = contracts.find(x => x.contract_id === req.params.id || x.id === req.params.id);
-  if (!c) return res.status(404).json({ error: 'قرارداد یافت نشد.' });
-
-  const now = new Date().toISOString();
-  c.status = 'completed';
-
-  const commissionRate = 0.10; // 10% Platform fee
-  const commission = Math.round(c.amount * commissionRate);
-  const netAmount = c.amount - commission;
-
-  // Release buyer locked escrow
-  const buyer = users.find(u => u.id === (c.buyer_id || currentUserId));
-  if (buyer && buyer.escrow_locked_balance >= c.amount) {
-    buyer.escrow_locked_balance -= c.amount;
+// Approve & Release Funds
+app.post('/api/contracts/:id/approve', async (req: Request, res: Response) => {
+  const result = await approveContract(req.params.id);
+  if (!result.success) {
+    return res.status(404).json({ error: 'قرارداد یافت نشد.' });
   }
-
-  // Credit seller wallet
-  const seller = users.find(u => u.id === c.seller_id) || users[1];
-  if (seller) {
-    seller.wallet_balance += netAmount;
-  }
-
-  // Credit affiliate 10% of commission
-  const affiliateReward = Math.round(commission * 0.10);
-  if (buyer) {
-    buyer.wallet_balance += affiliateReward;
-    transactions.unshift({
-      id: `tx_${Date.now() + 1}`,
-      user_id: buyer.id,
-      type: 'affiliate_reward',
-      amount: affiliateReward,
-      title: `پاداش معرف معامله ${c.contract_id}`,
-      status: 'completed',
-      ref_id: `AFF-${Math.floor(100000 + Math.random() * 900000)}`,
-      created_at: now
-    });
-  }
-
-  c.history.push({
-    event: `🏁 کارفرما کار را تایید نهایی کرد. وجه امانت به مبلغ ${netAmount.toLocaleString('fa-IR')} تومان به کیف پول مجری واریز گردید. کارمزد پلتفرم: ${commission.toLocaleString('fa-IR')} تومان.`,
-    timestamp: now,
-    actor: 'کارفرما'
-  });
-
-  transactions.unshift({
-    id: `tx_${Date.now()}`,
-    user_id: seller ? seller.id : 290184712,
-    type: 'escrow_release',
-    amount: netAmount,
-    title: `تسویه نهایی قرارداد ${c.contract_id} پس از کسر کارمزد`,
-    status: 'completed',
-    ref_id: `REL-${Math.floor(100000 + Math.random() * 900000)}`,
-    contract_id: c.contract_id,
-    created_at: now
-  });
-
-  res.json({ success: true, contract: c });
+  res.json(result);
 });
 
 // Cancel Contract & Refund
-app.post('/api/contracts/:id/cancel', (req: Request, res: Response) => {
-  const c = contracts.find(x => x.contract_id === req.params.id || x.id === req.params.id);
-  if (!c) return res.status(404).json({ error: 'قرارداد یافت نشد.' });
-
-  const now = new Date().toISOString();
-  c.status = 'cancelled';
-
-  // If was active, refund buyer
-  const buyer = users.find(u => u.id === (c.buyer_id || currentUserId));
-  if (buyer && buyer.escrow_locked_balance >= c.amount) {
-    buyer.escrow_locked_balance -= c.amount;
-    buyer.wallet_balance += c.amount;
-    transactions.unshift({
-      id: `tx_${Date.now()}`,
-      user_id: buyer.id,
-      type: 'refund',
-      amount: c.amount,
-      title: `استرداد وجه قرارداد لغو شده ${c.contract_id}`,
-      status: 'completed',
-      ref_id: `REF-${Math.floor(100000 + Math.random() * 900000)}`,
-      contract_id: c.contract_id,
-      created_at: now
-    });
+app.post('/api/contracts/:id/cancel', async (req: Request, res: Response) => {
+  const result = await cancelContract(req.params.id);
+  if (!result.success) {
+    return res.status(404).json({ error: 'قرارداد یافت نشد.' });
   }
-
-  c.history.push({
-    event: '❌ قرارداد لغو گردید و وجه به کیف پول واریزکننده بازگردانده شد.',
-    timestamp: now,
-    actor: 'سیستم'
-  });
-
-  res.json({ success: true, contract: c });
+  res.json(result);
 });
 
 // ====================================================
-// KYC (Identity Verification) Endpoints
+// ۶. مسیرهای احراز هویت (KYC API)
 // ====================================================
 
 // Submit KYC
-app.post('/api/kyc/submit', (req: Request, res: Response) => {
+app.post('/api/kyc/submit', async (req: Request, res: Response) => {
   const { national_id, sheba, card_image } = req.body;
-  const user = users.find(u => u.id === currentUserId) || users[0];
-
-  if (national_id && !isValidIranianNationalId(national_id)) {
-    return res.status(400).json({ error: 'کد ملی وارد شده با الگوریتم ثبت احوال کشور مطابقت ندارد.' });
+  const result = await submitKyc(getCurrentUserId(), national_id, sheba, card_image);
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
   }
-
-  if (sheba && !isValidIranianSheba(sheba)) {
-    return res.status(400).json({ error: 'شماره شبای وارد شده نامعتبر است (فرمت IR + ۲۴ رقم و چک‌سام استاندارد).' });
-  }
-
-  user.national_id = national_id || user.national_id;
-  user.sheba = sheba ? sheba.toUpperCase() : user.sheba;
-  user.kyc_card_image = card_image || 'uploaded';
-  user.kyc_status = 'verified';
-  user.kyc_level = 'gold';
-  user.kyc_submitted_at = new Date().toISOString();
-
-  res.json({
-    success: true,
-    message: 'مدارک هویتی شما استعلام گردید و حساب کاربری به سطح طلایی ارتقا یافت.',
-    user
-  });
+  res.json(result);
 });
 
 // Get KYC Status
 app.get('/api/kyc/status', (req: Request, res: Response) => {
-  const user = users.find(u => u.id === currentUserId) || users[0];
+  const user = getCurrentUser();
   res.json({
     kyc_level: user.kyc_level,
     kyc_status: user.kyc_status,
@@ -631,174 +537,75 @@ app.get('/api/kyc/status', (req: Request, res: Response) => {
 });
 
 // ====================================================
-// Dispute & Arbitration Center Endpoints
+// ۷. مرکز داوری و حل اختلاف (Disputes API)
 // ====================================================
 
-// Get All Disputes
 app.get('/api/disputes', (req: Request, res: Response) => {
-  res.json(disputes);
+  res.json(getDisputes());
 });
 
-// Get Single Dispute with Messages
 app.get('/api/disputes/:id', (req: Request, res: Response) => {
-  const d = disputes.find(x => x.id === req.params.id);
+  const d = getDispute(req.params.id);
   if (!d) return res.status(404).json({ error: 'پرونده داوری یافت نشد.' });
   res.json(d);
 });
 
-// Open New Dispute for a Contract
-app.post('/api/disputes', (req: Request, res: Response) => {
-  const { contract_id, reason, description, evidence_files = [] } = req.body;
-  const c = contracts.find(x => x.contract_id === contract_id || x.id === contract_id);
-  if (!c) return res.status(404).json({ error: 'قرارداد یافت نشد.' });
-
-  const user = users.find(u => u.id === currentUserId) || users[0];
-  const now = new Date().toISOString();
-
-  const newDispute: DisputeCase = {
-    id: `disp_${Date.now()}`,
-    contract_id: c.contract_id,
-    contract_title: c.title,
-    claimant_id: user.id,
-    claimant_name: `${user.full_name} (${user.role === 'employer' ? 'کارفرما' : 'مجری'})`,
-    reason: reason || 'عدم توافق در تحویل یا کیفیت تعهدات',
-    description: description || '',
-    evidence_files,
-    status: 'under_review',
-    messages: [
-      {
-        id: `msg_${Date.now()}`,
-        sender_id: user.id,
-        sender_name: user.full_name,
-        sender_role: user.role === 'employer' ? 'buyer' : 'seller',
-        text: description || reason || 'درخواست رسیدگی داوری ثبت گردید.',
-        timestamp: now
-      }
-    ],
-    created_at: now
-  };
-
-  c.status = 'in_dispute';
-  c.dispute_id = newDispute.id;
-  c.history.push({
-    event: `⚖️ پرونده داوری با شناسه ${newDispute.id} بازگشایی شد و به داور ارجاع گردید.`,
-    timestamp: now,
-    actor: 'داوری'
+app.post('/api/disputes', async (req: Request, res: Response) => {
+  const { contract_id, reason, description, evidence_files } = req.body;
+  const d = await createDispute({
+    contract_id,
+    reason,
+    description,
+    claimant_id: getCurrentUserId(),
+    evidence_files
   });
-
-  disputes.unshift(newDispute);
-  res.status(201).json(newDispute);
+  if (!d) return res.status(404).json({ error: 'قرارداد جهت ثبت داوری یافت نشد.' });
+  res.status(201).json(d);
 });
 
-// Send Message inside Dispute Thread
-app.post('/api/disputes/:id/messages', (req: Request, res: Response) => {
-  const d = disputes.find(x => x.id === req.params.id);
-  if (!d) return res.status(404).json({ error: 'پرونده داوری یافت نشد.' });
-
+app.post('/api/disputes/:id/messages', async (req: Request, res: Response) => {
+  const user = getCurrentUser();
   const { text, attachment } = req.body;
   if (!text) return res.status(400).json({ error: 'متن پیام الزامی است.' });
 
-  const user = users.find(u => u.id === currentUserId) || users[0];
-  const now = new Date().toISOString();
-
-  const newMsg: DisputeMessage = {
-    id: `msg_${Date.now()}`,
+  const role = user.role === 'arbitrator' ? 'arbitrator' : (user.role === 'employer' ? 'buyer' : 'seller');
+  const msg = await addDisputeMessage(req.params.id, {
     sender_id: user.id,
     sender_name: user.full_name,
-    sender_role: user.role === 'arbitrator' ? 'arbitrator' : (user.role === 'employer' ? 'buyer' : 'seller'),
+    sender_role: role,
     text,
-    attachment,
-    timestamp: now
-  };
-
-  d.messages.push(newMsg);
-  res.status(201).json(newMsg);
+    attachment
+  });
+  if (!msg) return res.status(404).json({ error: 'پرونده داوری یافت نشد.' });
+  res.status(201).json(msg);
 });
 
-// Arbitrator Resolution Ruling
-app.post('/api/disputes/:id/resolve', (req: Request, res: Response) => {
-  const d = disputes.find(x => x.id === req.params.id);
-  if (!d) return res.status(404).json({ error: 'پرونده داوری یافت نشد.' });
-
+app.post('/api/disputes/:id/resolve', async (req: Request, res: Response) => {
   const { decision, comment } = req.body;
-  const now = new Date().toISOString();
-  const c = contracts.find(x => x.contract_id === d.contract_id);
-
-  d.status = 'resolved';
-  d.ruling = {
-    decision: decision || 'split_50_50',
-    arbitrator_name: 'داور رسمی میانجی (دکتر کریمی)',
-    comment: comment || 'بر اساس شواهد و قرارداد، رأی نهایی صادر گردید.',
-    resolved_at: now
-  };
-
-  if (c) {
-    c.status = decision === 'pay_seller' ? 'completed' : 'cancelled';
-    c.history.push({
-      event: `⚖️ رأی داوری صادر شد: "${decision}". توضیحات: ${comment || 'مستندات بررسی شد.'}`,
-      timestamp: now,
-      actor: 'داور حقوقی'
-    });
-  }
-
-  res.json({ success: true, dispute: d });
+  const resolved = await resolveDispute(req.params.id, { decision, comment });
+  if (!resolved) return res.status(404).json({ error: 'پرونده داوری یافت نشد.' });
+  res.json({ success: true, dispute: resolved });
 });
 
 // ====================================================
-// Affiliate & Ambassador Program Endpoints
+// ۸. سیستم سفیران (Affiliate API)
 // ====================================================
 
-// Get Affiliate Stats
 app.get('/api/affiliate', (req: Request, res: Response) => {
-  const user = users.find(u => u.id === currentUserId) || users[0];
-  const stats: AffiliateStats = {
-    referral_code: user.referral_code,
-    referral_link: `https://t.me/MiyanjiBot?start=${user.referral_code}`,
-    total_clicks: 148,
-    total_invited: 19,
-    active_traders: 8,
-    total_commission_earned: 1420000,
-    withdrawable_commission: 420000,
-    commission_rate_percent: 10,
-    referral_history: [
-      { user_name: 'محمد رضایی', signed_up_at: '۱۴۰۳/۰۷/۱۰', contracts_count: 3, earned_amount: 450000 },
-      { user_name: 'سارا کاظمی', signed_up_at: '۱۴۰۳/۰۷/۱۴', contracts_count: 2, earned_amount: 320000 },
-      { user_name: 'پویا امانی', signed_up_at: '۱۴۰۳/۰۷/۱۸', contracts_count: 1, earned_amount: 650000 }
-    ]
-  };
-  res.json(stats);
+  res.json(getAffiliateStats(getCurrentUserId()));
 });
 
-// Claim / Withdraw Affiliate Earnings
-app.post('/api/affiliate/withdraw', (req: Request, res: Response) => {
-  const user = users.find(u => u.id === currentUserId) || users[0];
-  const claimAmount = 420000;
-
-  user.wallet_balance += claimAmount;
-  transactions.unshift({
-    id: `tx_${Date.now()}`,
-    user_id: user.id,
-    type: 'affiliate_reward',
-    amount: claimAmount,
-    title: 'انتقال سود سیستم سفیران به کیف پول اصلی',
-    status: 'completed',
-    ref_id: `AFF-TRF-${Math.floor(100000 + Math.random() * 900000)}`,
-    created_at: new Date().toISOString()
-  });
-
-  res.json({
-    success: true,
-    message: `مبلغ ${claimAmount.toLocaleString('fa-IR')} تومان از سود سفیران به کیف پول شما منتقل شد.`,
-    new_wallet_balance: user.wallet_balance
-  });
+app.post('/api/affiliate/withdraw', async (req: Request, res: Response) => {
+  const result = await withdrawAffiliateEarnings(getCurrentUserId());
+  res.json(result);
 });
 
 // ====================================================
-// PDF Contract Generation Endpoint
+// ۹. تولید فایل رسمی PDF قرارداد (PDF Generation)
 // ====================================================
 app.get('/api/contracts/:id/pdf', async (req: Request, res: Response) => {
   try {
-    const c = contracts.find(x => x.contract_id === req.params.id || x.id === req.params.id);
+    const c = getContract(req.params.id);
     if (!c) {
       return res.status(404).json({ error: 'قرارداد یافت نشد.' });
     }
@@ -826,7 +633,7 @@ app.get('/api/contracts/:id/pdf', async (req: Request, res: Response) => {
       y: height - 80,
       width: width,
       height: 80,
-      color: rgb(0.11, 0.31, 0.85) // #1D4ED8
+      color: rgb(0.11, 0.31, 0.85)
     });
 
     page.drawText('MIYANJI SMART ESCROW & CONTRACTS', {
@@ -1107,56 +914,13 @@ app.get('/api/contracts/:id/pdf', async (req: Request, res: Response) => {
   }
 });
 
-// Telegram Bot Web Simulator API
-app.post('/api/bot/simulate', (req: Request, res: Response) => {
-  const { command, text } = req.body;
-  const input = (text || command || '').trim();
-
-  if (input === '/start' || input === 'شروع') {
-    return res.json({
-      reply: 'سلام! به سامانه جامع اسکرو میانجی (Miyanji Escrow) خوش آمدید.\nپلتفرم ثبت قراردادهای الکترونیک و واسطه‌گری امن در بستر تلگرام و وب.',
-      keyboard: [
-        ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-        ['📁 پیش‌نویس‌های من', '💳 کیف پول و اعتبار'],
-        ['👤 پروفایل کاربری', '💎 پنل سفیران'],
-        ['⚖️ داوری و حل اختلاف', '🎧 پشتیبانی']
-      ]
-    });
-  }
-
-  return res.json({
-    reply: `پیام دریافت شد: "${input}"\nجهت استفاده از خدمات، یکی از گزینه‌های منو را انتخاب فرمایید.`,
-    keyboard: [
-      ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-      ['💳 کیف پول و اعتبار', '💎 پنل سفیران']
-    ]
-  });
-});
-
 // ====================================================
-// Vite Integration (Dev Mode & Static Prod)
+// ۱۰. اتصال Vite جهت نمایش کنسول مانیتورینگ ربات در پورت ۳۰۰۰
 // ====================================================
-import { bot } from './src/bot';
-
-// ... (existing imports and code)
-
 async function startServer() {
   const isDev = process.env.NODE_ENV !== 'production';
-  
-  // Launch Bot (Disabled in favor of Python bot in main.py)
-  /*
-  if (process.env.BOT_TOKEN) {
-    bot.launch()
-      .then(() => console.log('🤖 Telegram bot launched.'))
-      .catch((err) => console.error('❌ Failed to launch Telegram bot:', err.message));
-  } else {
-    console.warn('⚠️ BOT_TOKEN not set, Telegram bot will not be launched.');
-  }
-  */
 
   if (isDev) {
-    // ...
-
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, host: HOST, port: PORT },
@@ -1171,7 +935,7 @@ async function startServer() {
   }
 
   app.listen(PORT, HOST, () => {
-    console.log(`🚀 Miyanji Escrow Web & MiniApp Server listening on http://${HOST}:${PORT}`);
+    console.log(`🚀 Miyanji Escrow Platform server running on http://${HOST}:${PORT}`);
   });
 }
 

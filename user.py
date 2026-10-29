@@ -1,9 +1,10 @@
 import io
 import re
+import time
 import logging
 from datetime import datetime, timezone, timedelta
 from telebot import TeleBot
-from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 
 from config import config
 import database as db
@@ -93,8 +94,6 @@ def notify_other_party(bot: TeleBot, contract: dict, actor_id: int, text: str, i
         if other_id:
             try:
                 bot.send_message(other_id, text, parse_mode="Markdown")
-                if include_card:
-                    render_contract_card(other_id, other_id, contract)
             except Exception as e:
                 logger.warning(f"ارسال اعلان به طرف مقابل ({other_id}) ناموفق بود: {e}")
     
@@ -113,6 +112,7 @@ def _finalize_mutual_cancel(bot: TeleBot, cid: str, contract: dict, confirmer_id
 
         amount = float(contract.get("amount", 0))
         comm, net, employer_pays = utils.calculate_commission(amount, payer=contract.get("commission_payer", "freelancer"))
+        refundable = max(0.0, amount - comm) if employer_pays else max(0.0, net)
         buyer_id = contract.get("buyer_id")
         seller_id = contract.get("seller_id")
 
@@ -660,14 +660,16 @@ def register_user_handlers(bot: TeleBot):
 
         # ۲. بررسی کلیک روی دکمه‌های منوی اصلی (جلوگیری قطعی از فریز شدن در صورت تغییر نظر کاربر)
         main_menu_triggers = {
-            "💳 کیف پول و اعتبار": show_wallet,
-            "کیف پول و اعتبار 💳": show_wallet,
-            "🤝 ثبت معامله جدید": start_wizard_create,
-            "📜 لیست معاملات من": show_my_contracts,
-            "👤 پروفایل کاربری": show_profile_menu,
-            "💎 پنل سفیران": show_ambassador_panel,
-            "⚡ پنل مدیریت هوشمند": show_admin_panel,
-            "پنل مدیریت": show_admin_panel,
+            "💳 کیف پول و اعتبار": lambda m: show_wallet(m),
+            "کیف پول و اعتبار 💳": lambda m: show_wallet(m),
+            "🤝 ثبت معامله جدید": lambda m: start_new_contract(m),
+            "🤝 ایجاد معامله جدید": lambda m: start_new_contract(m),
+            "📜 لیست معاملات من": lambda m: show_my_contracts(m),
+            "📜 معاملات من": lambda m: show_my_contracts(m),
+            "👤 پروفایل کاربری": lambda m: handle_identity_verification(m),
+            "💎 پنل سفیران": lambda m: handle_ambassador_panel(m),
+            "⚡ پنل مدیریت هوشمند": lambda m: show_admin_panel(m),
+            "پنل مدیریت": lambda m: show_admin_panel(m),
         }
         if text in main_menu_triggers:
             db.clear_user_state(user_id)
@@ -1011,17 +1013,17 @@ def register_user_handlers(bot: TeleBot):
             if text in ["💳 کیف پول و اعتبار", "کیف پول و اعتبار 💳"]:
                 show_wallet(message)
                 return
-            elif text == "🤝 ثبت معامله جدید":
-                start_wizard_create(message)
+            elif text in ["🤝 ثبت معامله جدید", "🤝 ایجاد معامله جدید"]:
+                start_new_contract(message)
                 return
-            elif text == "📜 لیست معاملات من":
+            elif text in ["📜 لیست معاملات من", "📜 معاملات من"]:
                 show_my_contracts(message)
                 return
-            elif text == "👤 پروفایل کاربری":
-                show_profile_menu(message)
+            elif text in ["👤 پروفایل کاربری", "پروفایل کاربری", "پروفایل"]:
+                handle_identity_verification(message)
                 return
-            elif text == "💎 پنل سفیران":
-                show_ambassador_panel(message)
+            elif text in ["💎 پنل سفیران", "پنل سفیران"]:
+                handle_ambassador_panel(message)
                 return
             elif text in ["⚡ پنل مدیریت هوشمند", "پنل مدیریت"]:
                 show_admin_panel(message)
@@ -5813,6 +5815,7 @@ def register_user_handlers(bot: TeleBot):
         completed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         
         # محاسبه جریمه دیرکرد (۱۰٪ مبلغ کل)
+        amount = float(contract.get("amount", 0))
         penalty_amount = 0.0
         delivered_at_str = contract.get("delivered_at")
         deadline_at_str = contract.get("delivery_deadline")
@@ -5836,7 +5839,6 @@ def register_user_handlers(bot: TeleBot):
         except Exception:
             pass
 
-        amount = float(contract.get("amount", 0))
         seller_id = contract.get("seller_id")
         
         final_payout = amount

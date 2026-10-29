@@ -1178,7 +1178,7 @@ def get_ambassador_dashboard_stats(user_id: int) -> Dict[str, Any]:
 
         return stats
     except Exception as e:
-        logger.error(f"خطا در محاسبه آمار داشبورد سفیر {ambassador_id}: {e}")
+        logger.error(f"خطا در محاسبه آمار داشبورد سفیر {user_id}: {e}")
         return stats
 
 
@@ -1849,15 +1849,6 @@ def get_user_transactions(user_id: int, limit: int = 10) -> List[Dict[str, Any]]
             txs = unique_txs[:limit]
 
     return txs
-
-def get_ambassador_referrals_count(user_id: int) -> int:
-    """تعداد زیرمجموعه‌های یک سفیر"""
-    if not supabase: return 0
-    try:
-        res = supabase.table("users").select("id", count="exact").eq("referred_by", user_id).execute()
-        return getattr(res, 'count', 0) or 0
-    except Exception:
-        return 0
 
 
 # ====================================================

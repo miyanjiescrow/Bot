@@ -39,15 +39,15 @@ def healthz():
     return "OK", 200
 
 def run_flask():
-    # Render provides the port via the PORT environment variable
-    port = int(os.environ.get("PORT", 3000))
-    logger.info(f"🌐 Starting health check server on port {port}...")
-    try:
-        from werkzeug.serving import make_server
-        srv = make_server('0.0.0.0', port, app)
-        srv.serve_forever()
-    except Exception as e:
-        logger.error(f"❌ Flask server failed: {e}")
+    for p in [int(os.environ.get("FLASK_PORT", 8888)), 8889, 8890, 8891]:
+        try:
+            from werkzeug.serving import make_server
+            srv = make_server('0.0.0.0', p, app)
+            logger.info(f"🌐 Starting health check server on port {p}...")
+            srv.serve_forever()
+            break
+        except Exception as e:
+            logger.debug(f"Port {p} not available: {e}")
 
 import signal
 import json
@@ -152,8 +152,16 @@ def main():
         logger.info("🔗 Supabase connection established.")
 
     # ۴. پیکربندی ربات تلگرام با هندلر خطا برای تردها
+    token = config.BOT_TOKEN
+    has_real_token = bool(token and ":" in token)
+
+    if not has_real_token:
+        logger.warning("⚠️ BOT_TOKEN is not configured or invalid in environment variables.")
+        logger.info("ℹ️ Handlers and database services will be validated in standby mode.")
+        token = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ1234567"
+
     bot = telebot.TeleBot(
-        config.BOT_TOKEN, 
+        token, 
         threaded=True, 
         num_threads=40,
         exception_handler=BotWorkerExceptionHandler()
@@ -166,10 +174,11 @@ def main():
             bot.stop_polling()
         except Exception:
             pass
-        try:
-            cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot)
-        except Exception:
-            pass
+        if has_real_token:
+            try:
+                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot)
+            except Exception:
+                pass
         try:
             if os.path.exists(PID_FILE):
                 os.remove(PID_FILE)
@@ -187,13 +196,20 @@ def main():
         admin.register_admin_handlers(bot)
         admin_settings.register_admin_settings_handlers(bot)
         user.register_user_handlers(bot)
-        reminders.start_reminder_service(bot)
+        if has_real_token:
+            reminders.start_reminder_service(bot)
         logger.info("✅ All handlers registered successfully.")
     except Exception as e:
         logger.error(f"💥 Failed to register handlers: {e}", exc_info=True)
         return
 
-    # ۶. پاکسازی مطمئن وبهوک یک‌بار در ابتدای استارت سیستم
+    # ۶. بررسی وجود توکن ربات تلگرام جهت آغاز پولینگ واقعی
+    if not has_real_token:
+        logger.info("💤 Bot handlers verified successfully. Set BOT_TOKEN in .env to begin live Telegram polling.")
+        while True:
+            time.sleep(30)
+
+    # پاکسازی مطمئن وبهوک یک‌بار در ابتدای استارت سیستم
     cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
 
     # ۷. شروع پولینگ پایدار و دائمی بدون دور ریختن پیام‌های ورودی
