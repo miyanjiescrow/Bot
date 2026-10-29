@@ -845,44 +845,79 @@ def update_wallet_balance(
     admin_document_id: str = None
 ) -> bool:
     """
-    بروزرسانی موجودی کیف پول کاربر با دقت بالا و قفل ترد جهت پایداری.
+    بروزرسانی موجودی کیف پول کاربر با دقت بالا و قفل ترد جهت پایداری (حافظه رم + پایگاه داده).
     """
-    if not supabase:
+    try:
+        user_id_int = int(user_id)
+        amount_change = round(float(amount_change), 2)
+    except (ValueError, TypeError):
         return False
 
     with db_lock:
         try:
-            user_id = int(user_id)
-            amount_change = round(float(amount_change), 2)
-            
-            ensure_user_exists(user_id)
-            user = get_user(user_id)
-            if not user: return False
-            
-            current_balance = utils.safe_float(user.get("wallet_balance"), 0.0)
-            new_balance = round(current_balance + amount_change, 2)
-            
-            if new_balance < -0.01:
-                return False
-
-            supabase.table("users").update({"wallet_balance": new_balance}).eq("id", user_id).execute()
-            _clear_user_cache(user_id)
-            
-            try:
-                tx_data = {
-                    "user_id": user_id,
-                    "amount": amount_change,
-                    "type": transaction_type,
-                    "description": description,
+            # ۱. بروزرسانی بی‌درنگ در حافظه رم (RAM-First)
+            user_in_mem = _in_memory_users.get(user_id_int)
+            if not user_in_mem:
+                user_in_mem = {
+                    "id": user_id_int,
+                    "full_name": f"کاربر {user_id_int}",
+                    "wallet_balance": 0.0,
+                    "is_verified": False,
                     "created_at": datetime.now(timezone.utc).isoformat()
                 }
-                if admin_document_id: tx_data["admin_document_id"] = admin_document_id
-                supabase.table("transactions").insert(tx_data).execute()
-            except: pass
+                _in_memory_users[user_id_int] = user_in_mem
+            
+            curr_mem_balance = utils.safe_float(user_in_mem.get("wallet_balance"), 0.0)
+            new_mem_balance = round(curr_mem_balance + amount_change, 2)
+            if new_mem_balance < -0.01:
+                return False
+            user_in_mem["wallet_balance"] = new_mem_balance
+
+            # ثبت تراکنش در حافظه محلی
+            tx_id_mem = int(time.time() * 1000) % 10000000 + 100000
+            mem_tx = {
+                "id": tx_id_mem,
+                "user_id": user_id_int,
+                "amount": amount_change,
+                "type": transaction_type,
+                "description": description,
+                "status": "approved",
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            _in_memory_transactions[tx_id_mem] = mem_tx
+            _in_memory_transactions[str(tx_id_mem)] = mem_tx
+
+            # ۲. بروزرسانی پایدار در Supabase
+            if supabase:
+                try:
+                    ensure_user_exists(user_id_int)
+                    user_db = get_user(user_id_int)
+                    curr_db_balance = utils.safe_float(user_db.get("wallet_balance"), curr_mem_balance) if user_db else curr_mem_balance
+                    new_db_balance = round(curr_db_balance + amount_change, 2)
+                    
+                    if new_db_balance >= -0.01:
+                        supabase.table("users").update({"wallet_balance": new_db_balance}).eq("id", user_id_int).execute()
+                        _clear_user_cache(user_id_int)
+                    
+                    try:
+                        tx_data = {
+                            "user_id": user_id_int,
+                            "amount": amount_change,
+                            "type": transaction_type,
+                            "description": description,
+                            "created_at": datetime.now(timezone.utc).isoformat()
+                        }
+                        if admin_document_id:
+                            tx_data["admin_document_id"] = admin_document_id
+                        supabase.table("transactions").insert(tx_data).execute()
+                    except Exception as tx_err:
+                        logger.warning(f"Notice inserting transaction row to Supabase: {tx_err}")
+                except Exception as db_err:
+                    logger.error(f"Error persisting wallet balance to Supabase for {user_id_int}: {db_err}")
 
             return True
         except Exception as e:
-            logger.error(f"Error in update_wallet_balance: {e}")
+            logger.error(f"Error in update_wallet_balance: {e}", exc_info=True)
             return False
 
 # ====================================================
@@ -890,122 +925,186 @@ def update_wallet_balance(
 # ====================================================
 
 def create_deposit_transaction(user_id: int, amount: float) -> Optional[int]:
-    """ایجاد یک تراکنش شارژ در وضعیت در انتظار (Pending) با پاسخ آنی و ثبت پس‌زمینه"""
+    """
+    ایجاد یک تراکنش شارژ در وضعیت در انتظار (Pending) با پاسخ آنی و ثبت امن در پس‌زمینه.
+    هرگز Exception پرتاب نمی‌کند و مانع فریز شدن ربات تلگرام می‌شود.
+    """
     try:
-        user_id_int = int(user_id)
-    except (ValueError, TypeError):
-        user_id_int = user_id
+        try:
+            user_id_int = int(user_id)
+        except (ValueError, TypeError):
+            user_id_int = user_id
 
-    # ایجاد شناسه عددی یکتا
-    tx_id = int(time.time() * 1000) % 10000000 + 100000
-    tx_record = {
-        "id": tx_id,
-        "user_id": user_id_int,
-        "amount": float(amount),
-        "type": "deposit",
-        "status": "pending",
-        "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    with db_lock:
-        _in_memory_transactions[tx_id] = tx_record
-        _in_memory_transactions[str(tx_id)] = tx_record
+        # ایجاد شناسه عددی یکتا
+        tx_id = int(time.time() * 1000) % 10000000 + 100000
+        tx_record = {
+            "id": tx_id,
+            "user_id": user_id_int,
+            "amount": float(amount),
+            "type": "deposit",
+            "status": "pending",
+            "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        with db_lock:
+            _in_memory_transactions[tx_id] = tx_record
+            _in_memory_transactions[str(tx_id)] = tx_record
 
-    # ذخیره در Supabase در پس‌زمینه بدون مسدودسازی ترد تعاملی تلگرام
-    if supabase:
-        def _persist_tx():
-            try:
-                ensure_user_exists(user_id_int)
-                data = {
-                    "id": tx_id,
-                    "user_id": user_id_int,
-                    "amount": float(amount),
-                    "type": "deposit",
-                    "status": "pending",
-                    "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان"
-                }
-                supabase.table("transactions").upsert(data, on_conflict="id").execute()
-            except Exception as e:
-                logger.debug(f"Notice async inserting deposit transaction: {e}")
+        # ذخیره در Supabase در پس‌زمینه بدون مسدودسازی ترد تعاملی تلگرام
+        if supabase:
+            def _persist_tx():
+                try:
+                    ensure_user_exists(user_id_int)
+                    data = {
+                        "id": tx_id,
+                        "user_id": user_id_int,
+                        "amount": float(amount),
+                        "type": "deposit",
+                        "status": "pending",
+                        "description": f"شارژ حساب به مبلغ {utils.format_currency(amount)} تومان",
+                        "created_at": datetime.now(timezone.utc).isoformat()
+                    }
+                    try:
+                        supabase.table("transactions").upsert(data, on_conflict="id").execute()
+                    except Exception as e1:
+                        logger.debug(f"Notice upsert tx in Supabase: {e1}")
+                        try:
+                            supabase.table("transactions").insert(data).execute()
+                        except Exception as e2:
+                            logger.debug(f"Notice insert tx with id in Supabase: {e2}")
+                            try:
+                                data_no_id = {k: v for k, v in data.items() if k != "id"}
+                                res = supabase.table("transactions").insert(data_no_id).execute()
+                                if res.data and len(res.data) > 0:
+                                    s_id = res.data[0].get("id")
+                                    if s_id:
+                                        with db_lock:
+                                            _in_memory_transactions[s_id] = tx_record
+                                            _in_memory_transactions[str(s_id)] = tx_record
+                            except Exception as e3:
+                                logger.warning(f"Notice persisting tx to Supabase: {e3}")
+                except Exception as e:
+                    logger.warning(f"Error in async persist deposit tx: {e}")
 
-        db_pool.submit(_persist_tx)
+            db_pool.submit(_persist_tx)
 
-    return tx_id
+        return tx_id
+    except Exception as e:
+        logger.error(f"Critical error in create_deposit_transaction: {e}", exc_info=True)
+        fallback_id = int(time.time() * 1000) % 10000000 + 100000
+        return fallback_id
 
 def update_deposit_receipt(transaction_id: int, file_id: str) -> bool:
     """بروزرسانی تراکنش با آیدی فایل فیش واریزی"""
-    with db_lock:
-        if transaction_id in _in_memory_transactions:
-            _in_memory_transactions[transaction_id]["receipt_file_id"] = file_id
-            _in_memory_transactions[transaction_id]["receipt_uploaded_at"] = datetime.now(timezone.utc).isoformat()
-            
-    if not supabase:
-        return True
     try:
-        res = supabase.table("transactions").update({
-            "receipt_file_id": file_id
-        }).eq("id", transaction_id).execute()
-        return True
+        try:
+            tx_id_int = int(transaction_id)
+        except (ValueError, TypeError):
+            tx_id_int = transaction_id
+
+        with db_lock:
+            if tx_id_int in _in_memory_transactions:
+                _in_memory_transactions[tx_id_int]["receipt_file_id"] = file_id
+                _in_memory_transactions[tx_id_int]["receipt_uploaded_at"] = datetime.now(timezone.utc).isoformat()
+            if str(tx_id_int) in _in_memory_transactions:
+                _in_memory_transactions[str(tx_id_int)]["receipt_file_id"] = file_id
+                _in_memory_transactions[str(tx_id_int)]["receipt_uploaded_at"] = datetime.now(timezone.utc).isoformat()
+                
+        if not supabase:
+            return True
+        try:
+            supabase.table("transactions").update({
+                "receipt_file_id": file_id
+            }).eq("id", tx_id_int).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"Notice updating deposit receipt in Supabase for transaction {tx_id_int}: {e}")
+            return True
     except Exception as e:
-        logger.warning(f"Notice updating deposit receipt in Supabase for transaction {transaction_id}: {e}")
+        logger.error(f"Error in update_deposit_receipt: {e}")
         return True
 
 def approve_deposit_transaction(transaction_id: int) -> bool:
     """تایید تراکنش، افزایش موجودی کاربر و تغییر وضعیت به approved"""
-    tx = None
-    with db_lock:
-        tx = _in_memory_transactions.get(transaction_id)
-        
-    if supabase:
+    try:
         try:
-            res = supabase.table("transactions").select("*").eq("id", transaction_id).execute()
-            if res.data:
-                tx = res.data[0]
-        except Exception as e:
-            logger.warning(f"Notice fetching tx {transaction_id} from Supabase: {e}")
+            tx_id_int = int(transaction_id)
+        except (ValueError, TypeError):
+            tx_id_int = transaction_id
 
-    if not tx:
-        return False
-        
-    if tx.get("status") == "approved":
-        return True  # قبلاً تایید شده
-        
-    user_id = tx["user_id"]
-    amount = float(tx["amount"])
-    
-    # افزایش موجودی کاربر
-    success = update_wallet_balance(user_id, amount, "deposit_approved", f"تایید شارژ حساب (تراکنش {transaction_id})")
-    
-    if success:
+        tx = None
         with db_lock:
-            if transaction_id in _in_memory_transactions:
-                _in_memory_transactions[transaction_id]["status"] = "approved"
+            tx = _in_memory_transactions.get(tx_id_int) or _in_memory_transactions.get(str(tx_id_int))
+            
         if supabase:
             try:
-                supabase.table("transactions").update({"status": "approved"}).eq("id", transaction_id).execute()
-            except Exception:
-                pass
-        return True
-    return False
+                res = supabase.table("transactions").select("*").eq("id", tx_id_int).execute()
+                if res.data and len(res.data) > 0:
+                    tx = res.data[0]
+            except Exception as e:
+                logger.warning(f"Notice fetching tx {tx_id_int} from Supabase: {e}")
+
+        if not tx:
+            logger.warning(f"Transaction {tx_id_int} not found for approval.")
+            return False
+            
+        if tx.get("status") == "approved":
+            return True  # قبلاً تایید شده
+            
+        user_id = tx["user_id"]
+        amount = float(tx["amount"])
+        
+        # افزایش موجودی کاربر
+        success = update_wallet_balance(user_id, amount, "deposit_approved", f"تایید شارژ حساب (تراکنش {tx_id_int})")
+        
+        if success:
+            with db_lock:
+                if tx_id_int in _in_memory_transactions:
+                    _in_memory_transactions[tx_id_int]["status"] = "approved"
+                if str(tx_id_int) in _in_memory_transactions:
+                    _in_memory_transactions[str(tx_id_int)]["status"] = "approved"
+            if supabase:
+                try:
+                    supabase.table("transactions").update({"status": "approved"}).eq("id", tx_id_int).execute()
+                except Exception as e:
+                    logger.warning(f"Notice updating status to approved in Supabase: {e}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error in approve_deposit_transaction: {e}", exc_info=True)
+        return False
 
 def reject_deposit_transaction(transaction_id: int, reason: str = None) -> bool:
     """رد تراکنش شارژ حساب"""
-    with db_lock:
-        if transaction_id in _in_memory_transactions:
-            _in_memory_transactions[transaction_id]["status"] = "rejected"
-            if reason:
-                _in_memory_transactions[transaction_id]["description"] = f"رد شده: {reason}"
-                
-    if not supabase:
-        return True
     try:
-        update_data = {"status": "rejected"}
-        if reason:
-            update_data["description"] = f"رد شده: {reason}"
-        supabase.table("transactions").update(update_data).eq("id", transaction_id).execute()
-        return True
+        try:
+            tx_id_int = int(transaction_id)
+        except (ValueError, TypeError):
+            tx_id_int = transaction_id
+
+        with db_lock:
+            if tx_id_int in _in_memory_transactions:
+                _in_memory_transactions[tx_id_int]["status"] = "rejected"
+                if reason:
+                    _in_memory_transactions[tx_id_int]["description"] = f"رد شده: {reason}"
+            if str(tx_id_int) in _in_memory_transactions:
+                _in_memory_transactions[str(tx_id_int)]["status"] = "rejected"
+                if reason:
+                    _in_memory_transactions[str(tx_id_int)]["description"] = f"رد شده: {reason}"
+                    
+        if not supabase:
+            return True
+        try:
+            update_data = {"status": "rejected"}
+            if reason:
+                update_data["description"] = f"رد شده: {reason}"
+            supabase.table("transactions").update(update_data).eq("id", tx_id_int).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"Notice rejecting deposit transaction in Supabase {tx_id_int}: {e}")
+            return True
     except Exception as e:
-        logger.warning(f"Notice rejecting deposit transaction in Supabase {transaction_id}: {e}")
+        logger.error(f"Error in reject_deposit_transaction: {e}")
         return True
 
 
@@ -1722,14 +1821,34 @@ def delete_user_draft(contract_id: str, user_id: int) -> bool:
         return False
 
 def get_user_transactions(user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-    """دریافت لیست تراکنش‌های اخیر کاربر"""
-    if not supabase: return []
-    try:
-        res = supabase.table("transactions").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
-        return res.data or []
-    except Exception as e:
-        logger.error(f"Error getting transactions for {user_id}: {e}")
-        return []
+    """دریافت لیست تراکنش‌های اخیر کاربر با پشتیبانی از Supabase و حافظه موقت رم"""
+    txs = []
+    if supabase:
+        try:
+            res = supabase.table("transactions").select("*").eq("user_id", int(user_id)).order("created_at", desc=True).limit(limit).execute()
+            if res.data:
+                txs = res.data
+        except Exception as e:
+            logger.error(f"Error getting transactions from Supabase for {user_id}: {e}")
+
+    if not txs:
+        with db_lock:
+            uid_int = int(user_id) if str(user_id).isdigit() else user_id
+            mem_txs = [
+                t for t in _in_memory_transactions.values() 
+                if isinstance(t, dict) and t.get("user_id") in (uid_int, str(uid_int))
+            ]
+            seen_ids = set()
+            unique_txs = []
+            for t in mem_txs:
+                tid = t.get("id")
+                if tid not in seen_ids:
+                    seen_ids.add(tid)
+                    unique_txs.append(t)
+            unique_txs.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+            txs = unique_txs[:limit]
+
+    return txs
 
 def get_ambassador_referrals_count(user_id: int) -> int:
     """تعداد زیرمجموعه‌های یک سفیر"""
