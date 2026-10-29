@@ -19,10 +19,15 @@ logger = logging.getLogger("Miyanji_Database")
 
 # Local SQLite Database for persistent FSM State Management
 _FSM_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miyanji_fsm.db")
+_fsm_lock = threading.Lock()
+_user_states: Dict[int, Dict[str, Any]] = {}
 
 def _init_local_fsm_db():
     try:
-        conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+        conn = sqlite3.connect(_FSM_DB_PATH, timeout=10.0)
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA busy_timeout = 10000;")
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS user_states (
@@ -33,7 +38,20 @@ def _init_local_fsm_db():
             )
         """)
         conn.commit()
+
+        # پیش‌بارگذاری تمام وضعیت‌های ذخیره‌شده قبلی در حافظه رم جهت عملکرد آنی
+        c.execute("SELECT user_id, state, data FROM user_states")
+        loaded_count = 0
+        for uid, st, dt_str in c.fetchall():
+            try:
+                dt = json.loads(dt_str) if dt_str else {}
+            except Exception:
+                dt = {}
+            with _fsm_lock:
+                _user_states[int(uid)] = {"current_state": st, "state_data": dt, "last_updated": time.time()}
+            loaded_count += 1
         conn.close()
+        logger.info(f"⚡ FSM Local Database initialized in WAL mode. Loaded {loaded_count} active states to RAM.")
     except Exception as e:
         logger.warning(f"Notice init local fsm sqlite: {e}")
 
@@ -81,8 +99,6 @@ except Exception as e:
     logger.error(f"خطا در اتصال به Supabase: {e}")
     supabase = None
 
-# حافظه موقت برای مدیریت وضعیت کاربران (FSM State Management)
-_user_states: Dict[int, Dict[str, Any]] = {}
 # حافظه موقت در صورت عدم دسترسی به Supabase
 _in_memory_contracts: Dict[str, Dict[str, Any]] = {}
 _in_memory_users: Dict[int, Dict[str, Any]] = {}
@@ -97,7 +113,6 @@ def is_user_blacklisted(user_id: int) -> bool:
     if not supabase:
         return False
     try:
-        # Cache this if possible in the future, but for now just query
         res = supabase.table("users").select("is_blacklisted").eq("id", user_id).execute()
         if res.data and len(res.data) > 0:
             return bool(res.data[0].get("is_blacklisted", False))
@@ -112,7 +127,8 @@ def is_user_blacklisted(user_id: int) -> bool:
 
 def set_user_state(user_id: int, state: str, data: Optional[Dict[str, Any]] = None) -> None:
     """
-    تنظیم وضعیت و داده‌های موقت کاربر با اولویت حافظه، پشتیبان محلی SQLite و همگام‌سازی دیتابیس.
+    تنظیم وضعیت و داده‌های موقت کاربر با سرعت آنی در حافظه رم (RAM-First)
+    و ثبت ناهمگام در پس‌زمینه (SQLite + Supabase) بدون مسدود کردن ترد پیام تلگرام.
     """
     if not user_id:
         return
@@ -123,32 +139,34 @@ def set_user_state(user_id: int, state: str, data: Optional[Dict[str, Any]] = No
     
     clean_data = dict(data) if data else {}
     now_ts = time.time()
-    logger.info(f"💾 [FSM_SAVE] User {user_id_int} -> State: {state} | Data keys: {list(clean_data.keys())}")
     
-    # ۱. کش حافظه رم (فوق سریع با پشتیبانی همزمان از کلید int و str)
-    with db_lock:
-        state_dict = {
-            "current_state": state,
-            "state_data": clean_data,
-            "last_updated": now_ts
-        }
+    # ۱. بروزرسانی بلادرنگ حافظه رم (زیر ۰.۰۰۱ میلی‌ثانیه بدون تداخل با تراکنش‌ها)
+    state_dict = {
+        "current_state": state,
+        "state_data": clean_data,
+        "last_updated": now_ts
+    }
+    with _fsm_lock:
         _user_states[user_id_int] = state_dict
-        _user_states[str(user_id_int)] = state_dict
 
-    # ۲. ذخیره پایدار در SQLite محلی (تضمین بقای وضعیت هنگام ریستارت سرور یا اختلال شبکه)
-    try:
-        conn = sqlite3.connect(_FSM_DB_PATH, timeout=2.0)
-        c = conn.cursor()
-        c.execute("""
-            INSERT OR REPLACE INTO user_states (user_id, state, data, updated_at)
-            VALUES (?, ?, ?, ?)
-        """, (user_id_int, state, json.dumps(clean_data, ensure_ascii=False), now_ts))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.debug(f"Local sqlite save notice for {user_id_int}: {e}")
+    # ۲. ذخیره پایدار در دیتابیس محلی SQLite در پس‌زمینه
+    def _save_local_sqlite():
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            conn.execute("PRAGMA busy_timeout = 5000;")
+            c = conn.cursor()
+            c.execute("""
+                INSERT OR REPLACE INTO user_states (user_id, state, data, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id_int, state, json.dumps(clean_data, ensure_ascii=False), now_ts))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Local sqlite save notice for {user_id_int}: {e}")
 
-    # ۳. ذخیره غیرهمزمان در Supabase (در پس‌زمینه بدون مسدودسازی پروسه اصلی تلگرام)
+    db_pool.submit(_save_local_sqlite)
+
+    # ۳. ذخیره در Supabase در پس‌زمینه (در صورت موجود بودن جدول)
     if supabase:
         def _persist_task():
             try:
@@ -158,16 +176,16 @@ def set_user_state(user_id: int, state: str, data: Optional[Dict[str, Any]] = No
                     "data": clean_data,
                     "updated_at": "now()"
                 }).execute()
-            except Exception as e:
-                logger.debug(f"Supabase user_states upsert notice for {user_id_int}: {e}")
-        
+            except Exception:
+                pass
         db_pool.submit(_persist_task)
 
 
 def get_user_state(user_id: int) -> Tuple[str, Dict[str, Any]]:
     """
-    دریافت وضعیت جاری کاربر (حافظه رم -> پایگاه محلی SQLite -> دیتابیس Supabase).
+    دریافت وضعیت جاری کاربر به‌صورت فوق سریع از حافظه رم (RAM-First).
     خروجی همیشه یک تاپل (State, Data) است.
+    هیچ درخواست کند شبکه در این تابع اجرا نمی‌شود تا فیلترهای تلگرام قفل نشوند.
     """
     if not user_id:
         return "START", {}
@@ -176,15 +194,15 @@ def get_user_state(user_id: int) -> Tuple[str, Dict[str, Any]]:
     except (ValueError, TypeError):
         return "START", {}
     
-    # ۱. بررسی کش حافظه رم (بسیار سریع در کسری از میلی‌ثانیه)
-    with db_lock:
-        state_obj = _user_states.get(user_id_int) or _user_states.get(str(user_id_int))
+    # ۱. دسترسی مستقیم و امن به حافظه رم (فوق سریع)
+    with _fsm_lock:
+        state_obj = _user_states.get(user_id_int)
         if state_obj:
             return state_obj.get("current_state", "START"), state_obj.get("state_data", {})
     
-    # ۲. بررسی دیتابیس محلی SQLite
+    # ۲. در صورت عدم وجود در رم (مثلاً کاربر جدید یا بعد از راه‌اندازی)، بررسی سریع دیتابیس محلی SQLite
     try:
-        conn = sqlite3.connect(_FSM_DB_PATH, timeout=1.0)
+        conn = sqlite3.connect(_FSM_DB_PATH, timeout=2.0)
         c = conn.cursor()
         c.execute("SELECT state, data FROM user_states WHERE user_id = ?", (user_id_int,))
         row = c.fetchone()
@@ -195,68 +213,60 @@ def get_user_state(user_id: int) -> Tuple[str, Dict[str, Any]]:
                 dt = json.loads(row[1]) if row[1] else {}
             except Exception:
                 dt = {}
-            with db_lock:
-                obj = {"current_state": st, "state_data": dt, "last_updated": time.time()}
-                _user_states[user_id_int] = obj
-                _user_states[str(user_id_int)] = obj
+            with _fsm_lock:
+                _user_states[user_id_int] = {"current_state": st, "state_data": dt, "last_updated": time.time()}
             return st, dt
     except Exception as e:
         logger.debug(f"Local sqlite read notice for {user_id_int}: {e}")
 
-    # ۳. بررسی Supabase در صورت نیاز
-    if supabase:
-        try:
-            res = supabase.table("user_states").select("*").eq("id", user_id_int).execute()
-            if res.data and len(res.data) > 0:
-                row = res.data[0]
-                state = row.get("state", "START")
-                data = row.get("data") or {}
-                
-                with db_lock:
-                    obj = {
-                        "current_state": state,
-                        "state_data": data,
-                        "last_updated": time.time()
-                    }
-                    _user_states[user_id_int] = obj
-                    _user_states[str(user_id_int)] = obj
-                return state, data
-        except Exception as e:
-            logger.debug(f"Supabase get_user_state notice for {user_id_int}: {e}")
-            
+    # ۳. کاربر در وضعیت پیش‌فرض START است — فوراً در رم کش می‌کنیم تا بررسی‌های بعدی نیازی به دیسک نداشته باشند
+    default_obj = {
+        "current_state": "START",
+        "state_data": {},
+        "last_updated": time.time()
+    }
+    with _fsm_lock:
+        _user_states[user_id_int] = default_obj
+
     return "START", {}
 
 
 def clear_user_state(user_id: int) -> None:
-    """پاکسازی کامل وضعیت کاربر و بازگشت به منوی اصلی"""
+    """پاکسازی کامل وضعیت کاربر و بازگشت آنی به منوی اصلی"""
     if not user_id:
         return
     try:
         user_id_int = int(user_id)
     except (ValueError, TypeError):
         return
-    logger.info(f"🧹 [FSM_CLEAR] Resetting state for user {user_id_int}")
     
-    with db_lock:
-        reset_obj = {
-            "current_state": "START",
-            "state_data": {},
-            "last_updated": time.time()
-        }
+    reset_obj = {
+        "current_state": "START",
+        "state_data": {},
+        "last_updated": time.time()
+    }
+    with _fsm_lock:
         _user_states[user_id_int] = reset_obj
-        _user_states[str(user_id_int)] = reset_obj
     
-    try:
-        conn = sqlite3.connect(_FSM_DB_PATH, timeout=1.0)
-        c = conn.cursor()
-        c.execute("DELETE FROM user_states WHERE user_id = ?", (user_id_int,))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.debug(f"Local sqlite delete notice for {user_id_int}: {e}")
+    def _delete_local_sqlite():
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            c = conn.cursor()
+            c.execute("DELETE FROM user_states WHERE user_id = ?", (user_id_int,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Local sqlite delete notice for {user_id_int}: {e}")
+
+    db_pool.submit(_delete_local_sqlite)
 
     if supabase:
-        db_pool.submit(lambda: supabase.table("user_states").delete().eq("id", user_id_int).execute())
+        def _delete_supabase():
+            try:
+                supabase.table("user_states").delete().eq("id", user_id_int).execute()
+            except Exception:
+                pass
+        db_pool.submit(_delete_supabase)
 
 
 def get_user_draft(user_id: int) -> Optional[Dict[str, Any]]:

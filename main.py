@@ -95,63 +95,40 @@ def acquire_single_instance_lock():
     except Exception:
         logger.warning("Another process might be holding the flock lock.")
 
-def cleanup_and_reset_telegram_session(token: str, bot_instance=None):
+def cleanup_and_reset_telegram_session(token: str, bot_instance=None, drop_pending_updates: bool = True):
     """
-    پاکسازی کامل و تضمینی نشست‌های قبلی تلگرام:
-    ۱. حذف کامل وبهوک و دور ریختن پیام‌های قدیمی انباشته‌شده (drop_pending_updates)
-    ۲. قطع اتصال باز لانگ‌پولینگ اینستنس‌های قبلی با تایید آفست و تایم‌اوت صفر
+    پاکسازی مطمئن و استاندارد وبهوک تلگرام جهت آغاز پولینگ.
     """
     if not token:
         logger.warning("BOT_TOKEN is empty, skipping session reset.")
         return
 
     base_url = f"https://api.telegram.org/bot{token}"
-    logger.info("🧹 Initiating Telegram session cleanup and reset (clear webhook & drop pending updates)...")
+    logger.info(f"🧹 Clearing webhook (drop_pending_updates={drop_pending_updates})...")
     
-    # ۱. حذف کامل وبهوک از طریق خود آبجکت bot و telebot API
     if bot_instance:
         try:
             bot_instance.remove_webhook()
-            bot_instance.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ Webhook removed & pending updates dropped via bot_instance.")
+            bot_instance.delete_webhook(drop_pending_updates=drop_pending_updates)
+            logger.info("✅ Webhook removed via bot_instance.")
         except Exception as e:
             logger.debug(f"Notice bot_instance webhook removal: {e}")
 
     try:
-        telebot.apihelper.delete_webhook(token, drop_pending_updates=True)
-        logger.info("✅ Webhook purged via telebot.apihelper.")
+        telebot.apihelper.delete_webhook(token, drop_pending_updates=drop_pending_updates)
     except Exception as e:
         logger.debug(f"Notice apihelper webhook purge: {e}")
 
     try:
-        url = f"{base_url}/deleteWebhook?drop_pending_updates=true"
+        drop_param = "true" if drop_pending_updates else "false"
+        url = f"{base_url}/deleteWebhook?drop_pending_updates={drop_param}"
         req = urllib.request.Request(url, headers={"User-Agent": "MiyanjiEscrowBot/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            res = json.loads(resp.read().decode("utf-8"))
-            logger.info(f"✅ Webhook purged via direct API call: {res.get('description', 'OK')}")
+            pass
     except Exception as e:
-        logger.warning(f"⚠️ Direct Webhook purge notice: {e}")
+        logger.debug(f"Direct Webhook purge notice: {e}")
 
-    # ۲. بستن اتصال لانگ‌پولینگ اینستنس‌های قبلی و تخلیه آفست آپدیت‌ها
-    try:
-        url = f"{base_url}/getUpdates?offset=-1&limit=1&timeout=0"
-        req = urllib.request.Request(url, headers={"User-Agent": "MiyanjiEscrowBot/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            res = json.loads(resp.read().decode("utf-8"))
-            if res.get("ok") and res.get("result"):
-                last_update = res["result"][-1]
-                last_id = last_update.get("update_id")
-                if last_id:
-                    ack_url = f"{base_url}/getUpdates?offset={last_id + 1}&limit=1&timeout=0"
-                    ack_req = urllib.request.Request(ack_url, headers={"User-Agent": "MiyanjiEscrowBot/1.0"})
-                    with urllib.request.urlopen(ack_req, timeout=10) as ack_resp:
-                        pass
-                    logger.info(f"✅ Pending updates acknowledged and flushed up to ID {last_id + 1}.")
-    except Exception as e:
-        logger.debug(f"Polling flush notice: {e}")
-
-    # مکث کوتاه جهت بازنشانی سوکت‌ها در سرورهای ابری تلگرام
-    time.sleep(2.5)
+    time.sleep(1.0)
 
 class BotWorkerExceptionHandler(telebot.ExceptionHandler):
     def handle(self, exception):
@@ -216,26 +193,22 @@ def main():
         logger.error(f"💥 Failed to register handlers: {e}", exc_info=True)
         return
 
-    # ۶. پاکسازی تضمینی نشست‌های قبلی و ریست اتصال تلگرام پیش از آغاز پولینگ
-    cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot)
+    # ۶. پاکسازی مطمئن وبهوک یک‌بار در ابتدای استارت سیستم
+    cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
 
-    # ۷. شروع پولینگ کنترل‌شده با مدیریت تخصصی خطای ۴۰۹ (Conflict)
+    # ۷. شروع پولینگ پایدار و دائمی بدون دور ریختن پیام‌های ورودی
     conflict_count = 0
+    first_poll = True
     while True:
         try:
             logger.info("📡 Bot is now polling for updates...")
-            # حذف مطمئن وبهوک پیش از شروع دور جدید پولینگ
-            try:
-                bot.delete_webhook(drop_pending_updates=True)
-            except Exception:
-                pass
-
             bot.polling(
                 none_stop=True,
-                timeout=20,
-                long_polling_timeout=15,
-                skip_pending=True
+                timeout=25,
+                long_polling_timeout=20,
+                skip_pending=first_poll
             )
+            first_poll = False
             conflict_count = 0
             time.sleep(1)
         except telebot.apihelper.ApiTelegramException as e:
@@ -245,17 +218,16 @@ def main():
                 pass
             if e.error_code == 409 or "Conflict" in str(e) or "terminated by other getUpdates" in str(e):
                 conflict_count += 1
-                wait_time = min(15 + conflict_count * 10, 60)
+                wait_time = min(10 + conflict_count * 5, 45)
                 logger.warning(
                     f"⚔️ Polling Conflict (409) detected [Attempt #{conflict_count}]: {e.description}. "
-                    f"Waiting {wait_time}s and resetting Telegram session..."
+                    f"Waiting {wait_time}s for competing instance to release session..."
                 )
                 time.sleep(wait_time)
-                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot)
             else:
                 conflict_count = 0
                 logger.error(f"💥 Telegram API error ({e.error_code}): {e.description}")
-                time.sleep(5)
+                time.sleep(3)
         except Exception as e:
             try:
                 bot.stop_polling()
@@ -264,17 +236,16 @@ def main():
             err_msg = str(e)
             if "409" in err_msg or "Conflict" in err_msg or "terminated by other getUpdates" in err_msg:
                 conflict_count += 1
-                wait_time = min(15 + conflict_count * 10, 60)
+                wait_time = min(10 + conflict_count * 5, 45)
                 logger.warning(
                     f"⚔️ Polling Conflict (409) string matched [Attempt #{conflict_count}]: {err_msg}. "
-                    f"Waiting {wait_time}s and resetting Telegram session..."
+                    f"Waiting {wait_time}s for competing instance to release session..."
                 )
                 time.sleep(wait_time)
-                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot)
             else:
                 conflict_count = 0
                 logger.error(f"💥 General Polling Error: {e}", exc_info=True)
-                time.sleep(5)
+                time.sleep(3)
 
 if __name__ == "__main__":
     main()
