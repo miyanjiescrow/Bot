@@ -1733,9 +1733,17 @@ def register_user_handlers(bot: TeleBot):
 
     def _wizard_go_to_description(chat_id: int, message_id: int = None):
         text = (
-            "📝 **مرحله ۵ از ۵ — شرح تعهدات**\n\n"
-            "تعهدات اختصاصی پروژه و فایل‌های تحویلی را بنویسید.\n\n"
-            "💡 برای مشاهده تعهدات استاندارد و قانونی پلتفرم، دکمه زیر را بزنید:"
+            "📝 **مرحله ۵ از ۵ — شرح دقیق تعهدات و خواسته‌های پروژه**\n"
+            "────────────────────────────\n"
+            "⚖️ **هشدار بسیار مهم حقوقی و ملاک داوری:**\n"
+            "«ملاک داوری و قضاوت هیئت حل اختلاف میانجی، **صرفاً و منحصراً** همین توضیحاتی است که شما در این بخش می‌نویسید.»\n\n"
+            "⚠️ **توجه:** هرگونه توافق، پیام یا قول شفاهی خارج از این قرارداد (در چت‌های شخصی تلگرام، واتساپ، تماس تلفنی و...) "
+            "در صورت بروز اختلاف **هیچ‌گونه اعتبار استنادی ندارد** و داور فقط و فقط بر اساس متن ثبت‌شده در این کادر رای صادر می‌کند.\n\n"
+            "📋 **راهنمای تکمیل تعهدات (حتماً دقیق بنویسید):**\n"
+            "۱. **فرمت و فایل‌های تحویلی:** مثلاً فایل لایه باز (PSD / AI)، سورس‌کد کامل (Git)، وکتور SVG، داکیومنت ورد و PDF.\n"
+            "۲. **استانداردها و مشخصات فنی:** رزولوشن، زبان و فریم‌ورک برنامه‌نویسی، ابعاد، تعداد کلمات یا سرفصل‌ها.\n"
+            "۳. **شرایط تایید نهایی:** تست‌های مورد نظر و خروجی‌هایی که شرط تسویه حساب هستند.\n\n"
+            "✍️ لطفاً خواسته‌ها و تعهدات این پروژه را با تمام جزئیات در یک پیام ارسال کنید:"
         )
         markup = kb.get_wizard_description_interactive_inline()
         
@@ -1747,32 +1755,35 @@ def register_user_handlers(bot: TeleBot):
         else:
             bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
-    @bot.callback_query_handler(func=lambda call: call.data == "wiz_desc_view_legal")
+    @bot.callback_query_handler(func=lambda call: call.data in ["wiz_desc_view_legal", "wiz_desc_view_tips"])
     def wizard_step_view_legal(call: CallbackQuery):
         user_id = call.from_user.id
         _, data = db.get_user_state(user_id)
         draft = data.get("contract_draft", {}) if isinstance(data, dict) else {}
         category = draft.get("category", "سایر")
         
-        legal_text = utils.get_default_commitments(category)
+        tips_text = (
+            "💡 **راهنمای نگارش تعهدات بر اساس نوع پروژه:**\n\n"
+            "• **پروژه‌های طراحی و گرافیک:** ذکر ابعاد، فایل لایه باز (AI/PSD)، پالت رنگی CMYK/RGB، فونت‌ها و حق استفاده تجاری.\n"
+            "• **برنامه‌نویسی و IT:** ورژن ابزارها، تحویل سورس‌کد منسجم، مستندات راه‌اندازی (README)، عدم وجود باگ در تست‌های اولیه.\n"
+            "• **دانشجویی و ترجمه:** اصالت متن، تعداد صفحات یا کلمات، رعایت قالب‌بندی و جدول زمانی مشخص.\n"
+            "• **تولید محتوا:** تعداد کلمات، کلمات کلیدی سئو، بدون کپی‌برداری و تصاویر باکیفیت.\n\n"
+            "⚖️ **یادآوری مجدد:** تمامی این موارد باید توسط خود شما در متن قرارداد درج شود تا در زمان داوری قابل استناد باشد."
+        )
         
         bot.answer_callback_query(call.id)
         try:
             bot.edit_message_text(
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
-                text=f"📜 *تعهدات قانونی دسته‌بندی {category}:*\n\n"
-                     f"{legal_text}\n"
-                     "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید.",
+                text=tips_text,
                 parse_mode="Markdown",
                 reply_markup=kb.get_wizard_description_legal_back_inline()
             )
         except Exception:
             bot.send_message(
                 call.message.chat.id,
-                f"📜 *تعهدات قانونی دسته‌بندی {category}:*\n\n"
-                f"{legal_text}\n"
-                "💡 *راهنما:* این بندها پایه حقوقی قرارداد هستند. برای افزودن مورد خاص، از دکمه «✏️ افزودن تعهدات شخصی» استفاده کنید.",
+                tips_text,
                 parse_mode="Markdown",
                 reply_markup=kb.get_wizard_description_legal_back_inline()
             )
@@ -1787,8 +1798,9 @@ def register_user_handlers(bot: TeleBot):
         bot.answer_callback_query(call.id)
         bot.send_message(
             call.message.chat.id,
-            "✍️ لطفاً شرح تعهدات اختصاصی خود را ارسال کنید (مثلاً: تحویل فایل لایه باز فتوشاپ، مهلت تست ۴۸ ساعته و ...).\n\n"
-            "این متن به انتهای تعهدات قانونی پیش‌فرض اضافه خواهد شد.",
+            "✍️ لطفاً خواسته‌ها، تعهدات دقیق و فرمت فایل‌های تحویلی پروژه را ارسال کنید:\n\n"
+            "⚖️ *توجه: ملاک قضاوت و داوری حقوقی میانجی، صرفاً همین متنی است که ارسال می‌فرمایید.*",
+            parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
 
@@ -1797,30 +1809,29 @@ def register_user_handlers(bot: TeleBot):
         user_id = message.from_user.id
         _, data = db.get_user_state(user_id)
         draft = data.get("contract_draft", {}) if isinstance(data, dict) else {}
-        category = draft.get("category", "سایر")
         
-        custom_desc = (message.text or "").strip()[:2000]
-        if not custom_desc or len(custom_desc) < 5:
+        custom_desc = (message.text or "").strip()[:3000]
+        if not custom_desc or len(custom_desc) < 10:
             bot.send_message(
                 message.chat.id,
-                "⚠️ **خطا:** شرح تعهدات نمی‌تواند خالی باشد یا خیلی کوتاه باشد.\n"
-                "لطفاً حداقل یک مورد تعهد یا شرایط پروژه را بنویسید (مثلاً: فایل نهایی لایه باز تحویل شود)."
+                "⚠️ **توضیحات خیلی کوتاه یا ناقص است.**\n\n"
+                "با توجه به اینکه **ملاک داوری و قضاوت حقوقی میانجی صرفاً همین متن قرارداد است**، "
+                "لطفاً انتظارات و مشخصات دقیق فایل‌ها و پروژه را کامل بنویسید (حداقل ۱۰ کاراکتر):"
             )
             return
 
-        legal_text = utils.get_default_commitments(category)
-        
-        draft["description"] = f"{legal_text}\n\n📝 **تعهدات اختصاصی کاربر:**\n{custom_desc}"
+        # تعهدات پیش‌فرض حذف شد - تنها ورودی دقیق خود کاربر به عنوان شرح قرارداد ثبت می‌شود
+        draft["description"] = custom_desc
         _wizard_finish_and_go_to_free_edits(message.chat.id, user_id, draft)
 
     @bot.callback_query_handler(func=lambda call: call.data == "wiz_desc_skip")
     def wizard_step_description_skip(call: CallbackQuery):
-        bot.answer_callback_query(call.id, "⚠️ ثبت حداقل یک مورد تعهد شخصی الزامی است.", show_alert=True)
+        bot.answer_callback_query(call.id, "⚠️ ثبت شرح تعهدات الزامی است.", show_alert=True)
         bot.send_message(
             call.message.chat.id,
-            "📝 **الزام ثبت تعهدات**\n\n"
-            "طبق قوانین جدید، شما باید حداقل یک مورد از تعهدات خاص این پروژه را بنویسید.\n"
-            "لطفاً متن تعهد خود را ارسال کنید:",
+            "📝 **الزام ثبت تعهدات و خواسته‌های پروژه**\n\n"
+            "با توجه به اینکه ملاک حل اختلاف و داوری میانجی، متن همین بخش است، نوشتن تعهدات پروژه الزامی است.\n"
+            "لطفاً شرح خواسته خود را ارسال کنید:",
             reply_markup=kb.get_cancel_keyboard()
         )
 

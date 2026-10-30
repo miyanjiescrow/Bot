@@ -207,6 +207,7 @@ class DealCreationState:
     SELECT_CATEGORY = "DEAL_SELECT_CATEGORY"
     INPUT_TITLE = "DEAL_INPUT_TITLE"
     INPUT_AMOUNT = "DEAL_INPUT_AMOUNT"
+    INPUT_DESCRIPTION = "DEAL_INPUT_DESCRIPTION"  # مرحله ۵: شرح اختصاصی تعهدات توسط کاربر (ملاک انحصاری داوری، تعهدات پیش‌فرض حذف شدند)
     SELECT_FEE_PAYER = "DEAL_SELECT_FEE_PAYER"
     SELECT_INSPECTION = "DEAL_SELECT_INSPECTION"
     INPUT_INSPECTION_CUSTOM = "DEAL_INPUT_INSPECTION_CUSTOM"
@@ -393,6 +394,7 @@ def build_deal_preview_card(draft: Dict[str, Any]) -> str:
         
     creator_role_fa = "💼 کارفرما (خریدار)" if draft.get("creator_role") == "employer" else "🛠 مجری (فروشنده)"
     payer_fa = "کارفرما" if payer == "employer" else ("مجری" if payer == "freelancer" else "توافقی (۵۰/۵۰)")
+    custom_desc = draft.get("description", "تعهدات فنی مشخص‌شده توسط طرفین قرارداد.").strip()
     
     return (
         "📜 **پیش‌نویس قرارداد دیجیتال و صندوق اسکرو میانجی**\n"
@@ -408,9 +410,11 @@ def build_deal_preview_card(draft: Dict[str, Any]) -> str:
         "🛡 **بخش‌های اختیاری و تعهدات فنی:**\n"
         f"├ مهلت بررسی/تست: {insp_text}\n"
         f"└ سهمیه اصلاحیه رایگان: {rev_text}\n\n"
+        "📋 **تعهدات و خواسته‌های پروژه (ملاک داوری حقوقی):**\n"
+        f"«{custom_desc}»\n\n"
         "⚖️ **قوانین و ضمانت اجرایی میانجی:**\n"
+        "• ملاک داوری و حل اختلاف، صرفاً و منحصراً همین تعهدات مکتوب در قرارداد است و چت‌های خارج از قرارداد بررسی نمی‌شوند.\n"
         "• وجوه تا زمان تایید نهایی خروجی پروژه، در حساب امانی امن میانجی مسدود می‌ماند.\n"
-        "• در صورت بروز هرگونه اختلاف، داور رسمی حقوقی پرونده را در اتاق اختصاصی داوری بررسی و رای قطعی صادر می‌نماید.\n"
         "────────────────────────────\n"
         "💡 آیا اطلاعات فوق را تایید می‌فرمایید؟"
     )
@@ -430,6 +434,7 @@ def build_counterparty_welcome_card(deal: Dict[str, Any]) -> str:
     
     creator_is_buyer = deal.get("creator_role") == "employer"
     invite_role = "مجری (فروشنده)" if creator_is_buyer else "کارفرما (خریدار)"
+    deal_desc = deal.get("description", "مشخصات فنی و استانداردهای کیفی توافق‌شده طرفین.").strip()
     
     return (
         f"🤝 **دعوت به همکاری و انعقاد قرارداد اسکرو میانجی**\n"
@@ -441,9 +446,12 @@ def build_counterparty_welcome_card(deal: Dict[str, Any]) -> str:
         f"💵 **مبلغ کل معامله:** {amount:,.0f} تومان\n"
         f"🛡 **مهلت بررسی و تست:** {insp_text}\n"
         f"🔄 **سهمیه اصلاحیه:** {rev_text}\n\n"
+        f"📋 **تعهدات و اقلام تحویلی (ملاک داوری میانجی):**\n"
+        f"«{deal_desc}»\n\n"
         "📌 **روند کار اسکرو:**\n"
         "۱. پس از پذیرش این قرارداد، کارفرما وجه را به حساب امن میانجی واریز می‌نماید.\n"
         "۲. پس از اعلام قفل شدن وجه، مجری کار را شروع و فایل‌های نهایی را ارسال می‌کند.\n"
-        "۳. کارفرما در مهلت تعیین‌شده کار را بررسی و تایید می‌نماید تا وجه تسویه شود.\n\n"
+        "۳. کارفرما در مهلت تعیین‌شده کار را بررسی و تایید می‌نماید تا وجه تسویه شود.\n"
+        "⚖️ داوری میانجی در صورت هرگونه ادعا یا مغایرت، صرفاً بر مبنای تعهدات مندرج در این قرارداد خواهد بود.\n\n"
         "آیا با شرایط فوق و قوانین میانجی موافقید؟"
     )

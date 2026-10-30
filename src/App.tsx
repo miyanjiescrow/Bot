@@ -71,6 +71,7 @@ const App = () => {
     categoryLabel: '💻 برنامه‌نویسی و IT',
     title: 'توسعه ربات هوشمند صرافی در تلگرام با پایتون',
     amount: 3500000,
+    description: 'تحویل کامل سورس‌کد و مستندات راه‌اندازی، رعایت استانداردهای امنیتی، عدم وجود باگ بحرانی و تحویل داکیومنت کامل API.',
     commission_payer: 'split_50_50' as 'employer' | 'freelancer' | 'split_50_50',
     has_inspection_period: true,
     inspection_period_hours: 48,
@@ -201,6 +202,7 @@ const App = () => {
           inspection_period_hours: wizardDraft.inspection_period_hours,
           has_free_revisions: wizardDraft.has_free_revisions,
           free_revisions_count: wizardDraft.free_revisions_count,
+          description: wizardDraft.description,
           deadline: 7
         })
       });
@@ -216,7 +218,7 @@ const App = () => {
     } catch (e) {
       console.error(e);
     }
-    setWizardStep(6);
+    setWizardStep(7);
   };
 
   const sqlSchemaCode = `-- =============================================================================
@@ -278,7 +280,7 @@ CREATE TABLE IF NOT EXISTS public.deals (
     escrow_deposit_status VARCHAR(30) NOT NULL DEFAULT 'unpaid' 
         CHECK (escrow_deposit_status IN ('unpaid', 'paid_locked', 'released', 'refunded')),
     
-    description TEXT NULL,
+    description TEXT NULL, -- شرح دقیق تعهدات و خواسته‌های پروژه (ملاک انحصاری داوری و قضاوت هیئت حل اختلاف میانجی)
     history JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -486,24 +488,25 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
                       {wizardStep === 2 && 'گام ۲: انتخاب دسته‌بندی خدمت'}
                       {wizardStep === 3 && 'گام ۳: عنوان کوتاه و مبلغ معامله'}
                       {wizardStep === 4 && 'گام ۴: پرداخت‌کننده کارمزد اسکرو'}
-                      {wizardStep === 5 && 'گام ۵: بخش‌های اختیاری (مهلت تست و اصلاحیه)'}
-                      {wizardStep === 6 && 'گام ۶: قرارداد دیجیتال، لینک دعوت و پیوستن طرف دوم'}
+                      {wizardStep === 5 && 'گام ۵: تعهدات و خواسته‌های پروژه (ملاک داوری)'}
+                      {wizardStep === 6 && 'گام ۶: بخش‌های اختیاری (مهلت تست و اصلاحیه)'}
+                      {wizardStep === 7 && 'گام ۷: قرارداد دیجیتال، لینک دعوت و پیوستن طرف دوم'}
                     </h3>
                     <p className="text-xs text-slate-400">
-                      مرحله {wizardStep} از ۶ — زمان تقریبی تکمیل: ۳۵ ثانیه
+                      مرحله {wizardStep} از ۷ — زمان تقریبی تکمیل: ۴۰ ثانیه
                     </p>
                   </div>
                 </div>
 
                 {/* Progress Pills */}
                 <div className="flex items-center gap-1">
-                  {[1, 2, 3, 4, 5, 6].map(step => (
+                  {[1, 2, 3, 4, 5, 6, 7].map(step => (
                     <div
                       key={step}
                       className={`h-2 rounded-full transition-all duration-300 ${
                         step < wizardStep ? 'w-6 bg-emerald-500' :
                         step === wizardStep ? 'w-8 bg-blue-500 animate-pulse' :
-                        'w-4 bg-slate-800'
+                        'w-3 bg-slate-800'
                       }`}
                     />
                   ))}
@@ -770,6 +773,102 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
                       onClick={() => setWizardStep(5)}
                       className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition flex items-center gap-1.5"
                     >
+                      <span>ادامه به تعهدات و شرح پروژه</span>
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 5: Project Specifications & Custom Commitments (Sole Basis for Arbitration) */}
+              {wizardStep === 5 && (
+                <div className="space-y-5 max-w-2xl mx-auto py-2">
+                  <div className="text-center space-y-1 mb-2">
+                    <h4 className="text-base font-bold text-white">شرح دقیق تعهدات و خواسته‌های پروژه</h4>
+                    <p className="text-xs text-slate-400">
+                      تعهدات پیش‌فرض حذف شده‌اند تا دقیقاً آنچه از پروژه می‌خواهید ثبت و امضا شود.
+                    </p>
+                  </div>
+
+                  {/* High Priority Arbitration Warning Banner */}
+                  <div className="bg-amber-500/10 border-2 border-amber-500/40 rounded-2xl p-4 space-y-2 shadow-lg shadow-amber-500/5">
+                    <div className="flex items-center gap-2.5 text-amber-400 font-bold text-xs sm:text-sm">
+                      <Scale className="w-5 h-5 flex-shrink-0" />
+                      <span>قانون قطعی و ملاک داوری حقوقی سامانه میانجی</span>
+                    </div>
+                    <p className="text-xs text-amber-200/95 leading-relaxed font-semibold">
+                      ⚖️ ملاک داوری و قضاوت هیئت حل اختلاف میانجی، صرفاً و منحصراً همین توضیحاتی است که در این بخش می‌نویسید.
+                    </p>
+                    <p className="text-[11px] text-amber-300/80 leading-relaxed">
+                      ⚠️ هرگونه توافق، چت یا ارسال پیام خارج از قرارداد (در چت‌های شخصی تلگرام، واتساپ یا تماس تلفنی)، در زمان بروز اختلاف به هیچ‌وجه قابل استناد و بررسی نخواهد بود.
+                    </p>
+                  </div>
+
+                  {/* Guidance Box with Quick Category Tips */}
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                        <FileText className="w-4 h-4 text-blue-400" />
+                        راهنمای نگارش تعهدات فنی و اقلام تحویلی:
+                      </span>
+                      <span className="text-[10px] text-slate-400">کلیک روی گزینه‌ها برای درج سریع</span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {[
+                        { label: '+ فایل لایه باز وکتور (AI/SVG) با ۳۰۰ DPI', text: 'تحویل کامل فایل‌های لایه باز برداری وکتور (AI و SVG) با کیفیت ۳۰۰ DPI و پالت کدهای رنگی استاندارد.' },
+                        { label: '+ سورس‌کد با مستندات راه‌اندازی و داکیومنت', text: 'ارائه کامل سورس‌کد بدون نقص در ریپازیتوری گیت به همراه فایل README جامع و راهنمای نصب.' },
+                        { label: '+ تضمین اصالت اثر و عدم کپی‌برداری', text: 'تعهد به عدم کپی‌برداری و رعایت کامل حقوق مالکیت مادی و معنوی و عدم نقض کپی‌رایت.' },
+                        { label: '+ ترجمه و ویرایش تخصصی با ارجاعات علمی', text: 'ترجمه دقیق و روان با ویراستاری تخصصی، حفظ علائم نگارشی و ارجاعات علمی معتبر.' }
+                      ].map((chip, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            setWizardDraft(prev => ({
+                              ...prev,
+                              description: prev.description ? `${prev.description}\n• ${chip.text}` : chip.text
+                            }));
+                          }}
+                          className="text-[11px] bg-slate-900 hover:bg-slate-800 text-blue-300 hover:text-white border border-slate-800 hover:border-blue-500/50 px-2.5 py-1.5 rounded-lg transition"
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Custom Description Textarea */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <label className="font-bold text-slate-300">
+                        توضیحات و مشخصات دقیق پروژه (متن اصلی قرارداد):
+                      </label>
+                      <span className={`text-[10px] font-mono ${wizardDraft.description.trim().length >= 10 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {wizardDraft.description.trim().length} کاراکتر (حداقل ۱۰)
+                      </span>
+                    </div>
+                    <textarea
+                      rows={5}
+                      value={wizardDraft.description}
+                      onChange={e => setWizardDraft(prev => ({ ...prev, description: e.target.value }))}
+                      placeholder="دقیقاً بنویسید چه فایل‌هایی، با چه ابعاد، کیفیت یا استانداردی باید تحویل داده شوند..."
+                      className="w-full bg-slate-950 border border-slate-700 focus:border-blue-500 rounded-xl p-3.5 text-xs text-white placeholder-slate-500 focus:outline-none transition leading-relaxed resize-y"
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2">
+                    <button
+                      onClick={() => setWizardStep(4)}
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" /> مرحله قبل
+                    </button>
+                    <button
+                      onClick={() => setWizardStep(6)}
+                      disabled={wizardDraft.description.trim().length < 10}
+                      className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold px-5 py-2.5 rounded-xl transition flex items-center gap-1.5"
+                    >
                       <span>ادامه به بخش‌های اختیاری</span>
                       <ArrowLeft className="w-3.5 h-3.5" />
                     </button>
@@ -777,8 +876,8 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
                 </div>
               )}
 
-              {/* Step 5: Advanced Optional Fields (Inspection Period & Free Revisions) */}
-              {wizardStep === 5 && (
+              {/* Step 6: Advanced Optional Fields (Inspection Period & Free Revisions) */}
+              {wizardStep === 6 && (
                 <div className="space-y-6 max-w-xl mx-auto py-4">
                   <div className="text-center space-y-1 mb-2">
                     <h4 className="text-base font-bold text-white">بخش‌های اختیاری پیشرفته (تعهدات فریلنسری)</h4>
@@ -863,7 +962,7 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
 
                   <div className="flex justify-between items-center pt-2">
                     <button
-                      onClick={() => setWizardStep(4)}
+                      onClick={() => setWizardStep(5)}
                       className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
                     >
                       <ArrowRight className="w-3.5 h-3.5" /> مرحله قبل
@@ -879,8 +978,8 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
                 </div>
               )}
 
-              {/* Step 6: Generated Contract, Invite Link & Counterparty Acceptance */}
-              {wizardStep === 6 && (
+              {/* Step 7: Generated Contract, Invite Link & Counterparty Acceptance */}
+              {wizardStep === 7 && (
                 <div className="space-y-6 max-w-2xl mx-auto py-2">
                   <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -944,6 +1043,25 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
                            `${wizardDraft.free_revisions_count} بار رایگان`}
                         </span>
                       </div>
+                    </div>
+
+                    {/* Binding Arbitration Deliverables & Commitments Box */}
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                          <Scale className="w-4 h-4 text-amber-400" />
+                          تعهدات و مشخصات فنی ثبت‌شده (ملاک قطعی داوری حقوقی میانجی):
+                        </span>
+                        <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/30 font-semibold">
+                          فصل‌الخطاب داوری
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-200 whitespace-pre-line leading-relaxed bg-slate-900/90 p-3 rounded-lg border border-slate-800 font-normal">
+                        {wizardDraft.description}
+                      </div>
+                      <p className="text-[10px] text-amber-300/80 leading-relaxed">
+                        ⚖️ هیئت حل اختلاف میانجی در زمان بروز هرگونه اختلاف، منحصراً بر اساس تعهدات مندرج در این بخش قضاوت خواهد کرد و هیچ توافقی خارج از این قرارداد پذیرفته نخواهد شد.
+                      </p>
                     </div>
 
                     {/* Dedicated Invite Link Box */}

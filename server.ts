@@ -184,6 +184,7 @@ interface DealDraftState {
   categoryLabel?: string;
   title?: string;
   amount?: number;
+  description?: string;
   commission_payer?: 'employer' | 'freelancer' | 'split_50_50';
   has_inspection_period?: boolean;
   inspection_period_hours?: number;
@@ -405,12 +406,52 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       ...simulatorState.dealDraft,
       amount: parsedAmount
     };
+    simulatorState.state = 'DEAL_DESCRIPTION';
+
+    return res.json({
+      reply: `📝 **مرحله ۵ از ۸ — شرح دقیق تعهدات و خواسته‌های پروژه:**\n\n` +
+             `⚖️ **ملاک داوری و قضاوت هیئت حل اختلاف میانجی، منحصراً و تماماً همین توضیحاتی است که در این بخش می‌نویسید.**\n\n` +
+             `⚠️ **توجه مهم:** تعهدات پیش‌فرض به دلیل تنوع پروژه‌ها حذف شده‌اند و کاربر باید مشخص کند دقیقاً چه تعهدات و خروجی‌هایی مدنظر دارد. هرگونه توافق خارج از قرارداد در چت‌های خصوصی، در زمان بروز اختلاف فاقد اعتبار است.\n\n` +
+             `💡 **راهنمای نگارش تعهدات فنی:**\n` +
+             `• فرمت دقیق فایل‌های تحویلی (سورس‌کد، فایل لایه باز برداری AI/PSD، مستندات PDF)\n` +
+             `• استانداردهای کیفی، رزولوشن، نحوه تست و داکیومنت نصب\n` +
+             `• تعهد اصالت اثر و عدم نقض کپی‌رایت\n\n` +
+             `لطفاً توضیحات و تعهدات مورد نظر خود را تایپ فرمایید یا از گزینه‌های پیشنهادی زیر انتخاب کنید:`,
+      keyboard: [
+        ['تحویل سورس‌کد کامل به همراه مستندات راه‌اندازی و داکیومنت فنی'],
+        ['تحویل فایل‌های لایه باز برداری وکتور (AI و SVG) با کیفیت ۳۰۰ DPI'],
+        ['ترجمه و ویرایش دقیق تخصصی همراه با عدم سرقت علمی'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۵: دریافت شرح دقیق تعهدات (ملاک داوری) و سوال تعیین‌کننده کارمزد
+  if (simulatorState.state === 'DEAL_DESCRIPTION') {
+    const desc = input.trim();
+    if (desc.length < 5) {
+      return res.json({
+        reply: '⚠️ لطفاً توضیحات کامل‌تری بنویسید (حداقل ۵ کاراکتر). ملاک داوری رسمی میانجی همین متن خواهد بود:',
+        keyboard: [
+          ['تحویل سورس‌کد کامل به همراه مستندات راه‌اندازی و داکیومنت فنی'],
+          ['تحویل فایل‌های لایه باز برداری وکتور (AI و SVG) با کیفیت ۳۰۰ DPI'],
+          ['ترجمه و ویرایش دقیق تخصصی همراه با عدم سرقت علمی'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState.dealDraft = {
+      ...simulatorState.dealDraft,
+      description: desc
+    };
     simulatorState.state = 'DEAL_COMMISSION_PAYER';
 
+    const parsedAmount = simulatorState.dealDraft.amount || 100000;
     const fee = Math.round(parsedAmount * 0.05);
 
     return res.json({
-      reply: `⚖️ **مرحله ۵ از ۶ — پرداخت‌کننده کارمزد میانجی:**\n\n` +
+      reply: `⚖️ **مرحله ۶ از ۸ — پرداخت‌کننده کارمزد میانجی:**\n\n` +
              `💰 مبلغ پروژه: **${formatCurrency(parsedAmount)}**\n` +
              `📊 کل کارمزد اسکرو (۵٪): **${formatCurrency(fee)}**\n\n` +
              `چه کسی کارمزد خدمات امنیتی اسکرو را پرداخت می‌کند؟`,
@@ -436,7 +477,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     simulatorState.state = 'DEAL_INSPECTION';
 
     return res.json({
-      reply: `🛡 **بخش‌های اختیاری پیشرفته (۱/۲) — مهلت تست و بررسی (Inspection Period):**\n\n` +
+      reply: `🛡 **مرحله ۷ از ۸ — بخش‌های اختیاری (۱/۲): مهلت تست و بررسی (Inspection Period):**\n\n` +
              `آیا کارفرما پس از اعلام تحویل پروژه توسط مجری، مهلت تست داشته باشد؟\n` +
              `*(در طی این زمان، وجه در امانت میانجی محفوظ است تا خروجی تست و تایید شود)*`,
       keyboard: [
@@ -537,7 +578,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       has_free_revisions: draft.has_free_revisions || false,
       free_revisions_count: revCount,
       invite_token: inviteToken,
-      description: `قرارداد دیجیتال تحت پوشش اسکرو میانجی. مهلت تست: ${draft.inspection_period_hours || 0} ساعت. اصلاحیه رایگان: ${revCount} بار.`
+      description: draft.description || `تعهدات و استانداردهای فنی مورد توافق طرفین. مهلت تست: ${draft.inspection_period_hours || 0} ساعت. اصلاحیه رایگان: ${revCount} بار.`
     });
 
     simulatorState = {
@@ -571,7 +612,9 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
              `💰 **مبلغ معامله:** ${formatCurrency(amount)}\n` +
              `⚖️ **کارمزد:** ${payerFa}\n` +
              `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
-             `🔄 **سهمیه اصلاحیه:** ${revFa}\n` +
+             `🔄 **سهمیه اصلاحیه:** ${revFa}\n\n` +
+             `📋 **تعهدات فنی قرارداد (ملاک رسمی داوری میانجی):**\n` +
+             `«${draft.description || 'تعهدات مستقیم واردشده توسط کاربر'}»\n` +
              `────────────────────────────\n` +
              `🔗 **لینک دعوت اختصاصی طرف دوم:**\n\`${inviteLink}\`\n\n` +
              `💡 با زدن دکمه زیر می‌توانید شبیه‌سازی ورود طرف دوم را انجام دهید تا قرارداد توسط او تایید شده و وارد فاز پرداخت امانی شود:`,

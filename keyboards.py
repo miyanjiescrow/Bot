@@ -279,19 +279,23 @@ def get_ms_delivery_review_keyboard(contract_id: str, idx: int) -> InlineKeyboar
 
 
 def get_wizard_description_interactive_inline() -> InlineKeyboardMarkup:
-    """منوی تعاملی مرحله ۵ برای مدیریت تعهدات"""
+    """کیبورد راهنما و ثبت تعهدات در مرحله ۵ (بدون تعهدات پیش‌فرض)"""
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
-        InlineKeyboardButton("📋 مشاهده تعهدات قانونی پیش‌فرض", callback_data="wiz_desc_view_legal"),
-        InlineKeyboardButton("✏️ افزودن تعهدات شخصی به متن قانونی", callback_data="wiz_desc_add_custom")
+        InlineKeyboardButton("💡 مشاهده نکات و راهنمای نگارش تعهدات فریلنسری", callback_data="wiz_desc_view_tips"),
+        InlineKeyboardButton("✍️ آماده ارسال متن تعهدات هستم", callback_data="wiz_desc_add_custom"),
+        InlineKeyboardButton("❌ انصراف و بازگشت", callback_data="cancel_wizard")
     )
     return markup
 
 
 def get_wizard_description_legal_back_inline() -> InlineKeyboardMarkup:
-    """کیبورد بازگشت از نمایش تعهدات قانونی به منوی مرحله ۵"""
+    """کیبورد بازگشت از نمایش راهنما به کادر ثبت تعهدات"""
     markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="wiz_desc_back"))
+    markup.add(
+        InlineKeyboardButton("✍️ بازگشت و نوشتن تعهدات پروژه", callback_data="wiz_desc_back"),
+        InlineKeyboardButton("❌ انصراف", callback_data="cancel_wizard")
+    )
     return markup
 
 
