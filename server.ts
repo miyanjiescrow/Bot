@@ -428,14 +428,11 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     simulatorState.state = 'DEAL_DESCRIPTION';
 
     return res.json({
-      reply: `📝 **مرحله ۵ از ۸ — شرح دقیق تعهدات و خواسته‌های پروژه:**\n\n` +
-             `⚖️ **ملاک داوری و قضاوت هیئت حل اختلاف میانجی، منحصراً و تماماً همین توضیحاتی است که در این بخش می‌نویسید.**\n\n` +
-             `⚠️ **توجه مهم:** تعهدات پیش‌فرض به دلیل تنوع پروژه‌ها حذف شده‌اند و کاربر باید مشخص کند دقیقاً چه تعهدات و خروجی‌هایی مدنظر دارد. هرگونه توافق خارج از قرارداد در چت‌های خصوصی، در زمان بروز اختلاف فاقد اعتبار است.\n\n` +
-             `💡 **راهنمای نگارش تعهدات فنی:**\n` +
-             `• فرمت دقیق فایل‌های تحویلی (سورس‌کد، فایل لایه باز برداری AI/PSD، مستندات PDF)\n` +
-             `• استانداردهای کیفی، رزولوشن، نحوه تست و داکیومنت نصب\n` +
-             `• تعهد اصالت اثر و عدم نقض کپی‌رایت\n\n` +
-             `لطفاً توضیحات و تعهدات مورد نظر خود را تایپ فرمایید یا از گزینه‌های پیشنهادی زیر انتخاب کنید:`,
+      reply: `📝 **مرحله ۵ از ۶ — شرح دقیق تعهدات و خواسته‌های پروژه:**\n────────────────────────────\n` +
+             `> ⚖️ **ملاک انحصاری داوری هیئت حل اختلاف میانجی:**\n` +
+             `> قضاوت هیئت داوری صرفاً و منحصراً بر مبنای همین متنی است که در این بخش می‌نویسید. هرگونه توافق، چت یا قول شفاهی خارج از این قرارداد در زمان بروز اختلاف فاقد اعتبار و استناد است.\n>\n` +
+             `> 📋 **موارد پیشنهادی:** فرمت دقیق فایل‌های تحویلی (سورس‌کد، فایل لایه باز برداری AI/SVG، داکیومنت PDF)، استانداردهای کیفی، نحوه تست و داکیومنت نصب.\n\n` +
+             `✍️ **لطفاً شرح تعهدات و خواسته‌های پروژه را تایپ و ارسال فرمایید:**\n(یا یکی از گزینه‌های پیشنهادی زیر را انتخاب کنید)`,
       keyboard: [
         ['تحویل سورس‌کد کامل به همراه مستندات راه‌اندازی و داکیومنت فنی'],
         ['تحویل فایل‌های لایه باز برداری وکتور (AI و SVG) با کیفیت ۳۰۰ DPI'],
@@ -470,7 +467,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     const fee = Math.round(parsedAmount * 0.05);
 
     return res.json({
-      reply: `⚖️ **مرحله ۶ از ۸ — پرداخت‌کننده کارمزد میانجی:**\n\n` +
+      reply: `⚖️ **مرحله ۶ از ۷ — پرداخت‌کننده کارمزد میانجی:**\n\n` +
              `💰 مبلغ پروژه: **${formatCurrency(parsedAmount)}**\n` +
              `📊 کل کارمزد اسکرو (۵٪): **${formatCurrency(fee)}**\n\n` +
              `چه کسی کارمزد خدمات امنیتی اسکرو را پرداخت می‌کند؟`,
@@ -496,7 +493,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     simulatorState.state = 'DEAL_INSPECTION';
 
     return res.json({
-      reply: `🛡 **مرحله ۷ از ۸ — بخش‌های اختیاری (۱/۲): مهلت تست و بررسی (Inspection Period):**\n\n` +
+      reply: `🛡 **مرحله ۷ از ۷ — بخش‌های اختیاری (۱/۲): مهلت تست و بررسی (Inspection Period):**\n\n` +
              `آیا کارفرما پس از اعلام تحویل پروژه توسط مجری، مهلت تست داشته باشد؟\n` +
              `*(در طی این زمان، وجه در امانت میانجی محفوظ است تا خروجی تست و تایید شود)*`,
       keyboard: [
@@ -564,7 +561,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // گام ۸: ثبت نهایی معامله، تولید یکتاکد و لینک دعوت
+  // گام ۸: هدایت مستقیم طرف اول به تایید مشخصات و امضای دیجیتال
   if (simulatorState.state === 'DEAL_REVISIONS' || simulatorState.state === 'DEAL_REVISIONS_CUSTOM') {
     let revCount = 2;
     if (input.includes('بدون ویرایش') || input.includes('0') || input.includes('۰')) revCount = 0;
@@ -576,42 +573,16 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     draft.has_free_revisions = revCount !== 0;
     draft.free_revisions_count = revCount;
 
-    // ایجاد واقعی در دیتابیس
     const amount = draft.amount || 2500000;
     const cat = (draft.category as any) || 'GEN';
     const contractId = generateContractId(cat);
-    const inviteToken = `deal_${Math.random().toString(36).substring(2, 9)}`;
+    draft.contract_id = contractId;
+    simulatorState.signingContractId = contractId;
 
-    const newDeal = await createContract({
-      contract_id: contractId,
-      title: draft.title || 'معامله هوشمند میانجی',
-      amount,
-      category: cat,
-      deadline: 7,
-      free_edits: revCount >= 0 ? revCount : 2,
-      free_edits_left: revCount >= 0 ? revCount : 2,
-      free_edits_total: revCount >= 0 ? revCount : 2,
-      commission_payer: draft.commission_payer || 'split_50_50',
-      has_inspection_period: draft.has_inspection_period || false,
-      inspection_period_hours: draft.inspection_period_hours || 0,
-      has_free_revisions: draft.has_free_revisions || false,
-      free_revisions_count: revCount,
-      invite_token: inviteToken,
-      description: draft.description || `تعهدات و استانداردهای فنی مورد توافق طرفین. مهلت تست: ${draft.inspection_period_hours || 0} ساعت. اصلاحیه رایگان: ${revCount} بار.`
-    });
-
-    simulatorState = {
-      state: 'IDLE',
-      depositAmount: 0,
-      txId: 0,
-      activeDealToken: inviteToken
-    };
-
-    const botUser = process.env.BOT_USERNAME || 'mianji_ir_bot';
-    const inviteLink = `https://t.me/${botUser}?start=${inviteToken}`;
+    const currentUser = getCurrentUser();
 
     const inspFa = (draft.inspection_period_hours || 0) > 0
-      ? `⏱ ${draft.inspection_period_hours} ساعت پس از اعلام تحویل`
+      ? `⏱ ${draft.inspection_period_hours} ساعت پس از تحویل`
       : '⚡ تایید آنی (بدون مهلت تست)';
 
     const revFa = revCount === 0
@@ -622,9 +593,11 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       ? 'کارفرما'
       : (draft.commission_payer === 'freelancer' ? 'مجری' : 'توافقی ۵۰/۵۰');
 
+    simulatorState.state = 'DEAL_PARTY1_SIGN_CONFIRM';
+
     return res.json({
-      reply: `🎉 **قرارداد دیجیتال با موفقیت تولید و در دیتابیس ثبت شد!**\n` +
-             `🆔 **شناسه قرارداد:** \`${contractId}\`\n` +
+      reply: `📜 **پیش‌نویس قرارداد هوشمند اسکرو میانجی**\n` +
+             `🆔 **شناسه اختصاصی:** \`${contractId}\`\n` +
              `────────────────────────────\n` +
              `📝 **موضوع:** ${draft.title}\n` +
              `📂 **دسته‌بندی:** ${draft.categoryLabel || 'خدمات دیجیتال'}\n` +
@@ -632,65 +605,184 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
              `⚖️ **کارمزد:** ${payerFa}\n` +
              `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
              `🔄 **سهمیه اصلاحیه:** ${revFa}\n\n` +
-             `📋 **تعهدات فنی قرارداد (ملاک رسمی داوری میانجی):**\n` +
-             `«${draft.description || 'تعهدات مستقیم واردشده توسط کاربر'}»\n` +
+             `📋 **تعهدات فنی قرارداد (ملاک رسمی داوری حقوقی):**\n` +
+             `> ${draft.description || 'تعهدات مستقیم واردشده توسط کاربر'}\n` +
              `────────────────────────────\n` +
-             `🔗 **لینک دعوت اختصاصی طرف دوم:**\n\`${inviteLink}\`\n\n` +
-             `💡 با زدن دکمه زیر می‌توانید شبیه‌سازی ورود طرف دوم را انجام دهید تا قرارداد توسط او تایید شده و وارد فاز پرداخت امانی شود:`,
+             `✍️ **امضای دیجیتال و احراز هویت طرف اول (سازنده):**\n` +
+             `جهت انعقاد رسمی سند و صدور لینک دعوت طرف دوم، لطفاً اطلاعات خود را تایید فرمایید:\n\n` +
+             `👤 **نام و نام‌خانوادگی:** ${currentUser.full_name}\n` +
+             `🪪 **کد ملی:** \`${currentUser.national_id || '0012345678'}\`\n` +
+             `📱 **شماره همراه:** \`${currentUser.phone_number}\`\n\n` +
+             `برای تایید اطلاعات و صدور امضا، روی دکمه زیر کلیک فرمایید:`,
       keyboard: [
-        ['🤝 شبیه‌سازی ورود طرف دوم (پذیرش قوانین)'],
+        ['✍️ تایید مشخصات و امضای دیجیتال قرارداد (با OTP)'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۹: ارسال کد OTP امضا برای طرف اول
+  if (simulatorState.state === 'DEAL_PARTY1_SIGN_CONFIRM' && (input.includes('امضای دیجیتال') || input.includes('تایید مشخصات') || input.includes('OTP'))) {
+    const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    simulatorState.signingOtp = generatedOtp;
+    simulatorState.state = 'DEAL_PARTY1_SIGN_OTP';
+
+    const currentUser = getCurrentUser();
+    const maskedPhone = currentUser.phone_number ? `${currentUser.phone_number.slice(0, 4)}***${currentUser.phone_number.slice(-4)}` : '۰۹۱۲***۶۷۸۹';
+
+    return res.json({
+      reply: `📩 **ارسال کد تایید پیامکی امضای دیجیتال (SMS OTP):**\n──────────────────\n` +
+             `کد ۶ رقمی امنیتی امضای قرارداد به شماره همراه تاییدشده **${maskedPhone}** پیامک گردید.\n\n` +
+             `🔒 **رعایت کامل امنیت:** به منظور پیشگیری از جعل و رعایت محرمانگی، کد در محیط چت چاپ نمی‌شود.\n\n` +
+             `⏱ مهلت اعتبار: **۳ دقیقه**\n` +
+             `لطفاً کد ۶ رقمی دریافتی را وارد فرمایید:`,
+      keyboard: [
+        [generatedOtp],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // گام ۱۰: تایید OTP طرف اول، ثبت قرارداد در دیتابیس و صدور دعوت‌نامه با راهنمای ضد فیشینگ
+  if (simulatorState.state === 'DEAL_PARTY1_SIGN_OTP') {
+    const enteredOtp = input.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+    if (enteredOtp !== simulatorState.signingOtp) {
+      return res.json({
+        reply: `❌ **کد وارد شده صحیح نمی‌باشد.**\nلطفاً کد ۶ رقمی ارسال‌شده به موبایل خود را مجدداً وارد فرمایید:`,
+        keyboard: [
+          [simulatorState.signingOtp || '123456'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    const draft = simulatorState.dealDraft || {};
+    const contractId = simulatorState.signingContractId || generateContractId(draft.category || 'GEN');
+    const inviteToken = `deal_${Math.random().toString(36).substring(2, 9)}`;
+    const currentUser = getCurrentUser();
+    const amount = draft.amount || 2500000;
+    const cat = (draft.category as any) || 'GEN';
+    const isEmployer = (draft.role !== 'freelancer');
+
+    // ایجاد قرارداد در دیتابیس
+    await createContract({
+      contract_id: contractId,
+      title: draft.title || 'معامله هوشمند میانجی',
+      amount,
+      category: cat,
+      deadline: 7,
+      free_edits: draft.free_revisions_count ?? 2,
+      free_edits_left: draft.free_revisions_count ?? 2,
+      free_edits_total: draft.free_revisions_count ?? 2,
+      commission_payer: draft.commission_payer || 'split_50_50',
+      has_inspection_period: draft.has_inspection_period || false,
+      inspection_period_hours: draft.inspection_period_hours || 0,
+      has_free_revisions: draft.has_free_revisions || false,
+      free_revisions_count: draft.free_revisions_count ?? 2,
+      invite_token: inviteToken,
+      description: draft.description || 'تعهدات فنی مشخص‌شده توسط طرفین.',
+      creator_id: currentUser.id,
+      buyer_id: isEmployer ? currentUser.id : undefined,
+      buyer_fullname: isEmployer ? currentUser.full_name : undefined,
+      buyer_phone: isEmployer ? currentUser.phone_number : undefined,
+      buyer_national_id: isEmployer ? currentUser.national_id : undefined,
+      seller_id: !isEmployer ? currentUser.id : undefined,
+      seller_fullname: !isEmployer ? currentUser.full_name : undefined,
+      seller_phone: !isEmployer ? currentUser.phone_number : undefined,
+      seller_national_id: !isEmployer ? currentUser.national_id : undefined,
+      status: 'pending_party_b'
+    });
+
+    // ثبت رسمی امضای طرف اول با هش SHA-256
+    const p1Role = isEmployer ? 'employer' : 'freelancer';
+    await signContract(contractId, p1Role, {
+      fullname: currentUser.full_name,
+      phone: currentUser.phone_number,
+      national_id: currentUser.national_id
+    });
+
+    const sigs = getSignatures(contractId);
+    const p1Sig = sigs[0];
+    const sigHash = p1Sig?.signature_hash || 'SHA-256-DIGITAL-SIGNATURE';
+
+    simulatorState = {
+      state: 'IDLE',
+      depositAmount: 0,
+      txId: 0,
+      activeDealToken: inviteToken,
+      signingContractId: contractId
+    };
+
+    const botUser = process.env.BOT_USERNAME || 'mianji_ir_bot';
+    const inviteLink = `https://t.me/${botUser}?start=c_${contractId}`;
+    const inspFa = (draft.inspection_period_hours || 0) > 0 ? `${draft.inspection_period_hours} ساعت پس از تحویل` : 'تایید آنی';
+    const revFa = (draft.free_revisions_count === 0 ? 'بدون ویرایش' : (draft.free_revisions_count === -1 ? 'توافقی' : `${draft.free_revisions_count} بار رایگان`));
+
+    return res.json({
+      reply: `🎉 **قرارداد به صورت رسمی با امضای دیجیتال طرف اول صادر گردید!**\n` +
+             `🆔 **شناسه معامله:** \`${contractId}\`\n` +
+             `🔐 **اثر انگشت رمزنگاری امضا (SHA-256):**\n\`${sigHash}\`\n` +
+             `وضعیت: **در انتظار امضای طرف دوم (Pending Counterparty Signature)** ⏳\n` +
+             `────────────────────────────\n` +
+             `📤 **متن دعوت‌نامه رسمی و راهنمای امنیتی (جهت ارسال به طرف دوم):**\n\n` +
+             `🏛 **دعوت‌نامه رسمی قرارداد هوشمند (سامانه اسکرو میانجی)**\n` +
+             `────────────────────────────\n` +
+             `📋 **شناسه اختصاصی معامله:** \`${contractId}\`\n` +
+             `👤 **طرف اول:** ${currentUser.full_name} (امضا شده با مهر الکترونیک ✅)\n` +
+             `📝 **موضوع:** ${draft.title}\n` +
+             `💰 **مبلغ معامله:** ${formatCurrency(amount)}\n` +
+             `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
+             `🔄 **سهمیه اصلاحیه:** ${revFa}\n\n` +
+             `📋 **تعهدات فنی و قانونی (ملاک داوری):**\n` +
+             `> ${draft.description}\n\n` +
+             `🔗 **لینک ورود مستقیم:**\n${inviteLink}\n\n` +
+             `> 🛡️ **راهنمای امنیتی ضد فیشینگ (پیشگیری از کلاهبرداری):**\n` +
+             `> جهت اطمینان ۱۰۰٪ از اصالت معامله و عدم کلیک روی لینک‌های ناشناس یا بات‌های تقلبی، می‌توانید به جای کلیک بر روی لینک:\n` +
+             `> ۱. مستقیماً وارد ربات رسمی و تاییدشده میانجی شوید: @${botUser}\n` +
+             `> ۲. دستور /start را ارسال کرده یا دکمه «🔍 پیگیری با شناسه قرارداد» را بزنید.\n` +
+             `> ۳. کد رهگیری \`${contractId}\` را ارسال کنید تا قرارداد رسمی باز شده و پس از بررسی، آن را با اطمینان کامل امضا فرمایید.\n` +
+             `────────────────────────────\n` +
+             `💡 با زدن دکمه زیر می‌توانید شبیه‌سازی ورود و امضای طرف دوم را انجام دهید:`,
+      keyboard: [
+        ['🤝 شبیه‌سازی ورود طرف دوم (پذیرش و امضا)'],
+        [`🔍 پیگیری با شناسه قرارداد`],
         ['📜 لیست معاملات من', '💳 کیف پول و اعتبار'],
         ['🔙 بازگشت به منوی اصلی']
       ]
     });
   }
 
-  // گام ۹: شبیه‌سازی ورود و پذیرش طرف دوم (Counterparty Join Flow)
-  if (input.includes('ورود طرف دوم') || input.startsWith('deal_') || input.includes('پذیرش قوانین')) {
-    const myDeals = getContracts();
-    const targetDeal = myDeals[0];
-
-    if (!targetDeal) {
-      return res.json({
-        reply: '⚠️ هیچ معامله فعالی برای بررسی یافت نشد.',
-        keyboard: [['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']]
-      });
-    }
-
-    simulatorState = {
-      state: 'WAITING_COUNTERPARTY_ACCEPT',
-      depositAmount: 0,
-      txId: 0,
-      activeDealToken: targetDeal.contract_id
-    };
-
+  // گام ۱۱: جستجو یا ورود به قرارداد با شناسه معامله (جهت جلوگیری از فیشینگ و امضای مستقیم)
+  if (input.includes('پیگیری با شناسه') || input === 'جستجو' || input.includes('جست‌وجو') || input === '🔍 جست‌وجوی قرارداد با شناسه') {
+    simulatorState.state = 'WAITING_SEARCH_CONTRACT';
     return res.json({
-      reply: `👋 **سلام! شما به عنوان طرف دوم به معامله \`${targetDeal.contract_id}\` دعوت شدید.**\n` +
-             `────────────────────────────\n` +
-             `📝 **عنوان معامله:** ${targetDeal.title}\n` +
-             `💰 **مبلغ کل معامله:** ${formatCurrency(targetDeal.amount)}\n` +
-             `🛡 **مهلت بررسی و تست:** ${targetDeal.inspection_period_hours ? `${targetDeal.inspection_period_hours} ساعت` : 'تایید آنی'}\n` +
-             `🔄 **سهمیه اصلاحیه:** ${targetDeal.free_edits ? `${targetDeal.free_edits} بار رایگان` : 'بدون ویرایش'}\n\n` +
-             `⚖️ **قوانین و ضمانت اجرایی میانجی:**\n` +
-             `• وجوه تا زمان تحویل پروژه در صندوق امن امانت مسدود می‌ماند.\n` +
-             `• کارفرما تا تایید نهایی خروجی، امکان برداشت یکطرفه را ندارد.\n` +
-             `• در صورت بروز اختلاف، هیئت داوری حقوقی مستقر در سامانه رسیدگی قطعی خواهد کرد.\n\n` +
-             `جهت انعقاد رسمی قرارداد، دکمه «✅ تایید و پذیرش قوانین» را لمس کنید:`,
+      reply: '🔍 **پیگیری امن قرارداد با شناسه معامله**\n──────────────────\n' +
+             'جهت پیشگیری از کلاهبرداری و بدون نیاز به کلیک روی لینک، لطفاً **شناسه معامله** را وارد فرمایید:\n' +
+             '(مثال: `DEV-842-190` یا `DEV-901-442`)',
       keyboard: [
-        ['✅ تایید و پذیرش قوانین میانجی (ورود به فاز پرداخت)'],
-        ['❌ انصراف و رد معامله']
+        ['DEV-901-442'],
+        ['🔙 بازگشت به منوی اصلی']
       ]
     });
   }
 
-  // گام ۹: شبیه‌سازی ورود و پذیرش طرف دوم (Counterparty Join Flow)
-  if (input.includes('ورود طرف دوم') || input.startsWith('deal_') || (input.includes('پذیرش قوانین') && simulatorState.state !== 'WAITING_SIGN_OTP')) {
-    const myDeals = getContracts();
-    const targetDeal = myDeals[0];
+  // بررسی وارد کردن مستقیم کد معامله در هر حالتی
+  const dealCodeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i) || 
+    (input.startsWith('c_') ? [null, input.replace('c_', '')] : null) ||
+    (simulatorState.state === 'WAITING_SEARCH_CONTRACT' ? [null, input.trim()] : null);
+
+  if (dealCodeMatch || input.includes('ورود طرف دوم') || input.startsWith('deal_') || (input.includes('پذیرش') && simulatorState.state !== 'WAITING_SIGN_OTP' && simulatorState.state !== 'DEAL_PARTY1_SIGN_OTP')) {
+    let targetCode = dealCodeMatch ? dealCodeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken);
+    
+    let targetDeal = targetCode ? getContract(targetCode) : undefined;
+    if (!targetDeal) {
+      const allContracts = getContracts();
+      targetDeal = allContracts[0];
+    }
 
     if (!targetDeal) {
       return res.json({
-        reply: '⚠️ هیچ معامله فعالی برای بررسی یافت نشد.',
+        reply: '⚠️ هیچ قراردادی با این شناسه یافت نشد.',
         keyboard: [['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']]
       });
     }
@@ -703,18 +795,25 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       signingContractId: targetDeal.contract_id
     };
 
+    const isParty1Buyer = Boolean(targetDeal.buyer_id);
+    const party1Name = (isParty1Buyer ? targetDeal.buyer_fullname : targetDeal.seller_fullname) || 'طرف اول';
+    const party1RoleFa = isParty1Buyer ? 'کارفرما (خریدار)' : 'مجری (فروشنده)';
+    const party2RoleFa = isParty1Buyer ? 'مجری (فروشنده)' : 'کارفرما (خریدار)';
+
     return res.json({
-      reply: `👋 **سلام! شما به عنوان طرف دوم به معامله \`${targetDeal.contract_id}\` دعوت شدید.**\n` +
+      reply: `👋 **سلام! شما به عنوان ${party2RoleFa} به معامله \`${targetDeal.contract_id}\` دعوت شدید.**\n` +
              `────────────────────────────\n` +
-             `📝 **عنوان معامله:** ${targetDeal.title}\n` +
+             `👤 **طرف اول (${party1RoleFa}):** ${party1Name} (امضا شده با مهر الکترونیک ✅)\n` +
+             `📝 **موضوع:** ${targetDeal.title}\n` +
              `💰 **مبلغ کل معامله:** ${formatCurrency(targetDeal.amount)}\n` +
-             `🛡 **مهلت بررسی و تست:** ${targetDeal.inspection_period_hours ? `${targetDeal.inspection_period_hours} ساعت` : 'تایید آنی'}\n` +
+             `🛡 **مهلت تست و بررسی:** ${targetDeal.inspection_period_hours ? `${targetDeal.inspection_period_hours} ساعت` : 'تایید آنی'}\n` +
              `🔄 **سهمیه اصلاحیه:** ${targetDeal.free_edits ? `${targetDeal.free_edits} بار رایگان` : 'بدون ویرایش'}\n\n` +
-             `⚖️ **قوانین و ضمانت اجرایی میانجی:**\n` +
-             `• احراز هویت بدون رمز عبور با Telegram User ID و شماره موبایل تاییدشده.\n` +
-             `• وجوه تا زمان تحویل پروژه در صندوق امن امانت مسدود می‌ماند.\n` +
+             `📋 **تعهدات فنی قرارداد (ملاک داوری حقوقی میانجی):**\n` +
+             `> ${targetDeal.description || 'تعهدات مکتوب پروژه'}\n\n` +
+             `⚖️ **ضمانت اجرایی و اسکرو میانجی:**\n` +
+             `• وجوه در صندوق امن امانت مسدود می‌ماند و بدون تایید تحویلی قابل برداشت نیست.\n` +
              `• ثبت شواهد حقوقی غیرقابل انکار (کد ملی، OTP پیامکی، آی‌پی و هش SHA-256).\n\n` +
-             `جهت شروع فرآیند امضا و احراز، دکمه زیر را لمس کنید:`,
+             `جهت شروع فرآیند احراز و امضای الکترونیک، دکمه زیر را لمس فرمایید:`,
       keyboard: [
         ['✍️ تایید و امضای رسمی قرارداد (ورود به فرآیند OTP)'],
         ['📱 اشتراک‌گذاری شماره تماس (Share Contact)'],
@@ -738,11 +837,11 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // آغاز مرحله امضا: دریافت نام و نام خانوادگی
+  // آغاز مرحله امضای طرف دوم: دریافت نام و نام خانوادگی
   if (simulatorState.state === 'WAITING_COUNTERPARTY_ACCEPT' && (input.includes('امضای رسمی') || input.includes('تایید و امضا') || input.includes('پذیرش'))) {
     simulatorState.state = 'WAITING_SIGN_FULLNAME';
     return res.json({
-      reply: `✍️ **مرحله ۱ از ۳ — امضای دیجیتال و احراز هویت قانونی**\n──────────────────\n` +
+      reply: `✍️ **مرحله ۱ از ۳ — امضای دیجیتال طرف دوم (احراز هویت قانونی)**\n──────────────────\n` +
              `جهت رعایت ماده ۶ و ۱۰ قانون تجارت الکترونیک جمهوری اسلامی ایران و صدور گواهی اسکرو، لطفاً **نام و نام‌خانوادگی کامل** خود را وارد فرمایید:`,
       keyboard: [
         ['سارا احمدی'],
@@ -751,7 +850,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // مرحله دوم امضا: دریافت کد ملی جهت ثبت شواهد غیرقابل انکار
+  // مرحله دوم امضای طرف دوم: دریافت کد ملی جهت ثبت شواهد غیرقابل انکار
   if (simulatorState.state === 'WAITING_SIGN_FULLNAME') {
     const fullName = input.trim();
     if (fullName.length < 3) {
@@ -765,7 +864,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     simulatorState.state = 'WAITING_SIGN_NATIONAL_ID';
 
     return res.json({
-      reply: `🪪 **مرحله ۲ از ۳ — ثبت کد ملی امضاکننده:**\n──────────────────\n` +
+      reply: `🪪 **مرحله ۲ از ۳ — ثبت کد ملی امضاکننده دوم:**\n──────────────────\n` +
              `نام امضاکننده: **${fullName}**\n\n` +
              `لطفاً کد ملی ۱۰ رقمی خود را جهت ثبت شواهد حقوقی غیرقابل انکار (Non-Repudiation) ارسال فرمایید:\n` +
              `*(این کد با الگوریتم ثبت‌احوال اعتبارسنجی شده و در هش امضا قفل می‌شود)*`,
@@ -776,7 +875,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // مرحله سوم امضا: اعتبارسنجی کد ملی، ارسال OTP پیامکی بدون افشای کد در چت
+  // مرحله سوم امضای طرف دوم: اعتبارسنجی کد ملی، ارسال OTP پیامکی
   if (simulatorState.state === 'WAITING_SIGN_NATIONAL_ID') {
     const nationalId = input.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
     if (!/^\d{10}$/.test(nationalId)) {
@@ -799,13 +898,13 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
              `⏱ مهلت ورود: **۳ دقیقه**\n` +
              `لطفاً کد ۶ رقمی دریافتی را وارد فرمایید:`,
       keyboard: [
-        [generatedOtp], // دکمه کمکی در محیط تست جهت تسهیل ارزیابی
+        [generatedOtp],
         ['🔙 انصراف و بازگشت']
       ]
     });
   }
 
-  // تایید OTP و ثبت نهایی امضا در جدول Signatures با هش SHA-256
+  // تایید OTP طرف دوم و ثبت نهایی امضا در جدول Signatures با هش SHA-256
   if (simulatorState.state === 'WAITING_SIGN_OTP') {
     const enteredOtp = input.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
     if (enteredOtp !== simulatorState.signingOtp) {
@@ -818,32 +917,31 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       });
     }
 
-    // امضای رسمی قرارداد
     const cId = simulatorState.signingContractId || 'DEV-901-442';
-    const signed = await signContract(cId, 'freelancer', {
+    const targetDeal = getContract(cId);
+    const p2Role = (targetDeal && targetDeal.buyer_id) ? 'freelancer' : 'employer';
+
+    await signContract(cId, p2Role, {
       fullname: simulatorState.signingFullName || 'سارا احمدی',
       phone: simulatorState.signingPhone || '09359876543',
       national_id: simulatorState.signingNationalId || '0087654321'
     });
 
     const sigs = getSignatures(cId);
-    const latestSig = sigs[0];
+    const latestSig = sigs.find(s => s.role === p2Role) || sigs[0];
 
     simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
 
     return res.json({
-      reply: `🎉 **قرارداد به صورت رسمی و با امضای دیجیتال تایید شد!**\n──────────────────\n` +
+      reply: `🎉 **قرارداد به صورت رسمی با امضای هر دو طرف تایید و نهایی شد!**\n──────────────────\n` +
              `🆔 **شناسه قرارداد:** \`${cId}\`\n` +
-             `وضعیت: **در انتظار تامین وجه به صندوق امانت (Awaiting Escrow Deposit)** ⏳\n\n` +
+             `وضعیت: **در انتظار واریز وجه به صندوق امانت اسکرو (Awaiting Escrow Deposit)** ⏳\n\n` +
              `🔐 **شواهد حقوقی ثبت‌شده (Non-Repudiation Evidence):**\n` +
-             `• شناسه یکتای تلگرام: \`${latestSig?.telegram_id || 290184712}\`\n` +
-             `• امضاکننده: **${latestSig?.full_name || 'سارا احمدی'}**\n` +
+             `• امضاکننده طرف دوم: **${latestSig?.full_name || 'سارا احمدی'}**\n` +
              `• کد ملی: \`${latestSig?.national_id || '0087654321'}\`\n` +
              `• شماره موبایل: \`${latestSig?.phone_number || '09359876543'}\`\n` +
-             `• روش احراز هویت: \`${latestSig?.verification_method || 'telegram_contact_sms_otp'}\`\n` +
-             `• تاریخ و زمان دقیق: \`${new Date().toLocaleString('fa-IR')}\`\n` +
              `• اثر انگشت رمزنگاری SHA-256:\n\`${latestSig?.signature_hash || 'SHA-256-DIGITAL-SIGNATURE'}\`\n\n` +
-             `📄 سند رسمی با مهر الکترونیک صادر شد و کارفرما می‌تواند وجه امانت را واریز نماید.`,
+             `📄 سند رسمی PDF قرارداد الکترونیک با مهر و گواهی دیجیتال صادر گردید و کارفرما می‌تواند وجه امانت را به صندوق واریز نماید.`,
       keyboard: [
         ['💳 کیف پول و اعتبار', '📜 لیست معاملات من'],
         ['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']

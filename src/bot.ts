@@ -12,9 +12,14 @@ import {
   getCurrentUser,
   getCurrentUserId,
   getContracts,
+  getContract,
   getTransactions,
   getAffiliateStats,
   formatCurrency,
+  getSignatures,
+  signContract,
+  createContract,
+  generateContractId,
 } from './db';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -267,6 +272,88 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
         ['🔙 بازگشت به منوی اصلی']
       ]
     };
+  }
+
+  // جست‌وجوی قرارداد با شناسه (راهنمای ضد فیشینگ)
+  if (clean.includes('جست‌وجوی قرارداد') || clean.includes('جستجو') || clean.includes('سرچ کد')) {
+    return {
+      reply: `🔍 **جست‌وجوی امن قرارداد با شناسه یکتا**\n──────────────────\n` +
+        `🛡 **راهنمای امنیتی ضد فیشینگ:**\n` +
+        `> جهت جلوگیری از سرقت اطلاعات یا کلیک روی لینک‌های جعلی و کلاهبرداری، طرف دوم می‌تواند بدون باز کردن هیچ لینکی، شناسه قرارداد (مانند \`DEV-842-190\` یا \`DS-802-115\`) را مستقیماً در این ربات وارد کند تا اطلاعات را مشاهده و امضا نماید.\n\n` +
+        `لطفاً **شناسه قرارداد** را ارسال فرمایید:`,
+      keyboard: [
+        ['DEV-842-190', 'DS-802-115'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    };
+  }
+
+  // بررسی ورود شناسه قرارداد یا استارت با توکن/شناسه
+  const contractIdMatch = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/) || clean.match(/\/start\s+c_([A-Za-z0-9_-]+)/);
+  if (contractIdMatch) {
+    const rawId = contractIdMatch[1].toUpperCase();
+    const contract = getContract(rawId) || getContracts().find(c => c.contract_id.toUpperCase() === rawId || c.invite_token === clean);
+
+    if (contract) {
+      const inspFa = (contract.inspection_period_hours || 0) > 0
+        ? `⏱ ${contract.inspection_period_hours} ساعت پس از تحویل`
+        : '⚡ تایید آنی (بدون مهلت تست)';
+      const revFa = contract.free_edits === 0
+        ? '🚫 بدون ویرایش رایگان'
+        : (contract.free_edits === -1 ? '🤝 توافقی بین طرفین' : `✅ ${contract.free_edits} بار اصلاحیه رایگان`);
+
+      return {
+        reply: `📄 **قرارداد رسمی و معتبر اسکرو میانجی**\n` +
+          `🆔 **شناسه یکتا:** \`${contract.contract_id}\`\n` +
+          `────────────────────────────\n` +
+          `📝 **عنوان:** ${contract.title}\n` +
+          `💰 **مبلغ معامله:** ${formatCurrency(contract.amount)}\n` +
+          `⚖️ **کارمزد:** توافقی ۵۰/۵۰\n` +
+          `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
+          `🔄 **سهمیه اصلاحیه:** ${revFa}\n` +
+          `👤 **طرف اول (سازنده):** ${contract.buyer_fullname || contract.seller_fullname || 'کاربر میانجی'}\n\n` +
+          `📋 **شرح تعهدات و مشخصات فنی (ملاک داوری):**\n` +
+          `> ${contract.description || 'تعهدات مشخص شده در سند قرارداد'}\n\n` +
+          `🛡 **راهنمای ضد فیشینگ:**\n` +
+          `> این استعلام مستقیماً از سرور امن میانجی انجام گرفته است. هیچ لینکی خارج از تلگرام نیاز نیست.\n\n` +
+          `وضعیت فعلی: **${contract.status === 'pending_party_b' ? 'در انتظار امضای طرف دوم ⏳' : contract.status}**`,
+        keyboard: contract.status === 'pending_party_b'
+          ? [
+              [`✍️ امضا و پذیرش رسمی قرارداد ${contract.contract_id}`],
+              ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+            ]
+          : [
+              ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+            ]
+      };
+    }
+  }
+
+  // امضای طرف دوم
+  if (clean.includes('امضا و پذیرش رسمی قرارداد')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    const contract = getContract(targetId);
+
+    if (contract) {
+      contract.status = 'awaiting_escrow_deposit';
+      contract.seller_id = currentUid;
+      contract.seller_fullname = user.full_name;
+      contract.seller_phone = user.phone_number;
+      contract.seller_signed_at = new Date().toISOString();
+      contract.seller_otp_verified = true;
+
+      return {
+        reply: `🎉 **قرارداد ${targetId} با موفقیت توسط طرف دوم (${user.full_name}) امضا شد!**\n\n` +
+          `🔐 **امضای دیجیتال:** ثبت و هش امنیتی صادر گردید.\n` +
+          `وضعیت معامله: **در انتظار واریز وجه به صندوق امانت (Awaiting Escrow Deposit)**\n\n` +
+          `کارفرما اکنون می‌تواند وجه را به صندوق امانت میانجی واریز نماید تا پروژه آغاز شود.`,
+        keyboard: [
+          ['📜 لیست معاملات من', '💳 کیف پول و اعتبار'],
+          ['🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
   }
 
   return {

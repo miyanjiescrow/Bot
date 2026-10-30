@@ -29,7 +29,12 @@ import {
   FileText,
   BadgeCheck,
   Lock,
-  Smartphone
+  Smartphone,
+  ShieldAlert,
+  Search,
+  Fingerprint,
+  CheckCheck,
+  Key
 } from 'lucide-react';
 
 interface BotStatus {
@@ -84,6 +89,21 @@ const App = () => {
     escrowDeposited: false
   });
 
+  // Party 1 Identity & Digital Signature State
+  const [party1Data, setParty1Data] = useState({
+    fullName: 'علیرضا رضوانی',
+    nationalId: '0012345678',
+    phone: '09123456789',
+    otp: '',
+    generatedOtp: '849201',
+    otpSent: true,
+    isSigned: false,
+    signatureHash: '9b8e21a7df04523c909e4bfd71e0915a2cc945ebfa40a7cf282bb2c1f9645802',
+    error: ''
+  });
+  const [copiedInviteText, setCopiedInviteText] = useState(false);
+  const [copiedContractId, setCopiedContractId] = useState(false);
+
   // Terminal Simulator State
   const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string; keyboard?: string[][] }>>([
     {
@@ -103,26 +123,32 @@ const App = () => {
 
   const fetchBotData = async () => {
     try {
-      const res = await fetch('/api/bot/status');
-      if (res.ok) {
-        const data = await res.json();
-        setBotStatus(data);
+      const res = await fetch('/api/bot/status').catch(() => null);
+      if (res && res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data) setBotStatus(data);
       }
 
       const [resC, resT, resL] = await Promise.all([
-        fetch('/api/contracts'),
-        fetch('/api/wallet/transactions'),
-        fetch('/api/bot/logs')
+        fetch('/api/contracts').catch(() => null),
+        fetch('/api/wallet/transactions').catch(() => null),
+        fetch('/api/bot/logs').catch(() => null)
       ]);
 
-      if (resC.ok) setContracts(await resC.json());
-      if (resT.ok) setTransactions(await resT.json());
-      if (resL.ok) {
-        const logData = await resL.json();
-        setLogs(logData.logs || []);
+      if (resC && resC.ok) {
+        const cData = await resC.json().catch(() => null);
+        if (cData) setContracts(cData);
       }
-    } catch (err) {
-      console.error('Error fetching bot status:', err);
+      if (resT && resT.ok) {
+        const tData = await resT.json().catch(() => null);
+        if (tData) setTransactions(tData);
+      }
+      if (resL && resL.ok) {
+        const logData = await resL.json().catch(() => null);
+        if (logData?.logs) setLogs(logData.logs);
+      }
+    } catch {
+      // Gracefully silent during server reloads or offline iframe states
     }
   };
 
@@ -189,7 +215,15 @@ const App = () => {
 
   const fees = calculateFees(wizardDraft.amount, wizardDraft.commission_payer);
 
-  const handleFinalizeInteractiveDeal = async () => {
+  const handleParty1SignAndCreate = async () => {
+    if (!party1Data.otp || party1Data.otp.trim() !== party1Data.generatedOtp) {
+      setParty1Data(prev => ({ ...prev, error: 'کد تایید ۶ رقمی وارد شده صحیح نمی‌باشد.' }));
+      return;
+    }
+
+    setLoading(true);
+    setParty1Data(prev => ({ ...prev, error: '' }));
+
     try {
       const res = await fetch('/api/contracts', {
         method: 'POST',
@@ -207,20 +241,59 @@ const App = () => {
           deadline: 7
         })
       });
+
+      let cId = wizardDraft.contract_id;
+      let invTok = wizardDraft.invite_token;
+
       if (res.ok) {
         const data = await res.json();
+        cId = data.contract_id;
+        invTok = data.invite_token || `deal_${Math.random().toString(36).substring(2, 9)}`;
         setWizardDraft(prev => ({
           ...prev,
-          contract_id: data.contract_id,
-          invite_token: data.invite_token || `deal_${Math.random().toString(36).substring(2, 9)}`
+          contract_id: cId,
+          invite_token: invTok
         }));
-        await fetchBotData();
       }
-    } catch (e) {
-      console.error(e);
+
+      // ثبت امضای دیجیتال طرف اول
+      const role = wizardDraft.role === 'employer' ? 'employer' : 'freelancer';
+      const signRes = await fetch(`/api/contracts/${cId}/sign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role,
+          fullname: party1Data.fullName,
+          phone: party1Data.phone,
+          national_id: party1Data.nationalId,
+          otp: party1Data.otp
+        })
+      });
+
+      let sigHash = party1Data.signatureHash;
+      if (signRes.ok) {
+        const signData = await signRes.json();
+        if (signData.signature?.signature_hash) {
+          sigHash = signData.signature.signature_hash;
+        }
+      }
+
+      setParty1Data(prev => ({
+        ...prev,
+        isSigned: true,
+        signatureHash: sigHash
+      }));
+
+      await fetchBotData();
+      setWizardStep(8);
+    } catch {
+      setWizardStep(8);
+    } finally {
+      setLoading(false);
     }
-    setWizardStep(7);
   };
+
+  const handleFinalizeInteractiveDeal = handleParty1SignAndCreate;
 
   const sqlSchemaCode = `-- =============================================================================
 -- Miyanji Escrow System: Complete Supabase PostgreSQL Schema
@@ -521,25 +594,26 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                       {wizardStep === 2 && 'گام ۲: انتخاب دسته‌بندی خدمت'}
                       {wizardStep === 3 && 'گام ۳: عنوان کوتاه و مبلغ معامله'}
                       {wizardStep === 4 && 'گام ۴: پرداخت‌کننده کارمزد اسکرو'}
-                      {wizardStep === 5 && 'گام ۵: تعهدات و خواسته‌های پروژه (ملاک داوری)'}
+                      {wizardStep === 5 && 'گام ۵: تعهدات و خواسته‌های پروژه (نقل‌قول و ملاک داوری)'}
                       {wizardStep === 6 && 'گام ۶: بخش‌های اختیاری (مهلت تست و اصلاحیه)'}
-                      {wizardStep === 7 && 'گام ۷: قرارداد دیجیتال، لینک دعوت و پیوستن طرف دوم'}
+                      {wizardStep === 7 && 'گام ۷: تایید مشخصات هویتی و امضای دیجیتال طرف اول (با OTP)'}
+                      {wizardStep === 8 && 'گام ۸: صدور قرارداد رسمی، لینک دعوت و راهنمای ضد فیشینگ'}
                     </h3>
                     <p className="text-xs text-slate-400">
-                      مرحله {wizardStep} از ۷ — زمان تقریبی تکمیل: ۴۰ ثانیه
+                      مرحله {wizardStep} از ۸ — زمان تقریبی تکمیل: ۴۵ ثانیه
                     </p>
                   </div>
                 </div>
 
                 {/* Progress Pills */}
                 <div className="flex items-center gap-1">
-                  {[1, 2, 3, 4, 5, 6, 7].map(step => (
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map(step => (
                     <div
                       key={step}
                       className={`h-2 rounded-full transition-all duration-300 ${
-                        step < wizardStep ? 'w-6 bg-emerald-500' :
-                        step === wizardStep ? 'w-8 bg-blue-500 animate-pulse' :
-                        'w-3 bg-slate-800'
+                        step < wizardStep ? 'w-5 bg-emerald-500' :
+                        step === wizardStep ? 'w-7 bg-blue-500 animate-pulse' :
+                        'w-2.5 bg-slate-800'
                       }`}
                     />
                   ))}
@@ -815,7 +889,7 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
 
               {/* Step 5: Project Specifications & Custom Commitments (Sole Basis for Arbitration) */}
               {wizardStep === 5 && (
-                <div className="space-y-5 max-w-2xl mx-auto py-2">
+                <div className="space-y-4 max-w-2xl mx-auto py-2">
                   <div className="text-center space-y-1 mb-2">
                     <h4 className="text-base font-bold text-white">شرح دقیق تعهدات و خواسته‌های پروژه</h4>
                     <p className="text-xs text-slate-400">
@@ -823,18 +897,15 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                     </p>
                   </div>
 
-                  {/* High Priority Arbitration Warning Banner */}
-                  <div className="bg-amber-500/10 border-2 border-amber-500/40 rounded-2xl p-4 space-y-2 shadow-lg shadow-amber-500/5">
-                    <div className="flex items-center gap-2.5 text-amber-400 font-bold text-xs sm:text-sm">
-                      <Scale className="w-5 h-5 flex-shrink-0" />
-                      <span>قانون قطعی و ملاک داوری حقوقی سامانه میانجی</span>
+                  {/* Clean Blockquote Guidance - Solves eye fatigue */}
+                  <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-2 border-r-4 border-r-amber-500 shadow-md">
+                    <div className="flex items-center gap-2 text-amber-400 font-bold text-xs sm:text-sm">
+                      <Scale className="w-4 h-4 flex-shrink-0" />
+                      <span>قانون داوری حقوقی سامانه میانجی (ملاک انحصاری رسیدگی)</span>
                     </div>
-                    <p className="text-xs text-amber-200/95 leading-relaxed font-semibold">
-                      ⚖️ ملاک داوری و قضاوت هیئت حل اختلاف میانجی، صرفاً و منحصراً همین توضیحاتی است که در این بخش می‌نویسید.
-                    </p>
-                    <p className="text-[11px] text-amber-300/80 leading-relaxed">
-                      ⚠️ هرگونه توافق، چت یا ارسال پیام خارج از قرارداد (در چت‌های شخصی تلگرام، واتساپ یا تماس تلفنی)، در زمان بروز اختلاف به هیچ‌وجه قابل استناد و بررسی نخواهد بود.
-                    </p>
+                    <blockquote className="text-xs text-slate-300 leading-relaxed italic pr-2 border-r-2 border-slate-700">
+                      «ملاک داوری و قضاوت هیئت حل اختلاف میانجی، منحصراً تعهداتی است که در این بخش می‌نویسید. هرگونه چت شخصی در تلگرام، واتساپ یا توافق تلفنی خارج از این متن، فاقد اعتبار قانونی است.»
+                    </blockquote>
                   </div>
 
                   {/* Guidance Box with Quick Category Tips */}
@@ -1001,18 +1072,153 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                       <ArrowRight className="w-3.5 h-3.5" /> مرحله قبل
                     </button>
                     <button
-                      onClick={handleFinalizeInteractiveDeal}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition shadow-lg shadow-emerald-600/20 flex items-center gap-1.5"
+                      onClick={() => setWizardStep(7)}
+                      className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition shadow-lg shadow-blue-600/20 flex items-center gap-1.5"
                     >
-                      <span>تولید و ثبت قرارداد در دیتابیس</span>
-                      <Check className="w-3.5 h-3.5" />
+                      <span>ادامه به تایید هویت و امضای دیجیتال طرف اول</span>
+                      <ArrowLeft className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* Step 7: Generated Contract, Invite Link & Counterparty Acceptance */}
+              {/* Step 7: Party 1 Identity Verification & Digital Signing */}
               {wizardStep === 7 && (
+                <div className="space-y-5 max-w-xl mx-auto py-2">
+                  <div className="text-center space-y-1 mb-2">
+                    <div className="w-12 h-12 rounded-2xl bg-blue-600/20 text-blue-400 mx-auto flex items-center justify-center font-bold">
+                      <Fingerprint className="w-6 h-6" />
+                    </div>
+                    <h4 className="text-base font-bold text-white">تایید مشخصات هویتی و امضای دیجیتال طرف اول</h4>
+                    <p className="text-xs text-slate-400">
+                      بر اساس قانون تجارت الکترونیک، طرف اول پیش از صدور لینک دعوت، قرارداد را رسماً با OTP امضا می‌نماید.
+                    </p>
+                  </div>
+
+                  {/* Summary preview */}
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 text-xs">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-800/80">
+                      <span className="text-slate-400">موضوع قرارداد:</span>
+                      <span className="font-bold text-white truncate max-w-[280px]">{wizardDraft.title}</span>
+                    </div>
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-800/80">
+                      <span className="text-slate-400">مبلغ کل معامله:</span>
+                      <span className="font-bold text-emerald-400">{wizardDraft.amount.toLocaleString('fa-IR')} تومان</span>
+                    </div>
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-800/80">
+                      <span className="text-slate-400">مهلت بررسی و تست:</span>
+                      <span className="font-bold text-amber-400">
+                        {wizardDraft.inspection_period_hours ? `${wizardDraft.inspection_period_hours} ساعت` : 'تایید آنی'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">سهمیه اصلاحیه رایگان:</span>
+                      <span className="font-bold text-purple-400">
+                        {wizardDraft.free_revisions_count === 0 ? 'بدون ویرایش' : `${wizardDraft.free_revisions_count} بار رایگان`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Party 1 Identification Form */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                    <h5 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <BadgeCheck className="w-4 h-4 text-emerald-400" />
+                      مشخصات هویتی طرف اول (ثبت‌شده در سامانه):
+                    </h5>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1">نام و نام خانوادگی:</label>
+                        <input
+                          type="text"
+                          value={party1Data.fullName}
+                          onChange={e => setParty1Data(p => ({ ...p, fullName: e.target.value }))}
+                          className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-xs font-bold focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1">کد ملی ثبت‌احوال:</label>
+                        <input
+                          type="text"
+                          value={party1Data.nationalId}
+                          onChange={e => setParty1Data(p => ({ ...p, nationalId: e.target.value }))}
+                          className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-xs font-mono font-bold focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">شماره همراه متصل به تلگرام:</label>
+                      <input
+                        type="text"
+                        value={party1Data.phone}
+                        readOnly
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-lg p-2.5 text-slate-300 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* SMS OTP Digital Signature Section */}
+                  <div className="bg-blue-950/30 border border-blue-500/40 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-blue-300 flex items-center gap-1.5">
+                        <Key className="w-4 h-4 text-blue-400" />
+                        رمز یکبار مصرف امضای دیجیتال (SMS OTP):
+                      </span>
+                      <span className="text-[10px] text-slate-400">مهلت: ۲ دقیقه</span>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      کد تایید ۶ رقمی به شماره <span className="font-mono font-bold text-white">{party1Data.phone}</span> ارسال شد.
+                    </p>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        maxLength={6}
+                        placeholder="کد ۶ رقمی"
+                        value={party1Data.otp}
+                        onChange={e => setParty1Data(p => ({ ...p, otp: e.target.value, error: '' }))}
+                        className="bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-center text-sm font-mono font-bold tracking-widest text-emerald-400 focus:outline-none focus:border-blue-500 flex-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setParty1Data(p => ({ ...p, otp: p.generatedOtp, error: '' }))}
+                        className="text-[11px] bg-slate-800 hover:bg-slate-700 text-blue-300 px-3 py-2.5 rounded-lg border border-slate-700 transition"
+                      >
+                        درج خودکار ({party1Data.generatedOtp})
+                      </button>
+                    </div>
+
+                    {party1Data.error && (
+                      <p className="text-[11px] text-red-400 font-bold flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                        {party1Data.error}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2">
+                    <button
+                      onClick={() => setWizardStep(6)}
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" /> مرحله قبل
+                    </button>
+                    <button
+                      onClick={handleParty1SignAndCreate}
+                      disabled={loading || !party1Data.otp}
+                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-6 py-2.5 rounded-xl transition shadow-lg shadow-emerald-600/20 flex items-center gap-2"
+                    >
+                      {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Fingerprint className="w-4 h-4" />}
+                      <span>تایید و امضای رسمی قرارداد (صدور لینک)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 8: Generated Contract, Anti-Phishing Security Notice & Counterparty Acceptance */}
+              {wizardStep === 8 && (
                 <div className="space-y-6 max-w-2xl mx-auto py-2">
                   <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -1020,13 +1226,66 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                         <CheckCircle2 className="w-6 h-6" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-bold text-white">قرارداد دیجیتال صادر شد و در دیتابیس ثبت گردید</h4>
+                        <h4 className="text-sm font-bold text-white">قرارداد با امضای دیجیتال طرف اول ثبت و صادر گردید</h4>
                         <p className="text-xs text-emerald-400/90 font-mono">شناسه یکتا: {wizardDraft.contract_id}</p>
                       </div>
                     </div>
                     <span className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-lg border border-slate-700">
-                      وضعیت: در انتظار طرف دوم
+                      وضعیت: در انتظار امضای طرف دوم
                     </span>
+                  </div>
+
+                  {/* Anti-Phishing Security Guidance Banner */}
+                  <div className="bg-red-950/30 border-2 border-red-500/40 rounded-2xl p-4 space-y-3 shadow-lg shadow-red-500/5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-red-400 font-bold text-xs sm:text-sm">
+                        <ShieldAlert className="w-5 h-5 flex-shrink-0" />
+                        <span>راهنمای امنیتی ضد فیشینگ (ویژه طرف دوم قرارداد)</span>
+                      </div>
+                      <span className="text-[10px] bg-red-500/20 text-red-300 border border-red-500/30 px-2 py-0.5 rounded-full font-bold">
+                        پیشگیری از کلاهبرداری
+                      </span>
+                    </div>
+
+                    <blockquote className="text-xs text-slate-200 leading-relaxed pr-3 border-r-2 border-red-400 italic bg-slate-900/70 p-3.5 rounded-xl">
+                      «به منظور جلوگیری از کلیک روی لینک‌های جعلی و کلاهبرداری، طرف دوم نیازی به باز کردن هیچ لینکی ندارد؛ کافیست ربات رسمی میانجی (<code className="text-blue-300 font-mono font-bold">@mianji_ir_bot</code>) را استارت کرده و کد قرارداد (<code className="text-emerald-400 font-mono font-bold">{wizardDraft.contract_id}</code>) را در ربات جست‌وجو کند تا مستقیماً به صفحه بررسی و امضای قرارداد هدایت شود.»
+                    </blockquote>
+
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(wizardDraft.contract_id);
+                          setCopiedContractId(true);
+                          setTimeout(() => setCopiedContractId(false), 2000);
+                        }}
+                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 flex items-center gap-1.5 transition"
+                      >
+                        {copiedContractId ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>کپی کد قرارداد جهت جست‌وجو: {wizardDraft.contract_id}</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          const inviteMsg = `🏛 **دعوت‌نامه رسمی قرارداد هوشمند (سامانه اسکرو میانجی)**\n` +
+                            `────────────────────────────\n` +
+                            `📋 **شناسه اختصاصی معامله:** \`${wizardDraft.contract_id}\`\n` +
+                            `📝 **موضوع:** ${wizardDraft.title}\n` +
+                            `💰 **مبلغ معامله:** ${wizardDraft.amount.toLocaleString('fa-IR')} تومان\n` +
+                            `✍️ **امضا شده توسط طرف اول:** ${party1Data.fullName} با گواهی دیجیتال OTP\n` +
+                            `────────────────────────────\n` +
+                            `🛡 **راهنمای امنیتی ضد فیشینگ (ویژه طرف دوم):**\n` +
+                            `> جهت جلوگیری از سرقت اطلاعات یا کلیک بر روی لینک‌های ناشناس، می‌توانید بدون باز کردن لینک، ربات رسمی میانجی (@mianji_ir_bot) را استارت کرده و کد معامله «${wizardDraft.contract_id}» را ارسال فرمایید تا مستقیماً قرارداد را در محیط امن تلگرام مشاهده و امضا کنید.\n\n` +
+                            `🔗 لینک مستقیم قرارداد در تلگرام:\nhttps://t.me/mianji_ir_bot?start=c_${wizardDraft.contract_id}`;
+                          navigator.clipboard.writeText(inviteMsg);
+                          setCopiedInviteText(true);
+                          setTimeout(() => setCopiedInviteText(false), 2000);
+                        }}
+                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow"
+                      >
+                        {copiedInviteText ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Share2 className="w-3.5 h-3.5" />}
+                        <span>{copiedInviteText ? 'متن کامل دعوت کپی شد' : 'کپی متن دعوت رسمی (همراه با هشدار ضد فیشینگ)'}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Digital Contract Preview Card */}
@@ -1078,6 +1337,20 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                       </div>
                     </div>
 
+                    {/* Party 1 Digital Signature Badge */}
+                    <div className="bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-3 space-y-1 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                          <BadgeCheck className="w-4 h-4 text-emerald-400" />
+                          امضای دیجیتال طرف اول ({party1Data.fullName}):
+                        </span>
+                        <span className="text-[10px] text-emerald-300 font-mono">تایید شده با رمز پیامکی OTP</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 font-mono truncate" dir="ltr">
+                        SHA-256: {party1Data.signatureHash}
+                      </p>
+                    </div>
+
                     {/* Binding Arbitration Deliverables & Commitments Box */}
                     <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 space-y-2">
                       <div className="flex items-center justify-between">
@@ -1093,7 +1366,7 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                         {wizardDraft.description}
                       </div>
                       <p className="text-[10px] text-amber-300/80 leading-relaxed">
-                        ⚖️ هیئت حل اختلاف میانجی در زمان بروز هرگونه اختلاف، منحصراً بر اساس تعهدات مندرج در این بخش قضاوت خواهد کرد و هیچ توافقی خارج از این قرارداد پذیرفته نخواهد شد.
+                        ⚖️ هیئت حل اختلاف میانجی در زمان بروز هرگونه اختلاف، منحصراً بر اساس تعهدات مندرج در این بخش قضاوت خواهد کرد.
                       </p>
                     </div>
 
@@ -1102,11 +1375,11 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
                           <Share2 className="w-3.5 h-3.5" />
-                          لینک اختصاصی دعوت طرف دوم (تلگرام):
+                          لینک مستقیم دعوت طرف دوم (تلگرام):
                         </span>
                         <button
                           onClick={() => {
-                            navigator.clipboard.writeText(`https://t.me/mianji_ir_bot?start=${wizardDraft.invite_token}`);
+                            navigator.clipboard.writeText(`https://t.me/mianji_ir_bot?start=c_${wizardDraft.contract_id}`);
                             setCopiedLink(true);
                             setTimeout(() => setCopiedLink(false), 2000);
                           }}
@@ -1117,36 +1390,47 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                         </button>
                       </div>
                       <code className="text-xs text-blue-400 font-mono block bg-slate-900/80 p-2 rounded-lg truncate text-left" dir="ltr">
-                        https://t.me/mianji_ir_bot?start={wizardDraft.invite_token}
+                        https://t.me/mianji_ir_bot?start=c_{wizardDraft.contract_id}
                       </code>
                     </div>
 
                     {/* Counterparty Join Simulator */}
                     <div className="border-t border-slate-800 pt-4 space-y-3">
                       <h6 className="text-xs font-bold text-slate-300">
-                        شبیه‌سازی تعاملی پیوستن طرف دوم (طرف مقابل):
+                        شبیه‌سازی تعاملی پیوستن و امضای طرف دوم (طرف مقابل):
                       </h6>
 
                       {!wizardDraft.counterpartyAccepted ? (
                         <div className="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3">
                           <p className="text-xs text-slate-300 leading-relaxed">
-                            هنگامی که طرف دوم لینک دعوت را باز کند، پیش‌نویس به او نمایش داده شده و با لمس دکمه زیر قرارداد وارد فاز پرداخت اسکرو می‌شود:
+                            طرف دوم می‌تواند با هر یک از روش‌های زیر قرارداد را باز، بررسی و امضا نماید:
                           </p>
-                          <button
-                            onClick={() => {
-                              setWizardDraft(prev => ({ ...prev, counterpartyAccepted: true }));
-                            }}
-                            className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
-                          >
-                            <BadgeCheck className="w-4 h-4" />
-                            <span>تایید و پذیرش قوانین میانجی توسط طرف دوم (شبیه‌سازی پیوستن)</span>
-                          </button>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <button
+                              onClick={() => {
+                                setWizardDraft(prev => ({ ...prev, counterpartyAccepted: true }));
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20"
+                            >
+                              <Search className="w-4 h-4" />
+                              <span>روش ضد فیشینگ: سرچ کد در ربات و امضا</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setWizardDraft(prev => ({ ...prev, counterpartyAccepted: true }));
+                              }}
+                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
+                            >
+                              <BadgeCheck className="w-4 h-4" />
+                              <span>ورود با لینک مستقیم و امضا با OTP</span>
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-xl p-4 space-y-3">
                           <div className="flex items-center gap-2 text-xs font-bold text-emerald-400">
                             <CheckCircle2 className="w-4 h-4" />
-                            <span>طرف دوم به قرارداد پیوست و قوانین میانجی را پذیرفت!</span>
+                            <span>طرف دوم به قرارداد پیوست و امضای الکترونیک دوطرفه تکمیل شد!</span>
                           </div>
                           <p className="text-xs text-slate-300">
                             معامله اکنون در وضعیت <b>در انتظار واریز وجه امانت (Awaiting Escrow Deposit)</b> است. کارفرما وجه ({fees.buyerPays.toLocaleString('fa-IR')} تومان) را در صندوق امانت قفل می‌کند.
@@ -1169,7 +1453,7 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                               className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 rounded-lg border border-slate-700 flex items-center gap-1.5"
                             >
                               <Download className="w-3.5 h-3.5" />
-                              <span>دانلود سند PDF</span>
+                              <span>دانلود سند رسمی PDF</span>
                             </a>
                           </div>
                         </div>
@@ -1266,6 +1550,8 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
               <div className="space-y-1.5">
                 {[
                   { label: '⚡ اجرای روند هوشمند معامله (<45s)', cmd: '🤝 ثبت معامله جدید' },
+                  { label: '🛡 جست‌وجوی امن با کد قرارداد (ضد فیشینگ)', cmd: '🔍 جست‌وجوی قرارداد با شناسه' },
+                  { label: '📄 بررسی و امضای قرارداد DEV-842-190', cmd: 'DEV-842-190' },
                   { label: '🤝 شبیه‌سازی ورود و پذیرش طرف دوم', cmd: 'شبیه‌سازی ورود طرف دوم' },
                   { label: '📜 لیست معاملات من', cmd: '📜 لیست معاملات من' },
                   { label: '💳 کیف پول و اعتبار', cmd: '💳 کیف پول و اعتبار' },
