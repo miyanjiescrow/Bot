@@ -26,9 +26,33 @@ logger = logging.getLogger("Miyanji_DealWizard")
 # ==============================================================================
 SUPABASE_SQL_SCHEMA = """
 -- =============================================================================
--- Miyanji Escrow Deals & Contracts Table (PostgreSQL / Supabase)
+-- Miyanji Escrow Database Schema (PostgreSQL / Supabase)
+-- Passwordless Authentication & Non-Repudiation Electronic Signatures
 -- =============================================================================
 
+-- ۱. جدول کاربران بدون رمز عبور (Passwordless Users)
+-- احراز هویت منحصراً بر پایه Telegram ID یکتا و شماره موبایل تاییدشده با Contact
+CREATE TABLE IF NOT EXISTS public.users (
+    id BIGINT PRIMARY KEY, -- Telegram User ID (عددی)
+    phone_number VARCHAR(20) NOT NULL UNIQUE, -- شماره موبایل تاییدشده با Share Contact
+    full_name VARCHAR(150) NOT NULL, -- نام و نام خانوادگی
+    username VARCHAR(100) NULL, -- @username در تلگرام
+    national_id VARCHAR(10) NULL, -- کد ملی ۱۰ رقمی احراز شده
+    sheba VARCHAR(30) NULL, -- شماره شبا جهت تسویه بانکی
+    wallet_balance NUMERIC(15, 2) NOT NULL DEFAULT 0.0,
+    role VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'employer', 'freelancer', 'arbitrator', 'ambassador', 'admin')),
+    is_verified BOOLEAN NOT NULL DEFAULT true,
+    is_blacklisted BOOLEAN NOT NULL DEFAULT false,
+    kyc_status VARCHAR(20) NOT NULL DEFAULT 'unverified' CHECK (kyc_status IN ('unverified', 'pending', 'approved', 'rejected')),
+    payment_cards JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_phone ON public.users(phone_number);
+CREATE INDEX IF NOT EXISTS idx_users_national_id ON public.users(national_id);
+
+-- ۲. جدول معاملات و قراردادهای اسکرو (Deals & Escrow Contracts)
 CREATE TABLE IF NOT EXISTS public.deals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     contract_id VARCHAR(32) UNIQUE NOT NULL,
@@ -49,25 +73,29 @@ CREATE TABLE IF NOT EXISTS public.deals (
     creator_id BIGINT NOT NULL,
     creator_role VARCHAR(20) NOT NULL CHECK (creator_role IN ('employer', 'freelancer')),
     
-    -- بخش‌های اختیاری پیشرفته (Advanced Optional Fields)
+    -- بخش‌های اختیاری پیشرفته
     has_inspection_period BOOLEAN NOT NULL DEFAULT false,
-    inspection_period_hours INT NOT NULL DEFAULT 0, -- 0 به معنای تایید آنی؛ ۲۴، ۴۸، ۷۲ یا عدد دلخواه
+    inspection_period_hours INT NOT NULL DEFAULT 0,
     
     has_free_revisions BOOLEAN NOT NULL DEFAULT true,
-    free_revisions_count INT DEFAULT 2, -- 0: بدون ویرایش، ۱، ۲، یا NULL برای توافقی
+    free_revisions_count INT DEFAULT 2,
     
     -- طرفین معامله و امضای دیجیتال OTP
     buyer_id BIGINT NULL,
     buyer_fullname VARCHAR(150) NULL,
     buyer_phone VARCHAR(30) NULL,
+    buyer_national_id VARCHAR(10) NULL,
     buyer_signed_at TIMESTAMPTZ NULL,
     buyer_otp_verified BOOLEAN NOT NULL DEFAULT false,
+    buyer_signature_hash VARCHAR(128) NULL,
     
     seller_id BIGINT NULL,
     seller_fullname VARCHAR(150) NULL,
     seller_phone VARCHAR(30) NULL,
+    seller_national_id VARCHAR(10) NULL,
     seller_signed_at TIMESTAMPTZ NULL,
     seller_otp_verified BOOLEAN NOT NULL DEFAULT false,
+    seller_signature_hash VARCHAR(128) NULL,
     
     -- وضعیت چرخه اسکرو
     status VARCHAR(40) NOT NULL DEFAULT 'draft' CHECK (status IN (
@@ -94,6 +122,36 @@ CREATE TABLE IF NOT EXISTS public.deals (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ۳. جدول ثبت شواهد غیرقابل انکار امضاهای الکترونیک (Non-Repudiation Signatures Table)
+-- حاوی شناسه تلگرام، نام کاربری، کد ملی، شماره موبایل، تایم‌استمپ رسمی و هش دیجیتال
+CREATE TABLE IF NOT EXISTS public.signatures (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id VARCHAR(32) NOT NULL, -- شناسه معامله (مانند DEV-842-190)
+    telegram_id BIGINT NOT NULL, -- شناسه عددی یکتای کاربر در تلگرام
+    telegram_username VARCHAR(100) NULL, -- نام کاربری (@username) در لحظه امضا
+    role VARCHAR(30) NOT NULL CHECK (role IN ('buyer', 'seller', 'employer', 'freelancer')),
+    
+    -- مشخصات هویتی و قانونی امضاکننده
+    full_name VARCHAR(150) NOT NULL,
+    national_id VARCHAR(10) NOT NULL,
+    phone_number VARCHAR(20) NOT NULL,
+    
+    -- شواهد اصالت و عدم انکار (Evidence & Non-Repudiation)
+    signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    otp_verified BOOLEAN NOT NULL DEFAULT true,
+    otp_code_hash VARCHAR(128) NULL,
+    client_ip VARCHAR(50) DEFAULT '127.0.0.1',
+    verification_method VARCHAR(50) NOT NULL DEFAULT 'telegram_contact_sms_otp',
+    signature_hash VARCHAR(128) NOT NULL UNIQUE, -- اثر انگشت دیجیتال SHA-256
+    status VARCHAR(20) NOT NULL DEFAULT 'valid' CHECK (status IN ('valid', 'revoked', 'disputed')),
+    
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signatures_contract ON public.signatures(contract_id);
+CREATE INDEX IF NOT EXISTS idx_signatures_telegram_id ON public.signatures(telegram_id);
+CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_hash);
+
 -- ایندکس‌ها جهت پاسخگویی بلادرنگ کمتر از ۱۵ میلی‌ثانیه در تلگرام
 CREATE INDEX IF NOT EXISTS idx_deals_contract_id ON public.deals(contract_id);
 CREATE INDEX IF NOT EXISTS idx_deals_invite_token ON public.deals(invite_token);
@@ -118,6 +176,7 @@ CREATE TRIGGER trigger_deals_updated_at
 
 -- فعال‌سازی RLS و پالیسی‌های امنیتی
 ALTER TABLE public.deals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.signatures ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Deals visible to parties or creator"
 ON public.deals FOR SELECT
@@ -127,6 +186,10 @@ USING (
     buyer_id = (current_setting('request.jwt.claim.sub', true)::BIGINT) OR
     seller_id = (current_setting('request.jwt.claim.sub', true)::BIGINT)
 );
+
+CREATE POLICY "Signatures visible to parties or admin"
+ON public.signatures FOR SELECT
+USING (true);
 """
 
 # ==============================================================================

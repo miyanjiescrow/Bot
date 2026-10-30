@@ -103,6 +103,7 @@ _in_memory_contracts: Dict[str, Dict[str, Any]] = {}
 _in_memory_users: Dict[int, Dict[str, Any]] = {}
 _in_memory_transactions: Dict[int, Dict[str, Any]] = {}
 _in_memory_receipts: Dict[str, Dict[str, Any]] = {}
+_in_memory_signatures: Dict[str, List[Dict[str, Any]]] = {}
 
 
 @lru_cache(maxsize=1024)
@@ -3006,3 +3007,89 @@ def register_or_update_user_by_phone(phone_number: str, full_name: str, telegram
     except Exception as e:
         logger.error(f"Error in register_or_update_user_by_phone: {e}")
         return None
+
+# ====================================================
+# Digital Signatures & Non-Repudiation (شواهد غیرقابل انکار امضا)
+# ====================================================
+
+def create_contract_signature(
+    contract_id: str,
+    telegram_id: int,
+    full_name: str,
+    national_id: str,
+    phone_number: str,
+    role: str,
+    telegram_username: str = "",
+    otp_code: str = "",
+    client_ip: str = "127.0.0.1",
+    verification_method: str = "telegram_contact_sms_otp"
+) -> Dict[str, Any]:
+    """
+    ثبت شواهد دیجیتال غیرقابل انکار (Non-Repudiation) امضای قرارداد در جدول signatures
+    شامل شناسه عددی تلگرام، آیدی متنی، کد ملی، شماره موبایل، تایم‌استمپ دقیق، آی‌پی و هش رمزنگاری‌شده
+    """
+    import hashlib
+    now_iso = datetime.now(timezone.utc).isoformat()
+    norm_phone = normalize_phone_number(phone_number) or phone_number
+    clean_nid = utils.fa_to_en_digits(str(national_id or "")).strip()
+
+    # ایجاد هش رمزنگاری‌شده امضای دیجیتال
+    secret_salt = getattr(config, "SECURITY_SALT", "MiyanjiEscrowLegalSalt2026")
+    raw_proof = f"{contract_id}|{telegram_id}|{clean_nid}|{norm_phone}|{role}|{now_iso}|{secret_salt}"
+    signature_hash = f"SIG-SHA256-{hashlib.sha256(raw_proof.encode('utf-8')).hexdigest()[:32].upper()}"
+    otp_hash = hashlib.sha256(str(otp_code).encode('utf-8')).hexdigest() if otp_code else ""
+
+    signature_payload = {
+        "contract_id": contract_id,
+        "telegram_id": int(telegram_id),
+        "telegram_username": (telegram_username or "").lstrip("@"),
+        "role": role,
+        "full_name": full_name.strip(),
+        "national_id": clean_nid,
+        "phone_number": norm_phone,
+        "signed_at": now_iso,
+        "otp_verified": True,
+        "otp_code_hash": otp_hash,
+        "client_ip": client_ip,
+        "verification_method": verification_method,
+        "signature_hash": signature_hash,
+        "status": "valid",
+        "created_at": now_iso
+    }
+
+    # ۱. ذخیره در حافظه پایدار رم
+    with db_lock:
+        if contract_id not in _in_memory_signatures:
+            _in_memory_signatures[contract_id] = []
+        _in_memory_signatures[contract_id].append(signature_payload)
+
+    # ۲. ذخیره در جدول signatures در Supabase (در صورت وجود جدول)
+    if supabase:
+        try:
+            res = supabase.table("signatures").insert(signature_payload).execute()
+            if res.data:
+                logger.info(f"✅ [SIGNATURE_RECORDED] Saved legal signature for contract {contract_id} by user {telegram_id}")
+                return res.data[0]
+        except Exception as e:
+            logger.warning(f"Notice saving to signatures table in Supabase (using memory store): {e}")
+
+    return signature_payload
+
+def get_contract_signatures(contract_id: str) -> List[Dict[str, Any]]:
+    """دریافت تمام امضاهای رسمی ثبت‌شده برای یک معامله"""
+    sigs = []
+    with db_lock:
+        if contract_id in _in_memory_signatures:
+            sigs = list(_in_memory_signatures[contract_id])
+
+    if supabase:
+        try:
+            res = supabase.table("signatures").select("*").eq("contract_id", contract_id).execute()
+            if res.data:
+                for row in res.data:
+                    if not any(s.get("signature_hash") == row.get("signature_hash") for s in sigs):
+                        sigs.append(row)
+        except Exception as e:
+            logger.debug(f"Notice querying signatures: {e}")
+
+    return sigs

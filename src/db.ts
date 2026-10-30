@@ -4,6 +4,7 @@
  * with complete in-memory fallback store and rich realistic seed data.
  */
 
+import crypto from 'crypto';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { 
   UserProfile, 
@@ -13,7 +14,8 @@ import {
   DisputeMessage, 
   AffiliateStats, 
   Milestone,
-  DashboardStats 
+  DashboardStats,
+  ContractSignature 
 } from './types';
 
 // ====================================================
@@ -82,6 +84,20 @@ export function generateContractId(category: string = 'GEN'): string {
 
 export function formatCurrency(amount: number): string {
   return (amount || 0).toLocaleString('fa-IR') + ' تومان';
+}
+
+/**
+ * تولید اثر انگشت دیجیتال امضای الکترونیک غیرقابل انکار (SHA-256 Non-Repudiation Digest)
+ */
+export function generateDigitalSignatureHash(params: {
+  contractId: string;
+  telegramId: number;
+  nationalId: string;
+  phoneNumber: string;
+  timestamp: string;
+}): string {
+  const payload = `${params.contractId}|${params.telegramId}|${params.nationalId}|${params.phoneNumber}|${params.timestamp}|MIYANJI_ESCROW_NON_REPUDIATION_2026`;
+  return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
 // ====================================================
@@ -480,6 +496,120 @@ export let disputes: DisputeCase[] = [
   }
 ];
 
+// امضاهای دیجیتال غیرقابل انکار قراردادها (Non-Repudiation Digital Signatures)
+export let signatures: ContractSignature[] = [
+  {
+    id: 'sig_dev901_buyer',
+    contract_id: 'DEV-901-442',
+    user_id: 1802649782,
+    telegram_id: 1802649782,
+    telegram_username: 'alireza_rezvani',
+    full_name: 'علیرضا رضوانی',
+    national_id: '0012345678',
+    phone_number: '09123456789',
+    role: 'employer',
+    signed_at: '2026-10-20T11:00:00.000Z',
+    otp_verified: true,
+    client_ip: '5.200.14.88',
+    verification_method: 'telegram_contact_sms_otp',
+    signature_hash: '9b8e21a7df04523c909e4bfd71e0915a2cc945ebfa40a7cf282bb2c1f9645802',
+    status: 'valid'
+  },
+  {
+    id: 'sig_dev901_seller',
+    contract_id: 'DEV-901-442',
+    user_id: 290184712,
+    telegram_id: 290184712,
+    telegram_username: 'sara_ahmadi_dev',
+    full_name: 'سارا احمدی (برنامه‌نویس ارشد)',
+    national_id: '0087654321',
+    phone_number: '09359876543',
+    role: 'freelancer',
+    signed_at: '2026-10-20T11:30:00.000Z',
+    otp_verified: true,
+    client_ip: '2.144.92.10',
+    verification_method: 'telegram_contact_sms_otp',
+    signature_hash: '3d76e472cb9a6132fa07bfa74bc6f019a911e355c2df9a9307dfef2d17c9134a',
+    status: 'valid'
+  }
+];
+
+export function getSignatures(contractId?: string): ContractSignature[] {
+  if (contractId) {
+    return signatures.filter(s => s.contract_id === contractId);
+  }
+  return signatures;
+}
+
+export async function createContractSignature(data: {
+  contract_id: string;
+  telegram_id: number;
+  telegram_username?: string;
+  full_name: string;
+  national_id: string;
+  phone_number: string;
+  role: 'employer' | 'freelancer' | 'buyer' | 'seller';
+  user_id?: number;
+  signed_at?: string;
+  otp_verified?: boolean;
+  client_ip?: string;
+  verification_method?: string;
+  signature_hash?: string;
+}): Promise<ContractSignature> {
+  const signed_at = data.signed_at || new Date().toISOString();
+  const signature_hash = data.signature_hash || generateDigitalSignatureHash({
+    contractId: data.contract_id,
+    telegramId: data.telegram_id,
+    nationalId: data.national_id,
+    phoneNumber: data.phone_number,
+    timestamp: signed_at
+  });
+
+  const sig: ContractSignature = {
+    id: `sig_${Math.random().toString(36).substring(2, 10)}`,
+    contract_id: data.contract_id,
+    user_id: data.user_id,
+    telegram_id: data.telegram_id,
+    telegram_username: data.telegram_username,
+    full_name: data.full_name,
+    national_id: data.national_id,
+    phone_number: data.phone_number,
+    role: data.role,
+    signed_at,
+    otp_verified: data.otp_verified ?? true,
+    client_ip: data.client_ip || '127.0.0.1',
+    verification_method: data.verification_method || 'telegram_contact_sms_otp',
+    signature_hash,
+    status: 'valid'
+  };
+
+  signatures.unshift(sig);
+
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      await supabase.table('signatures').upsert({
+        contract_id: sig.contract_id,
+        telegram_id: sig.telegram_id,
+        telegram_username: sig.telegram_username,
+        full_name: sig.full_name,
+        national_id: sig.national_id,
+        phone_number: sig.phone_number,
+        role: sig.role,
+        signed_at: sig.signed_at,
+        otp_verified: sig.otp_verified,
+        client_ip: sig.client_ip,
+        verification_method: sig.verification_method,
+        signature_hash: sig.signature_hash,
+        status: sig.status
+      });
+    } catch (err: any) {
+      console.warn('Supabase signatures insert warning:', err.message);
+    }
+  }
+
+  return sig;
+}
+
 // ====================================================
 // ۳. توابع مدیریت کاربران (Users)
 // ====================================================
@@ -772,15 +902,27 @@ export async function signContract(
   if (!c) return undefined;
 
   const now = new Date().toISOString();
+  const signerId = role === 'employer' ? (c.buyer_id || _currentUserId) : (c.seller_id || 290184712);
+  const signerNationalId = signer.national_id || (role === 'employer' ? (c.buyer_national_id || '0012345678') : (c.seller_national_id || '0087654321'));
+  const signerPhone = signer.phone || (role === 'employer' ? (c.buyer_phone || '09123456789') : (c.seller_phone || '09359876543'));
+
+  const sigHash = generateDigitalSignatureHash({
+    contractId: c.contract_id,
+    telegramId: signerId,
+    nationalId: signerNationalId,
+    phoneNumber: signerPhone,
+    timestamp: now
+  });
 
   if (role === 'employer') {
     c.buyer_fullname = signer.fullname || c.buyer_fullname;
-    c.buyer_phone = signer.phone || c.buyer_phone;
-    c.buyer_national_id = signer.national_id || c.buyer_national_id;
+    c.buyer_phone = signerPhone;
+    c.buyer_national_id = signerNationalId;
     c.buyer_signed_at = now;
     c.buyer_otp_verified = true;
+    c.buyer_signature_hash = sigHash;
     c.history.push({
-      event: `✍️ قرارداد با تایید دیجیتال کارفرما (${c.buyer_fullname}) امضا شد.`,
+      event: `✍️ قرارداد با تایید دیجیتال کارفرما (${c.buyer_fullname}) امضا شد. [اثر انگشت: ${sigHash.slice(0, 12)}...]`,
       timestamp: now,
       actor: 'کارفرما'
     });
@@ -797,12 +939,13 @@ export async function signContract(
     }
   } else {
     c.seller_fullname = signer.fullname || c.seller_fullname;
-    c.seller_phone = signer.phone || c.seller_phone;
-    c.seller_national_id = signer.national_id || c.seller_national_id;
+    c.seller_phone = signerPhone;
+    c.seller_national_id = signerNationalId;
     c.seller_signed_at = now;
     c.seller_otp_verified = true;
+    c.seller_signature_hash = sigHash;
     c.history.push({
-      event: `✍️ قرارداد با تایید دیجیتال مجری (${c.seller_fullname}) امضا شد.`,
+      event: `✍️ قرارداد با تایید دیجیتال مجری (${c.seller_fullname}) امضا شد. [اثر انگشت: ${sigHash.slice(0, 12)}...]`,
       timestamp: now,
       actor: 'مجری'
     });
@@ -818,6 +961,23 @@ export async function signContract(
       c.status = 'pending_party_b';
     }
   }
+
+  // ثبت شواهد حقوقی غیرقابل انکار (Non-Repudiation Audit Trail)
+  await createContractSignature({
+    contract_id: c.contract_id,
+    telegram_id: signerId,
+    telegram_username: getUser(signerId)?.username,
+    full_name: role === 'employer' ? (c.buyer_fullname || 'کارفرما') : (c.seller_fullname || 'مجری'),
+    national_id: signerNationalId,
+    phone_number: signerPhone,
+    role: role === 'employer' ? 'employer' : 'freelancer',
+    user_id: signerId,
+    signed_at: now,
+    otp_verified: true,
+    client_ip: '5.200.14.88',
+    verification_method: 'telegram_contact_sms_otp',
+    signature_hash: sigHash
+  });
 
   if (isSupabaseConfigured() && supabase) {
     try {

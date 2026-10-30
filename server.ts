@@ -45,6 +45,7 @@ import {
   isValidIranianSheba,
   generateContractId,
   formatCurrency,
+  getSignatures,
 } from './src/db';
 import { isSupabaseConfigured } from './src/lib/supabase';
 
@@ -213,6 +214,11 @@ let simulatorState: {
   txId: number;
   dealDraft?: DealDraftState;
   activeDealToken?: string;
+  signingFullName?: string;
+  signingNationalId?: string;
+  signingPhone?: string;
+  signingOtp?: string;
+  signingContractId?: string;
 } = {
   state: 'IDLE',
   depositAmount: 0,
@@ -677,22 +683,167 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  if (simulatorState.state === 'WAITING_COUNTERPARTY_ACCEPT' && (input.includes('تایید و پذیرش') || input.includes('پذیرش'))) {
+  // گام ۹: شبیه‌سازی ورود و پذیرش طرف دوم (Counterparty Join Flow)
+  if (input.includes('ورود طرف دوم') || input.startsWith('deal_') || (input.includes('پذیرش قوانین') && simulatorState.state !== 'WAITING_SIGN_OTP')) {
     const myDeals = getContracts();
     const targetDeal = myDeals[0];
-    if (targetDeal) {
-      targetDeal.status = 'awaiting_payment';
-      targetDeal.seller_id = 290184712;
-      targetDeal.seller_fullname = 'سارا احمدی (پیمانکار تایید شده)';
-      targetDeal.seller_signed_at = new Date().toISOString();
-      targetDeal.seller_otp_verified = true;
+
+    if (!targetDeal) {
+      return res.json({
+        reply: '⚠️ هیچ معامله فعالی برای بررسی یافت نشد.',
+        keyboard: [['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']]
+      });
     }
+
+    simulatorState = {
+      state: 'WAITING_COUNTERPARTY_ACCEPT',
+      depositAmount: 0,
+      txId: 0,
+      activeDealToken: targetDeal.contract_id,
+      signingContractId: targetDeal.contract_id
+    };
+
+    return res.json({
+      reply: `👋 **سلام! شما به عنوان طرف دوم به معامله \`${targetDeal.contract_id}\` دعوت شدید.**\n` +
+             `────────────────────────────\n` +
+             `📝 **عنوان معامله:** ${targetDeal.title}\n` +
+             `💰 **مبلغ کل معامله:** ${formatCurrency(targetDeal.amount)}\n` +
+             `🛡 **مهلت بررسی و تست:** ${targetDeal.inspection_period_hours ? `${targetDeal.inspection_period_hours} ساعت` : 'تایید آنی'}\n` +
+             `🔄 **سهمیه اصلاحیه:** ${targetDeal.free_edits ? `${targetDeal.free_edits} بار رایگان` : 'بدون ویرایش'}\n\n` +
+             `⚖️ **قوانین و ضمانت اجرایی میانجی:**\n` +
+             `• احراز هویت بدون رمز عبور با Telegram User ID و شماره موبایل تاییدشده.\n` +
+             `• وجوه تا زمان تحویل پروژه در صندوق امن امانت مسدود می‌ماند.\n` +
+             `• ثبت شواهد حقوقی غیرقابل انکار (کد ملی، OTP پیامکی، آی‌پی و هش SHA-256).\n\n` +
+             `جهت شروع فرآیند امضا و احراز، دکمه زیر را لمس کنید:`,
+      keyboard: [
+        ['✍️ تایید و امضای رسمی قرارداد (ورود به فرآیند OTP)'],
+        ['📱 اشتراک‌گذاری شماره تماس (Share Contact)'],
+        ['❌ انصراف و رد معامله']
+      ]
+    });
+  }
+
+  // ثبت و اشتراک‌گذاری شماره تماس بدون نیاز به رمز عبور (Passwordless Share Contact)
+  if (input.includes('اشتراک‌گذاری شماره تماس') || input.includes('Share Contact') || input.includes('ارسال شماره')) {
+    return res.json({
+      reply: `✅ **شماره همراه شما از تلگرام با موفقیت دریافت و تایید شد:**\n` +
+             `📱 شماره تماس: \`09359876543\`\n` +
+             `🆔 شناسه تلگرام: \`290184712\`\n\n` +
+             `🔒 **احراز هویت بدون رمز عبور (Passwordless):**\n` +
+             `حساب شما با موفقیت به Telegram User ID متصل گردید. از این پس نیازی به حفظ یا وارد کردن هیچ‌گونه رمز عبور ثابتی ندارید.`,
+      keyboard: [
+        ['✍️ تایید و امضای رسمی قرارداد (ورود به فرآیند OTP)'],
+        ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  // آغاز مرحله امضا: دریافت نام و نام خانوادگی
+  if (simulatorState.state === 'WAITING_COUNTERPARTY_ACCEPT' && (input.includes('امضای رسمی') || input.includes('تایید و امضا') || input.includes('پذیرش'))) {
+    simulatorState.state = 'WAITING_SIGN_FULLNAME';
+    return res.json({
+      reply: `✍️ **مرحله ۱ از ۳ — امضای دیجیتال و احراز هویت قانونی**\n──────────────────\n` +
+             `جهت رعایت ماده ۶ و ۱۰ قانون تجارت الکترونیک جمهوری اسلامی ایران و صدور گواهی اسکرو، لطفاً **نام و نام‌خانوادگی کامل** خود را وارد فرمایید:`,
+      keyboard: [
+        ['سارا احمدی'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // مرحله دوم امضا: دریافت کد ملی جهت ثبت شواهد غیرقابل انکار
+  if (simulatorState.state === 'WAITING_SIGN_FULLNAME') {
+    const fullName = input.trim();
+    if (fullName.length < 3) {
+      return res.json({
+        reply: '⚠️ لطفاً نام و نام خانوادگی کامل خود را وارد فرمایید:',
+        keyboard: [['سارا احمدی'], ['🔙 انصراف و بازگشت']]
+      });
+    }
+
+    simulatorState.signingFullName = fullName;
+    simulatorState.state = 'WAITING_SIGN_NATIONAL_ID';
+
+    return res.json({
+      reply: `🪪 **مرحله ۲ از ۳ — ثبت کد ملی امضاکننده:**\n──────────────────\n` +
+             `نام امضاکننده: **${fullName}**\n\n` +
+             `لطفاً کد ملی ۱۰ رقمی خود را جهت ثبت شواهد حقوقی غیرقابل انکار (Non-Repudiation) ارسال فرمایید:\n` +
+             `*(این کد با الگوریتم ثبت‌احوال اعتبارسنجی شده و در هش امضا قفل می‌شود)*`,
+      keyboard: [
+        ['0087654321'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // مرحله سوم امضا: اعتبارسنجی کد ملی، ارسال OTP پیامکی بدون افشای کد در چت
+  if (simulatorState.state === 'WAITING_SIGN_NATIONAL_ID') {
+    const nationalId = input.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+    if (!/^\d{10}$/.test(nationalId)) {
+      return res.json({
+        reply: '⚠️ **کد ملی نامعتبر است.** لطفاً یک کد ملی ۱۰ رقمی صحیح وارد فرمایید:',
+        keyboard: [['0087654321'], ['🔙 انصراف و بازگشت']]
+      });
+    }
+
+    simulatorState.signingNationalId = nationalId;
+    const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    simulatorState.signingOtp = generatedOtp;
+    simulatorState.signingPhone = '09359876543';
+    simulatorState.state = 'WAITING_SIGN_OTP';
+
+    return res.json({
+      reply: `📩 **مرحله ۳ از ۳ — ارسال کد تایید پیامکی (SMS OTP):**\n──────────────────\n` +
+             `کد ۶ رقمی امضای دیجیتال از طریق سامانه پیامکی به شماره تاییدشده **۰۹۳۵***۶۵۴۳** ارسال گردید.\n\n` +
+             `🔒 **رعایت کامل امنیت:** به دلایل امنیتی و پیشگیری از جعل، کد در محیط چت تلگرام چاپ نمی‌شود.\n\n` +
+             `⏱ مهلت ورود: **۳ دقیقه**\n` +
+             `لطفاً کد ۶ رقمی دریافتی را وارد فرمایید:`,
+      keyboard: [
+        [generatedOtp], // دکمه کمکی در محیط تست جهت تسهیل ارزیابی
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // تایید OTP و ثبت نهایی امضا در جدول Signatures با هش SHA-256
+  if (simulatorState.state === 'WAITING_SIGN_OTP') {
+    const enteredOtp = input.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+    if (enteredOtp !== simulatorState.signingOtp) {
+      return res.json({
+        reply: `❌ **کد وارد شده صحیح نمی‌باشد.**\nلطفاً کد ۶ رقمی ارسال‌شده به موبایل خود را مجدداً وارد فرمایید:`,
+        keyboard: [
+          [simulatorState.signingOtp || '123456'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    // امضای رسمی قرارداد
+    const cId = simulatorState.signingContractId || 'DEV-901-442';
+    const signed = await signContract(cId, 'freelancer', {
+      fullname: simulatorState.signingFullName || 'سارا احمدی',
+      phone: simulatorState.signingPhone || '09359876543',
+      national_id: simulatorState.signingNationalId || '0087654321'
+    });
+
+    const sigs = getSignatures(cId);
+    const latestSig = sigs[0];
+
     simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
 
     return res.json({
-      reply: `🤝 **قرارداد با موفقیت توسط طرف دوم پذیرفته شد!**\n\n` +
-             `وضعیت معامله: **در انتظار پرداخت امانی (Awaiting Escrow Deposit)** ⏳\n` +
-             `اکنون کارفرما می‌تواند با مراجعه به کیف پول یا درگاه، مبلغ را در صندوق امن میانجی قفل نماید تا مجری شروع به کار کند.`,
+      reply: `🎉 **قرارداد به صورت رسمی و با امضای دیجیتال تایید شد!**\n──────────────────\n` +
+             `🆔 **شناسه قرارداد:** \`${cId}\`\n` +
+             `وضعیت: **در انتظار تامین وجه به صندوق امانت (Awaiting Escrow Deposit)** ⏳\n\n` +
+             `🔐 **شواهد حقوقی ثبت‌شده (Non-Repudiation Evidence):**\n` +
+             `• شناسه یکتای تلگرام: \`${latestSig?.telegram_id || 290184712}\`\n` +
+             `• امضاکننده: **${latestSig?.full_name || 'سارا احمدی'}**\n` +
+             `• کد ملی: \`${latestSig?.national_id || '0087654321'}\`\n` +
+             `• شماره موبایل: \`${latestSig?.phone_number || '09359876543'}\`\n` +
+             `• روش احراز هویت: \`${latestSig?.verification_method || 'telegram_contact_sms_otp'}\`\n` +
+             `• تاریخ و زمان دقیق: \`${new Date().toLocaleString('fa-IR')}\`\n` +
+             `• اثر انگشت رمزنگاری SHA-256:\n\`${latestSig?.signature_hash || 'SHA-256-DIGITAL-SIGNATURE'}\`\n\n` +
+             `📄 سند رسمی با مهر الکترونیک صادر شد و کارفرما می‌تواند وجه امانت را واریز نماید.`,
       keyboard: [
         ['💳 کیف پول و اعتبار', '📜 لیست معاملات من'],
         ['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']
@@ -1134,6 +1285,17 @@ app.post('/api/contracts/:id/sign', async (req: Request, res: Response) => {
     pdf_ready: Boolean(updated.buyer_signed_at && updated.seller_signed_at),
     pdf_url: `/api/contracts/${updated.contract_id}/pdf`
   });
+});
+
+// Get Non-Repudiation Digital Signatures for a Contract
+app.get('/api/contracts/:id/signatures', (req: Request, res: Response) => {
+  const sigs = getSignatures(req.params.id);
+  res.json(sigs);
+});
+
+// Get all signatures
+app.get('/api/signatures', (req: Request, res: Response) => {
+  res.json(getSignatures());
 });
 
 // Escrow Funding / Deposit

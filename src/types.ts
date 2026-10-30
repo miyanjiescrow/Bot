@@ -89,6 +89,7 @@ export interface Contract {
   buyer_national_id?: string;
   buyer_signed_at?: string;
   buyer_otp_verified?: boolean;
+  buyer_signature_hash?: string;
   
   // Seller / Freelancer (مجری)
   seller_id?: number;
@@ -97,6 +98,7 @@ export interface Contract {
   seller_national_id?: string;
   seller_signed_at?: string;
   seller_otp_verified?: boolean;
+  seller_signature_hash?: string;
   
   // Advanced Optional Fields (فیلدهای پیشرفته و اختیاری)
   has_inspection_period?: boolean;
@@ -193,4 +195,22 @@ export interface DashboardStats {
   disputesCount: number;
   totalEscrowVolume: number;
   commissionRate: number;
+}
+
+export interface ContractSignature {
+  id: string;
+  contract_id: string;
+  user_id?: number;
+  telegram_id: number;
+  telegram_username?: string;
+  full_name: string;
+  national_id: string;
+  phone_number: string;
+  role: 'employer' | 'freelancer' | 'buyer' | 'seller';
+  signed_at: string;
+  otp_verified: boolean;
+  client_ip?: string;
+  verification_method: string;
+  signature_hash: string;
+  status: 'valid' | 'revoked';
 }

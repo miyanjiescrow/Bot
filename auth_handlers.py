@@ -1,93 +1,104 @@
+"""
+==============================================================================
+سامانه هوشمند واسطه‌گری امن و اسکرو میانجی (Miyanji Escrow)
+هندلرهای اختصاصی ثبت‌نام و ورود بدون رمز عبور (Passwordless Auth Handlers)
+ورود و احراز هویت ۱۰۰٪ خودکار با استفاده از Telegram ID و دکمه Share Contact تلگرام
+==============================================================================
+"""
+
 import logging
-import bcrypt
 import re
-import unicodedata
 from telebot import TeleBot
-from telebot.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import (
+    Message, 
+    CallbackQuery, 
+    ReplyKeyboardMarkup, 
+    KeyboardButton, 
+    ReplyKeyboardRemove, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton
+)
 import database as db
 import keyboards as kb
 from config import config
 from phone_utils import normalize_phone_number
+import auth_service as auth_svc
 import utils
 
-logger = logging.getLogger("Miyanji_Auth")
+logger = logging.getLogger("Miyanji_AuthHandlers")
 
-def hash_password(password: str) -> str:
-    """رمزنگاری امن با استفاده از الگوریتم bcrypt"""
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.strip().encode(), salt).decode('utf-8')
 
-def check_password(password: str, hashed: str) -> bool:
-    """بررسی صحت رمز عبور در برابر هش ذخیره شده"""
-    try:
-        # پشتیبانی از هش‌های قدیمی SHA256 برای جلوگیری از مسدود شدن کاربران قدیمی
-        import hashlib
-        if len(hashed) == 64 and all(c in "0123456789abcdef" for c in hashed):
-            return hashlib.sha256(password.strip().encode()).hexdigest() == hashed
-        return bcrypt.checkpw(password.strip().encode(), hashed.encode('utf-8'))
-    except Exception:
-        return False
-
-def validate_password(password: str) -> bool:
-    """محدودیت رمز عبور: حداقل ۶ کاراکتر (اعداد و حروف انگلیسی)"""
-    if not password or len(password) < 6:
-        return False
-    # بررسی عدم استفاده از حروف فارسی و کاراکترهای غیرمجاز (فقط انگلیسی، اعداد و نمادها)
-    if not re.fullmatch(r"^[A-Za-z0-9@#\$%\^&\*\(\)_\+\-\=\[\]\{\};':\",\.<>/\?\|\\~`]+$", password):
-        return False
-    return True
-
-def get_guest_keyboard():
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("🔑 ورود / ثبت‌نام با شماره موبایل", callback_data="auth_start_phone"),
-        InlineKeyboardButton("🎧 پشتیبانی (@mianji_support)", url="https://t.me/mianji_support")
-    )
+def get_contact_share_keyboard(is_cancelable: bool = False) -> ReplyKeyboardMarkup:
+    """
+    کیبورد اختصاصی دریافت مستقیم شماره تماس کاربر با یک لمس (بدون تایپ دستی)
+    از طریق قابلیت امن request_contact تلگرام جهت تایید اصالت شماره سیم‌کارت
+    """
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("📱 اشتراک‌گذاری شماره موبایل من", request_contact=True))
+    if is_cancelable:
+        markup.add(KeyboardButton("❌ انصراف"))
     return markup
 
-def get_login_with_forgot_keyboard():
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("🔄 بازیابی رمز عبور (فراموشی رمز)", callback_data="auth_forgot_start"),
-        InlineKeyboardButton("❌ انصراف", callback_data="auth_cancel")
-    )
-    return markup
 
-def show_guest_landing(bot, chat_id, edit_id=None):
-    text = (
-        "🔒 **پلتفرم امن میانجی (Escrow)**\n\n"
-        "برای ورود به سامانه یا ایجاد حساب کاربری، دکمه زیر را لمس کنید:\n\n"
-        "💬 **پشتیبانی تلگرام:** `@mianji_support`"
-    )
-    if edit_id:
-        try:
-            bot.edit_message_text(text, chat_id, edit_id, reply_markup=get_guest_keyboard(), parse_mode="Markdown")
-        except:
-            bot.send_message(chat_id, text, reply_markup=get_guest_keyboard(), parse_mode="Markdown")
+def show_passwordless_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = None):
+    """
+    نمایش پیام خوش‌آمدگویی و درخواست اشتراک‌گذاری شماره تماس برای کاربران جدید یا بدون شماره
+    """
+    if pending_contract_id:
+        text = (
+            "🤝 **به سامانه هوشمند واسطه‌گری میانجی خوش آمدید**\n\n"
+            f"شما برای بررسی و امضای معامله شماره `{pending_contract_id}` دعوت شده‌اید.\n\n"
+            "جهت ورود آسان و ثبت رسمی هویت شما در سند الکترونیک، لطفاً با لمس دکمه زیر شماره تماس تلگرام خود را به اشتراک بگذارید (نیازی به پسورد نیست):"
+        )
     else:
-        bot.send_message(chat_id, text, reply_markup=get_guest_keyboard(), parse_mode="Markdown")
+        text = (
+            "🛡 **به پلتفرم واسطه‌گری امن و اسکرو میانجی (Miyanji) خوش آمدید**\n\n"
+            "سامانه رسمی ثبت قراردادهای الکترونیک و پرداخت امن فریلنسری.\n\n"
+            "✨ **ورود سریع و بدون رمز عبور (Passwordless):**\n"
+            "جهت ایجاد حساب یا ورود به سیستم، کافیست دکمه زیر را لمس فرمایید تا حساب شما به‌صورت خودکار بر پایه شناسه تلگرام و شماره شما فعال شود:"
+        )
+    
+    bot.send_message(
+        chat_id, 
+        text, 
+        reply_markup=get_contact_share_keyboard(is_cancelable=bool(pending_contract_id)), 
+        parse_mode="Markdown"
+    )
 
-def show_main_dashboard(bot, chat_id, user_id=None):
-    text = "🏠 **پنل کاربری میانجی**\n\nشما با موفقیت وارد سیستم شدید. از منوی زیر استفاده کنید:"
-    is_admin = False
-    if user_id:
-        is_admin = (user_id == config.OWNER_ID or user_id in getattr(config, 'ADMIN_IDS', []))
+
+def show_main_dashboard(bot: TeleBot, chat_id: int, user_id: int):
+    """
+    نمایش مستقیم داشبورد و منوی اصلی ربات برای کاربران احراز هویت شده
+    """
+    user = db.get_user(user_id) or {}
+    full_name = user.get("full_name") or f"کاربر {user_id}"
+    phone = user.get("phone_number") or ""
+    masked_phone = f"{phone[:4]}***{phone[-4:]}" if len(phone) >= 10 else phone
+    
+    text = (
+        f"🏠 **پنل کاربری میانجی | خوش آمدید {utils.escape_markdown(full_name)}**\n\n"
+        f"📱 شماره تماس فعال: `{masked_phone}`\n"
+        f"🆔 شناسه یکتای تلگرام: `{user_id}`\n\n"
+        "از منوی زیر می‌توانید نسبت به ثبت معامله جدید، مدیریت قراردادها یا کیف پول اقدام فرمایید:"
+    )
+    is_admin = (user_id == getattr(config, 'OWNER_ID', None) or user_id in getattr(config, 'ADMIN_IDS', []))
     markup = kb.get_main_menu(is_admin=is_admin, is_verified=True)
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
-def show_contract_invite(bot, chat_id, user_id, contract, contract_id):
+
+def show_contract_invite(bot: TeleBot, chat_id: int, user_id: int, contract: dict, contract_id: str):
+    """
+    هدایت کاربر (به‌خصوص طرف دوم معامله) به مشاهده مشخصات معامله و امضای دیجیتال
+    """
     creator_id = contract.get("created_by") or contract.get("creator_id")
     creator_info = db.get_user(creator_id) if creator_id else None
     creator_name = creator_info.get("full_name") if creator_info else "کاربر سیستم"
 
-    # ✅ تعیین نقش‌های طرفین
     category = contract.get("category", "GEN")
     role_titles = utils.get_role_titles(category)
+    buyer_role = role_titles['client']    # کارفرما
+    seller_role = role_titles['provider'] # مجری
 
-    buyer_role = role_titles['client']  # کارفرما
-    seller_role = role_titles['provider']  # مجری
-
-    # تعیین کی creator است (buyer یا seller)
     creator_is_buyer = contract.get("buyer_id") == creator_id
     creator_role = buyer_role if creator_is_buyer else seller_role
     recipient_role = seller_role if creator_is_buyer else buyer_role
@@ -96,562 +107,260 @@ def show_contract_invite(bot, chat_id, user_id, contract, contract_id):
     try:
         amount_val = float(raw_amount)
         amount_text = f"{amount_val:,.0f}" if amount_val > 0 else "توافقی"
-    except:
+    except Exception:
         amount_text = "توافقی"
 
-    # ✅ درصد کارمزد
     comm_pct = utils.get_commission_percent()
+    deadline_days = contract.get('deadline', 1)
 
-    # ✅ پیام با اطلاعات کامل و نقش‌های واضح
     welcome_msg = (
-        f"📜 **دعوت به بررسی و امضای قرارداد**\n\n"
+        f"📜 **دعوت رسمی به بررسی و امضای قرارداد دیجیتال**\n"
+        f"────────────────────────────\n"
         f"🔹 **شناسه معامله:** `{contract_id}`\n"
         f"📝 **عنوان موضوع:** {utils.escape_markdown(str(contract.get('title', 'بدون عنوان')))}\n"
         f"📂 **دسته‌بندی:** {category}\n"
         f"👥 **طرفین قرارداد:**\n"
-        f"   • {creator_role}: {utils.escape_markdown(str(creator_name))}\n"
+        f"   • {creator_role}: **{utils.escape_markdown(str(creator_name))}**\n"
         f"   • {recipient_role}: **شما** (طرف دوم)\n"
-        f"💰 **مبلغ معامله:** {amount_text} تومان\n"
-        f"💳 **درصد کارمزد:** {comm_pct:.2g}% (میانجی)\n"
-        f"⏰ **مهلت تحویل:** {contract.get('deadline', 1)} روز\n\n"
-        f"⚠️ **کاربر گرامی،** جهت مشاهده متون حقوقی، امضای قرارداد و فعال‌سازی معامله، روی دکمه «👁 مشاهده تعهدات و امضا» کلیک کنید:"
+        f"💰 **مبلغ معامله:** **{amount_text} تومان**\n"
+        f"🛡 **کارمزد اسکرو میانجی:** {comm_pct:.2g}%\n"
+        f"⏱ **مهلت تحویل تعهدات:** {deadline_days} روز\n\n"
+        f"⚖️ **ملاحظات امنیتی:** وجه قرارداد تا زمان تحویل کامل تعهدات در صندوق امانت مسدود می‌ماند.\n\n"
+        f"جهت مشاهده متن کامل تعهدات و امضای قانونی با رمز یکبارمصرف پیامکی، دکمه زیر را لمس فرمایید:"
     )
 
-    try:
-        bot.send_message(
-            chat_id,
-            welcome_msg,
-            parse_mode="Markdown",
-            reply_markup=kb.get_invite_overview_keyboard(contract_id)
-        )
-    except Exception as e:
-        logger.error(f"Error sending welcome_msg with markdown: {e}")
-        # ✅ فال‌بک ساده‌تر ولی با نقش‌ها
-        bot.send_message(
-            chat_id,
-            f"📜 دعوت به بررسی و امضای قرارداد\n\n"
-            f"🔹 شناسه معامله: {contract_id}\n"
-            f"📝 عنوان: {contract.get('title', 'بدون عنوان')}\n"
-            f"👥 طرفین: {creator_role} ({creator_name}) و {recipient_role} (شما)\n"
-            f"💰 مبلغ: {amount_text} تومان",
-            reply_markup=kb.get_invite_overview_keyboard(contract_id)
-        )
+    bot.send_message(
+        chat_id,
+        welcome_msg,
+        parse_mode="Markdown",
+        reply_markup=kb.get_invite_overview_keyboard(contract_id)
+    )
 
 
 def register_auth_handlers(bot: TeleBot):
 
+    # ====================================================
+    # ۱. دستور /start و هدایت هوشمند بدون نیاز به رمز عبور
+    # ====================================================
     @bot.message_handler(commands=['start'])
     def start_handler(message: Message):
         try:
             user_id = message.from_user.id
             args = message.text.split()
-            
-            if len(args) > 1 and args[1].startswith(("c_", "contract_")):
-                raw_param = args[1]
-                contract_id = utils.normalize_deal_id(raw_param)
-                logger.info(f"🔗 [START_LINK] Raw param: {raw_param}, Clean ID: {contract_id}")
-                contract = db.get_contract(contract_id)
-                db.clear_user_state(user_id)
-                if contract:
-                    show_contract_invite(bot, message.chat.id, user_id, contract, contract_id)
-                else:
-                    bot.send_message(message.chat.id, "⚠️ معامله موردنظر یافت نشد یا منقضی شده است.")
-                return
+            pending_contract_id = None
 
-            db.clear_user_state(user_id)
-            phone = db.get_current_user_phone(user_id)
-            if phone:
+            # بررسی پارامتر پیوستن به معامله با لینک عمیق (Deep Linking)
+            if len(args) > 1 and args[1].startswith(("c_", "contract_", "deal_")):
+                raw_param = args[1]
+                pending_contract_id = utils.normalize_deal_id(raw_param)
+                logger.info(f"🔗 [START_DEEP_LINK] User {user_id} joined with deal: {pending_contract_id}")
+
+            # بررسی وضعیت ثبت‌نام کاربر در جدول Supabase با شناسه یکتای تلگرام
+            user = db.get_user(user_id)
+            has_verified_phone = bool(user and user.get("phone_number"))
+
+            if has_verified_phone:
+                # کاربر قبلاً شماره تماس خود را به اشتراک گذاشته است -> ورود آنی و خودکار
+                db.clear_user_state(user_id)
+                if pending_contract_id:
+                    contract = db.get_contract(pending_contract_id)
+                    if contract:
+                        show_contract_invite(bot, message.chat.id, user_id, contract, pending_contract_id)
+                        return
+                    else:
+                        bot.send_message(message.chat.id, "⚠️ معامله موردنظر یافت نشد یا منقضی شده است.")
+                
                 show_main_dashboard(bot, message.chat.id, user_id)
             else:
-                show_guest_landing(bot, message.chat.id)
+                # کاربر جدید یا بدون شماره تلفن -> درخواست ارسال شماره با یک لمس
+                st_data = {"pending_contract_id": pending_contract_id} if pending_contract_id else {}
+                db.set_user_state(user_id, "WAITING_CONTACT_SHARE", st_data)
+                show_passwordless_landing(bot, message.chat.id, pending_contract_id)
+
         except Exception as e:
             logger.error(f"Error in start_handler: {e}", exc_info=True)
             bot.send_message(message.chat.id, "❌ خطای سیستمی رخ داد. لطفاً دوباره تلاش کنید.")
 
+    # ====================================================
+    # ۲. دریافت امن شماره موبایل از طریق Contact تلگرام (بدون تایپ دستی)
+    # ====================================================
+    @bot.message_handler(content_types=['contact'])
+    def contact_received_handler(message: Message):
+        try:
+            user_id = message.from_user.id
+            contact = message.contact
 
-    @bot.message_handler(func=lambda msg: msg.text == "👤 پروفایل کاربری")
+            if not contact:
+                return
+
+            # اعتبارسنجی امنیتی حیاتی: آیا شماره متعلق به صاحب اکانت تلگرام است؟
+            if contact.user_id and contact.user_id != user_id:
+                bot.send_message(
+                    message.chat.id, 
+                    "⚠️ **خطای امنیتی:** شماره ارسال شده متعلق به حساب کاربری تلگرام شما نیست!\n"
+                    "لطفاً فقط شماره متعلق به خودتان را به اشتراک بگذارید.",
+                    reply_markup=get_contact_share_keyboard(is_cancelable=True)
+                )
+                return
+
+            raw_phone = contact.phone_number
+            norm_phone = normalize_phone_number(raw_phone)
+            if not norm_phone:
+                bot.send_message(
+                    message.chat.id, 
+                    "⚠️ فرمت شماره موبایل نامعتبر است. لطفاً از شماره استاندارد همراه استفاده نمایید.",
+                    reply_markup=get_contact_share_keyboard(is_cancelable=True)
+                )
+                return
+
+            # دریافت نام و نام کاربری تلگرام جهت ثبت در دیتابیس
+            first_name = message.from_user.first_name or ""
+            last_name = message.from_user.last_name or ""
+            full_name = f"{first_name} {last_name}".strip() or f"کاربر {user_id}"
+            username = message.from_user.username or ""
+
+            # ثبت بدون رمز در دیتابیس Supabase
+            auth_svc.register_passwordless_user(
+                telegram_id=user_id,
+                phone_number=norm_phone,
+                first_name=first_name,
+                username=username,
+                full_name=full_name
+            )
+
+            # بررسی قرارداد معلق در استیت کاربر
+            _, st_data = db.get_user_state(user_id)
+            pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
+            db.clear_user_state(user_id)
+
+            bot.send_message(
+                message.chat.id,
+                "✅ **احراز هویت و ورود شما با موفقیت انجام شد.**\n"
+                f"شماره موبایل `{norm_phone}` به شناسه تلگرام شما متصل گردید.",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+
+            # در صورتی که کاربر به دعوت یک قرارداد آمده بود، بلافاصله آن را نمایش می‌دهیم
+            if pending_cid:
+                contract = db.get_contract(pending_cid)
+                if contract:
+                    show_contract_invite(bot, message.chat.id, user_id, contract, pending_cid)
+                    return
+
+            show_main_dashboard(bot, message.chat.id, user_id)
+
+        except Exception as e:
+            logger.error(f"Error in contact_received_handler: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "❌ خطایی در ثبت شماره رخ داد. لطفاً مجدداً دکمه ارسال شماره را لمس فرمایید.")
+
+    # پشتیبانی از انصراف حین ارسال شماره
+    @bot.message_handler(func=lambda msg: msg.text in ["❌ انصراف", "/cancel", "🔙 انصراف و بازگشت"])
+    def cancel_auth_flow(message: Message):
+        user_id = message.from_user.id
+        db.clear_user_state(user_id)
+        bot.send_message(
+            message.chat.id, 
+            "🔙 فرآیند لغو شد.", 
+            reply_markup=ReplyKeyboardRemove()
+        )
+        user = db.get_user(user_id)
+        if user and user.get("phone_number"):
+            show_main_dashboard(bot, message.chat.id, user_id)
+        else:
+            show_passwordless_landing(bot, message.chat.id)
+
+    # ====================================================
+    # ۳. پروفایل کاربری بدون نیاز به رمز عبور
+    # ====================================================
+    @bot.message_handler(func=lambda msg: msg.text in ["👤 پروفایل کاربری", "پروفایل من", "/profile"])
     def profile_menu_handler(message: Message):
         try:
             user_id = message.from_user.id
-            phone = db.get_current_user_phone(user_id)
+            user = db.get_user(user_id) or {}
+            phone = user.get("phone_number") or db.get_current_user_phone(user_id)
+
             if not phone:
-                show_guest_landing(bot, message.chat.id)
+                show_passwordless_landing(bot, message.chat.id)
                 return
-            
-            user = db.get_user_by_phone(phone) or {}
-            text = (
-                f"👤 **پروفایل کاربری شما**\n\n"
-                f"▫️ نام و نام خانوادگی: {user.get('full_name', 'ثبت نشده')}\n"
-                f"▫️ شماره موبایل: {phone}\n"
-                f"▫️ شناسه تلگرام: `{user_id}`\n"
+
+            full_name = user.get("full_name") or f"کاربر {user_id}"
+            national_id = user.get("national_id") or "ثبت نشده"
+            sheba = user.get("sheba") or "ثبت نشده"
+            is_verified = user.get("is_verified", False)
+            kyc_level = "طلایی 🌟" if (is_verified and national_id != "ثبت نشده") else "پایه (شماره تایید شده) 🥈"
+
+            profile_text = (
+                "👤 **پروفایل کاربری سامانه میانجی**\n"
+                "────────────────────────────\n"
+                f"▫️ **نام و نام خانوادگی:** {utils.escape_markdown(full_name)}\n"
+                f"▫️ **شماره موبایل تاییدشده:** `{phone}`\n"
+                f"▫️ **کد ملی:** `{national_id}`\n"
+                f"▫️ **شماره شبا:** `{sheba}`\n"
+                f"▫️ **شناسه یکتای تلگرام:** `{user_id}`\n"
+                f"▫️ **سطح کاربری:** {kyc_level}\n"
+                f"▫️ **امنیت ورود:** بدون رمز عبور (احراز هویت شده با تلگرام)\n"
+                "────────────────────────────\n"
+                "جهت ویرایش یا تکمیل اطلاعات، از دکمه‌های زیر استفاده فرمایید:"
             )
+
             markup = InlineKeyboardMarkup(row_width=1)
             markup.add(
-                InlineKeyboardButton("🔑 تغییر رمز عبور", callback_data="profile_change_pwd"),
-                InlineKeyboardButton("🚪 خروج از حساب / Logout", callback_data="profile_logout"),
-                InlineKeyboardButton("🔙 بازگشت به منو", callback_data="profile_back")
+                InlineKeyboardButton("🪪 احراز هویت با کد ملی (سطح طلایی)", callback_data="start_kyc_direct"),
+                InlineKeyboardButton("🔄 به‌روزرسانی شماره موبایل", callback_data="auth_relink_phone"),
+                InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="profile_back")
             )
-            bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+            bot.send_message(message.chat.id, profile_text, reply_markup=markup, parse_mode="Markdown")
+
         except Exception as e:
             logger.error(f"Error in profile_menu_handler: {e}", exc_info=True)
 
-    @bot.callback_query_handler(func=lambda call: call.data in ["auth_start_phone", "auth_forgot_start", "auth_cancel", "profile_change_pwd", "profile_logout", "profile_back"])
-    def auth_and_profile_callbacks(call: CallbackQuery):
+    # ====================================================
+    # ۴. کال‌بک‌های پروفایل و به‌روزرسانی شماره تماس
+    # ====================================================
+    @bot.callback_query_handler(func=lambda call: call.data in ["auth_relink_phone", "profile_back", "start_kyc_direct"])
+    def profile_callbacks(call: CallbackQuery):
         try:
             user_id = call.from_user.id
-            bot.answer_callback_query(call.id)
             chat_id = call.message.chat.id
-            
-            if call.data == "auth_cancel":
-                db.clear_user_state(user_id)
+            bot.answer_callback_query(call.id)
+
+            if call.data == "profile_back":
                 try:
                     bot.delete_message(chat_id, call.message.message_id)
-                except:
+                except Exception:
                     pass
-                bot.send_message(chat_id, "🔙 بازگشت به منوی اصلی.", reply_markup=ReplyKeyboardRemove())
-                show_guest_landing(bot, chat_id)
+                show_main_dashboard(bot, chat_id, user_id)
 
-            elif call.data == "profile_back":
-                # فقط state موقت را پاک می‌کنیم، session کاربر را دست نمی‌زنیم
-                db.clear_user_state(user_id)
+            elif call.data == "auth_relink_phone":
+                db.set_user_state(user_id, "WAITING_CONTACT_SHARE", {})
                 try:
                     bot.delete_message(chat_id, call.message.message_id)
-                except:
+                except Exception:
                     pass
-                # بررسی می‌کنیم کاربر هنوز لاگین است
-                phone = db.get_current_user_phone(user_id)
-                if phone:
-                    show_main_dashboard(bot, chat_id, user_id)
-                else:
-                    show_guest_landing(bot, chat_id)
-                
-            elif call.data == "auth_start_phone":
-                _, st_data = db.get_user_state(user_id)
-                pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-                db.set_user_state(user_id, "CHECK_PHONE", {"pending_contract_id": pending_cid} if pending_cid else {})
-                markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-                markup.add(KeyboardButton("📱 ارسال شماره موبایل من", request_contact=True))
-                markup.add(KeyboardButton("❌ انصراف"))
+                bot.send_message(
+                    chat_id,
+                    "📱 **به‌روزرسانی شماره موبایل**\n\n"
+                    "لطفاً شماره موبایل جدید خود را از طریق دکمه زیر ارسال کنید:",
+                    reply_markup=get_contact_share_keyboard(is_cancelable=True)
+                )
+
+            elif call.data == "start_kyc_direct":
+                # هدایت به جریان احراز هویت کد ملی
+                db.set_user_state(user_id, "WAITING_KYC_NATIONAL_ID", {})
                 try:
                     bot.delete_message(chat_id, call.message.message_id)
-                except:
+                except Exception:
                     pass
                 bot.send_message(
-                    chat_id, 
-                    "📱 **ورود / ثبت‌نام**\n\nلطفاً شماره موبایل خود را با استفاده از دکمه زیر ارسال کنید یا به صورت دستی وارد نمایید (مثال: 09123456789):", 
-                    reply_markup=markup, 
-                    parse_mode="Markdown"
-                )
-
-            elif call.data == "auth_forgot_start":
-                _, st_data = db.get_user_state(user_id)
-                pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-                db.set_user_state(user_id, "FORGOT_PHONE", {"pending_contract_id": pending_cid} if pending_cid else {})
-                markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-                markup.add(KeyboardButton("📱 ارسال شماره موبایل من", request_contact=True))
-                markup.add(KeyboardButton("❌ انصراف"))
-                try:
-                    bot.delete_message(chat_id, call.message.message_id)
-                except:
-                    pass
-                bot.send_message(
-                    chat_id, 
-                    "🔄 **بازیابی رمز عبور**\n\nلطفاً شماره موبایل ثبت‌شده خود را ارسال کنید:", 
-                    reply_markup=markup, 
-                    parse_mode="Markdown"
-                )
-
-            elif call.data == "profile_change_pwd":
-                db.set_user_state(user_id, "CHANGE_PWD_OLD", {})
-                try:
-                    bot.delete_message(chat_id, call.message.message_id)
-                except:
-                    pass
-                bot.send_message(chat_id, "🔑 لطفاً **رمز عبور فعلی** خود را وارد کنید:", reply_markup=kb.get_cancel_keyboard(), parse_mode="Markdown")
-
-            elif call.data == "profile_logout":
-                db.clear_user_state(user_id)
-                db.clear_user_session(user_id)
-                try:
-                    bot.delete_message(chat_id, call.message.message_id)
-                except:
-                    pass
-
-                bot.send_message(chat_id, "🚪 شما با موفقیت از حساب کاربری خود خارج شدید.", reply_markup=ReplyKeyboardRemove())
-                show_guest_landing(bot, chat_id)
-
-        except Exception as e:
-            logger.error(f"Error in auth callbacks: {e}", exc_info=True)
-
-    # --- STEP 1: CHECK PHONE (Determines Login vs Registration) ---
-    @bot.message_handler(content_types=['text', 'contact'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "CHECK_PHONE")
-    def check_phone_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            if message.text in ["❌ انصراف", "/cancel", "🔙 انصراف و بازگشت"]:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            if message.contact:
-                if message.contact.user_id and message.contact.user_id != user_id:
-                    bot.send_message(message.chat.id, "⚠️ شماره تماس ارسال شده متعلق به شما نیست!")
-                    return
-                raw_phone = message.contact.phone_number
-            else:
-                raw_phone = message.text
-
-            phone = normalize_phone_number(raw_phone)
-            if not phone:
-                bot.send_message(message.chat.id, "⚠️ شماره موبایل نامعتبر است. لطفاً فرمت صحیح را وارد کنید (مثال: 09123456789):")
-                return
-
-            _, st_data = db.get_user_state(user_id)
-            pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-
-            existing_user = db.get_user_by_phone(phone)
-            if existing_user:
-                # Account exists -> Ask for password
-                st_dict = {"phone": phone}
-                if pending_cid:
-                    st_dict["pending_contract_id"] = pending_cid
-                db.set_user_state(user_id, "LOGIN_PASSWORD", st_dict)
-                bot.send_message(
-                    message.chat.id, 
-                    "🔑 حسابی با این شماره در سامانه ثبت شده است.\nلطفاً **رمز عبور** خود را وارد کنید:", 
-                    reply_markup=get_login_with_forgot_keyboard(), 
-                    parse_mode="Markdown"
-                )
-            else:
-                # Account does NOT exist -> Enter account creation panel (Registration)
-                st_dict = {"phone": phone}
-                if pending_cid:
-                    st_dict["pending_contract_id"] = pending_cid
-                db.set_user_state(user_id, "REG_NAME", st_dict)
-                bot.send_message(
-                    message.chat.id, 
-                    "📝 حسابی با این شماره یافت نشد.\nبرای ساخت حساب جدید، لطفاً **نام و نام خانوادگی** خود را وارد کنید:", 
-                    reply_markup=ReplyKeyboardRemove(), 
-                    parse_mode="Markdown"
-                )
-
-        except Exception as e:
-            logger.error(f"Error in check_phone_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطای سیستمی رخ داد. لطفاً دوباره تلاش کنید.")
-
-    # --- LOGIN PASSWORD STEP ---
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "LOGIN_PASSWORD")
-    def login_password_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            if message.text in ["❌ انصراف", "/cancel"]:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
-            except:
-                pass
-
-            password = message.text.strip()
-            _, data = db.get_user_state(user_id)
-            phone = data.get("phone") if data else None
-
-            if not phone:
-                bot.send_message(message.chat.id, "⚠️ نشست شما منقضی شد. لطفاً دوباره تلاش کنید.", reply_markup=ReplyKeyboardRemove())
-                db.clear_user_state(user_id)
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            user = db.get_user_by_phone(phone)
-            stored_hash = user.get("password_hash") if user else None
-
-            if stored_hash and not check_password(password, stored_hash):
-                bot.send_message(
-                    message.chat.id, 
-                    "❌ رمز عبور اشتباه است! دوباره تلاش کنید یا از دکمه زیر برای بازیابی رمز استفاده کنید:", 
-                    reply_markup=get_login_with_forgot_keyboard()
-                )
-                return
-
-            db.set_user_session(user_id, phone)
-            _, st_data = db.get_user_state(user_id)
-            pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-            db.clear_user_state(user_id)
-
-            if pending_cid:
-                contract = db.get_contract(pending_cid)
-                if contract:
-                    bot.send_message(message.chat.id, "✅ **ورود موفقیت‌آمیز بود!**\nاکنون به صفحه امضای قرارداد هدایت شدید:", parse_mode="Markdown")
-                    show_contract_invite(bot, message.chat.id, user_id, contract, pending_cid)
-                    return
-
-            bot.send_message(message.chat.id, "✅ **ورود موفقیت‌آمیز بود!**", parse_mode="Markdown")
-            show_main_dashboard(bot, message.chat.id, user_id)
-        except Exception as e:
-            logger.error(f"Error in login_password_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطای سیستمی در ورود.")
-
-    # --- REGISTRATION PANEL FLOW ---
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "REG_NAME")
-    def reg_name_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            if message.text in ["❌ انصراف", "/cancel"]:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            full_name = message.text.strip()
-            if len(full_name) < 2:
-                bot.send_message(message.chat.id, "⚠️ نام و نام خانوادگی نامعتبر است. دوباره وارد کنید:")
-                return
-
-            _, data = db.get_user_state(user_id)
-            phone = data.get("phone")
-            pending_cid = data.get("pending_contract_id") if isinstance(data, dict) else None
-
-            reg_dict = {"phone": phone, "full_name": full_name}
-            if pending_cid:
-                reg_dict["pending_contract_id"] = pending_cid
-            db.set_user_state(user_id, "REG_PASSWORD", reg_dict)
-            bot.send_message(
-                message.chat.id, 
-                "🔑 لطفاً یک **رمز عبور** برای حساب خود انتخاب کنید:\n\n"
-                "📌 **محدودیت رمز عبور:** حداقل ۶ کاراکتر (فقط اعداد و حروف انگلیسی)", 
-                reply_markup=ReplyKeyboardRemove(), 
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Error in reg_name_step: {e}", exc_info=True)
-
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "REG_PASSWORD")
-    def reg_password_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
-            except:
-                pass
-
-            password = message.text.strip()
-            if not validate_password(password):
-                bot.send_message(
-                    message.chat.id, 
-                    "⚠️ **رمز عبور نامعتبر است!**\n"
-                    "رمز عبور باید حداقل ۶ کاراکتر و شامل حروف انگلیسی یا اعداد باشد. لطفاً دوباره وارد کنید:"
-                )
-                return
-
-            _, data = db.get_user_state(user_id)
-            phone = data.get("phone")
-            full_name = data.get("full_name")
-
-            if not phone or not full_name:
-                bot.send_message(message.chat.id, "❌ اطلاعات ثبت‌نام منقضی شد. لطفاً دوباره /start بزنید.")
-                db.clear_user_state(user_id)
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            # Double check duplicate
-            existing = db.get_user_by_phone(phone)
-            if existing:
-                bot.send_message(message.chat.id, "این شماره تلفن قبلاً در سیستم ثبت شده است.", reply_markup=get_guest_keyboard())
-                db.clear_user_state(user_id)
-                return
-
-            pwd_hash = hash_password(password)
-            db.register_or_update_user_by_phone(
-                phone_number=phone,
-                full_name=full_name,
-                telegram_id=user_id,
-                username=message.from_user.username or "",
-                password_hash=pwd_hash,
-                is_verified=True
-            )
-            db.set_user_session(user_id, phone)
-            _, st_data = db.get_user_state(user_id)
-            pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-            db.clear_user_state(user_id)
-
-            if pending_cid:
-                contract = db.get_contract(pending_cid)
-                if contract:
-                    bot.send_message(message.chat.id, "✅ **حساب کاربری شما ایجاد شد!**\nاکنون به صفحه امضای قرارداد هدایت شدید:", parse_mode="Markdown")
-                    show_contract_invite(bot, message.chat.id, user_id, contract, pending_cid)
-                    return
-
-            bot.send_message(message.chat.id, "✅ **حساب کاربری شما با موفقیت ایجاد شد و وارد سیستم شدید!**", parse_mode="Markdown")
-            show_main_dashboard(bot, message.chat.id, user_id)
-        except Exception as e:
-            logger.error(f"Error in reg_password_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطای سیستمی در ثبت‌نام.")
-
-    # --- FORGOT PASSWORD / RECOVERY FLOW ---
-    @bot.message_handler(content_types=['text', 'contact'], func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "FORGOT_PHONE")
-    def forgot_phone_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            if message.text in ["❌ انصراف", "/cancel"]:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            if message.contact:
-                if message.contact.user_id and message.contact.user_id != user_id:
-                    bot.send_message(message.chat.id, "⚠️ شماره تماس ارسال شده متعلق به شما نیست!")
-                    return
-                raw_phone = message.contact.phone_number
-            else:
-                raw_phone = message.text
-
-            phone = normalize_phone_number(raw_phone)
-            if not phone:
-                bot.send_message(message.chat.id, "⚠️ شماره موبایل نامعتبر است. فرمت صحیح (مثال: 09123456789):")
-                return
-
-            user = db.get_user_by_phone(phone)
-            if not user:
-                bot.send_message(message.chat.id, "⚠️ حسابی با این شماره تلفن در سامانه ثبت نشده است.", reply_markup=get_guest_keyboard())
-                db.clear_user_state(user_id)
-                return
-
-            _, st_data = db.get_user_state(user_id)
-            pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-
-            forgot_dict = {"phone": phone}
-            if pending_cid:
-                forgot_dict["pending_contract_id"] = pending_cid
-            db.set_user_state(user_id, "FORGOT_NEW_PASSWORD", forgot_dict)
-            bot.send_message(
-                message.chat.id, 
-                "✅ شماره شما تایید شد.\n\n🔑 لطفاً **رمز عبور جدید** خود را وارد کنید (حداقل ۶ کاراکتر، اعداد و حروف انگلیسی):", 
-                reply_markup=ReplyKeyboardRemove(), 
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Error in forgot_phone_step: {e}", exc_info=True)
-
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "FORGOT_NEW_PASSWORD")
-    def forgot_new_password_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
-            except:
-                pass
-
-            new_pwd = message.text.strip()
-            if not validate_password(new_pwd):
-                bot.send_message(
-                    message.chat.id, 
-                    "⚠️ **رمز عبور نامعتبر است!**\n"
-                    "رمز عبور باید حداقل ۶ کاراکتر و شامل حروف انگلیسی یا اعداد باشد. لطفاً دوباره وارد کنید:"
-                )
-                return
-
-            _, data = db.get_user_state(user_id)
-            phone = data.get("phone") if data else None
-
-            if not phone:
-                bot.send_message(message.chat.id, "⚠️ نشست منقضی شد. لطفاً دوباره تلاش کنید.", reply_markup=ReplyKeyboardRemove())
-                db.clear_user_state(user_id)
-                show_guest_landing(bot, message.chat.id)
-                return
-
-            new_hash = hash_password(new_pwd)
-            db.register_or_update_user_by_phone(phone_number=phone, full_name=None, password_hash=new_hash, telegram_id=user_id)
-            db.set_user_session(user_id, phone)
-            _, st_data = db.get_user_state(user_id)
-            pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
-            db.clear_user_state(user_id)
-
-            if pending_cid:
-                contract = db.get_contract(pending_cid)
-                if contract:
-                    bot.send_message(message.chat.id, "✅ **رمز عبور بازیابی شد!**\nاکنون به صفحه امضای قرارداد هدایت شدید:", parse_mode="Markdown")
-                    show_contract_invite(bot, message.chat.id, user_id, contract, pending_cid)
-                    return
-
-            bot.send_message(message.chat.id, "✅ **رمز عبور شما با موفقیت بازیابی و تغییر یافت!**\nاکنون وارد حساب خود شدید.", parse_mode="Markdown")
-            show_main_dashboard(bot, message.chat.id, user_id)
-        except Exception as e:
-            logger.error(f"Error in forgot_new_password_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطا در بازیابی رمز عبور.")
-
-    # --- CHANGE PASSWORD (PROFILE) ---
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "CHANGE_PWD_OLD")
-    def change_pwd_old_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            if message.text in ["❌ انصراف", "/cancel", "🔙 انصراف و بازگشت"]:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
-                show_main_dashboard(bot, message.chat.id, user_id)
-                return
-
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
-            except:
-                pass
-
-            pwd = message.text.strip()
-            phone = db.get_current_user_phone(user_id)
-            user = db.get_user_by_phone(phone) if phone else None
-            
-            stored_hash = user.get("password_hash") if user else None
-            if stored_hash and not check_password(pwd, stored_hash):
-                bot.send_message(message.chat.id, "❌ رمز عبور فعلی اشتباه است. دوباره وارد کنید:", reply_markup=kb.get_cancel_keyboard())
-                return
-
-            db.set_user_state(user_id, "CHANGE_PWD_NEW", {})
-            bot.send_message(
-                message.chat.id, 
-                "🔑 لطفاً **رمز عبور جدید** خود را وارد کنید (حداقل ۶ کاراکتر، اعداد و حروف انگلیسی):", 
-                reply_markup=kb.get_cancel_keyboard(), 
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Error in change_pwd_old_step: {e}", exc_info=True)
-
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "CHANGE_PWD_NEW")
-    def change_pwd_new_step(message: Message):
-        try:
-            user_id = message.from_user.id
-            if message.text in ["❌ انصراف", "/cancel", "🔙 انصراف و بازگشت"]:
-                db.clear_user_state(user_id)
-                bot.send_message(message.chat.id, "❌ عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
-                show_main_dashboard(bot, message.chat.id, user_id)
-                return
-
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
-            except:
-                pass
-
-            new_pwd = message.text.strip()
-            if not validate_password(new_pwd):
-                bot.send_message(
-                    message.chat.id, 
-                    "⚠️ **رمز عبور جدید نامعتبر است!**\n"
-                    "رمز عبور باید حداقل ۶ کاراکتر و شامل حروف انگلیسی یا اعداد باشد:", 
+                    chat_id,
+                    "🪪 **احراز هویت و ارتقا به سطح طلایی**\n\n"
+                    "لطفاً **کد ملی ۱۰ رقمی** خود را بدون خط تیره ارسال فرمایید:\n"
+                    "_(مثال: 0012345678)_",
+                    parse_mode="Markdown",
                     reply_markup=kb.get_cancel_keyboard()
                 )
-                return
 
-            new_hash = hash_password(new_pwd)
-            phone = db.get_current_user_phone(user_id)
-            if phone:
-                db.register_or_update_user_by_phone(phone_number=phone, full_name=None, password_hash=new_hash)
-            
-            db.clear_user_state(user_id)
-            bot.send_message(message.chat.id, "✅ رمز عبور شما با موفقیت تغییر یافت.")
-            show_main_dashboard(bot, message.chat.id, user_id)
         except Exception as e:
-            logger.error(f"Error in change_pwd_new_step: {e}", exc_info=True)
-            bot.send_message(message.chat.id, "❌ خطا در تغییر رمز عبور.")
+            logger.error(f"Error in profile_callbacks: {e}", exc_info=True)

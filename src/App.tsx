@@ -223,75 +223,107 @@ const App = () => {
   };
 
   const sqlSchemaCode = `-- =============================================================================
--- Miyanji Escrow Deals & Contracts Table (Supabase PostgreSQL)
+-- Miyanji Escrow System: Complete Supabase PostgreSQL Schema
+-- Includes Passwordless Users, Deals, and Non-Repudiation Digital Signatures
 -- =============================================================================
 
+-- ۱. جدول کاربران سیستم (احراز هویت بدون رمز عبور بر پایه تلگرام و شماره تماس)
+CREATE TABLE IF NOT EXISTS public.users (
+    id BIGINT PRIMARY KEY, -- یکتای عددی (Telegram User ID)
+    telegram_id BIGINT UNIQUE NOT NULL,
+    telegram_username VARCHAR(100) NULL,
+    phone_number VARCHAR(30) UNIQUE NOT NULL, -- دریافت شده از طریق دکمه Share Contact تلگرام
+    full_name VARCHAR(150) NOT NULL DEFAULT 'کاربر میانجی',
+    national_id VARCHAR(10) NULL, -- کد ملی ۱۰ رقمی ثبت‌احوال
+    role VARCHAR(30) NOT NULL DEFAULT 'employer' CHECK (role IN ('employer', 'freelancer', 'arbitrator', 'ambassador', 'admin')),
+    wallet_balance BIGINT NOT NULL DEFAULT 0,
+    escrow_locked_balance BIGINT NOT NULL DEFAULT 0,
+    kyc_level VARCHAR(20) NOT NULL DEFAULT 'basic' CHECK (kyc_level IN ('basic', 'silver', 'gold')),
+    kyc_status VARCHAR(20) NOT NULL DEFAULT 'unverified' CHECK (kyc_status IN ('unverified', 'pending', 'verified')),
+    is_verified BOOLEAN NOT NULL DEFAULT false,
+    sheba VARCHAR(34) NULL,
+    referral_code VARCHAR(32) UNIQUE NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ۲. جدول معاملات و قراردادهای اسکرو
 CREATE TABLE IF NOT EXISTS public.deals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     contract_id VARCHAR(32) UNIQUE NOT NULL,
     invite_token VARCHAR(64) UNIQUE NOT NULL,
     
-    -- مشخصات موضوع و خدمت
     title VARCHAR(255) NOT NULL,
-    category VARCHAR(50) NOT NULL, -- 'graphic_design', 'programming', 'academic', 'content_creation', 'other'
+    category VARCHAR(50) NOT NULL,
     amount BIGINT NOT NULL CHECK (amount >= 10000), -- مبلغ به تومان
     
-    -- تعیین کارمزد (خریدار، مجری، توافقی ۵۰/۵۰)
     commission_payer VARCHAR(30) NOT NULL DEFAULT 'split_50_50' 
         CHECK (commission_payer IN ('employer', 'freelancer', 'split_50_50')),
     commission_rate NUMERIC(4, 2) NOT NULL DEFAULT 5.0,
     commission_amount BIGINT NOT NULL DEFAULT 0,
     
-    -- طرف اول (ایجادکننده)
     creator_id BIGINT NOT NULL,
     creator_role VARCHAR(20) NOT NULL CHECK (creator_role IN ('employer', 'freelancer')),
     
-    -- بخش‌های اختیاری پیشرفته (Advanced Optional Fields)
     has_inspection_period BOOLEAN NOT NULL DEFAULT false,
-    inspection_period_hours INT NOT NULL DEFAULT 0, -- 0 به معنای تایید آنی؛ ۲۴، ۴۸، ۷۲ یا عدد دلخواه
+    inspection_period_hours INT NOT NULL DEFAULT 0,
     
     has_free_revisions BOOLEAN NOT NULL DEFAULT true,
-    free_revisions_count INT DEFAULT 2, -- 0: بدون ویرایش، ۱، ۲، یا NULL برای توافقی
+    free_revisions_count INT DEFAULT 2,
     
-    -- طرفین معامله و امضای دیجیتال
-    buyer_id BIGINT NULL,
+    buyer_id BIGINT NULL REFERENCES public.users(id),
     buyer_fullname VARCHAR(150) NULL,
     buyer_phone VARCHAR(30) NULL,
     buyer_signed_at TIMESTAMPTZ NULL,
     
-    seller_id BIGINT NULL,
+    seller_id BIGINT NULL REFERENCES public.users(id),
     seller_fullname VARCHAR(150) NULL,
     seller_phone VARCHAR(30) NULL,
     seller_signed_at TIMESTAMPTZ NULL,
     
-    -- وضعیت چرخه اسکرو
     status VARCHAR(40) NOT NULL DEFAULT 'draft' CHECK (status IN (
-        'draft',                   -- در حال تنظیم پیش‌نویس
-        'pending_counterparty',    -- منتظر ورود و پذیرش طرف دوم
-        'awaiting_escrow_deposit', -- تایید شده توسط طرفین، منتظر واریز وجه امانت
-        'escrow_locked',           -- وجه در صندوق امانت قفل شد، پروژه در حال انجام
-        'work_submitted',          -- فایل‌ها توسط مجری تحویل داده شد
-        'in_inspection',           -- مهلت بررسی و تست خروجی توسط کارفرما
-        'revisions_requested',     -- درخواست اصلاحیه با کسر از سهمیه رایگان
-        'completed',               -- پایان موفق و تسویه حساب با مجری
-        'in_dispute',              -- ورود به شورای حل اختلاف و داوری
-        'cancelled'                -- لغو شده و عودت وجه
+        'draft', 'pending_counterparty', 'awaiting_escrow_deposit',
+        'escrow_locked', 'work_submitted', 'in_inspection',
+        'revisions_requested', 'completed', 'in_dispute', 'cancelled'
     )),
     
     escrow_deposit_status VARCHAR(30) NOT NULL DEFAULT 'unpaid' 
         CHECK (escrow_deposit_status IN ('unpaid', 'paid_locked', 'released', 'refunded')),
     
-    description TEXT NULL, -- شرح دقیق تعهدات و خواسته‌های پروژه (ملاک انحصاری داوری و قضاوت هیئت حل اختلاف میانجی)
+    description TEXT NULL,
     history JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ایندکس‌ها جهت پاسخگویی بلادرنگ تلگرام
+-- ۳. جدول شواهد حقوقی غیرقابل انکار (Non-Repudiation Signatures Audit Trail)
+CREATE TABLE IF NOT EXISTS public.signatures (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id VARCHAR(32) NOT NULL,
+    telegram_id BIGINT NOT NULL,
+    telegram_username VARCHAR(100) NULL,
+    full_name VARCHAR(150) NOT NULL,
+    national_id VARCHAR(10) NOT NULL,
+    phone_number VARCHAR(30) NOT NULL,
+    role VARCHAR(30) NOT NULL CHECK (role IN ('employer', 'freelancer', 'buyer', 'seller')),
+    signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    otp_verified BOOLEAN NOT NULL DEFAULT true,
+    client_ip VARCHAR(50) NULL,
+    verification_method VARCHAR(50) NOT NULL DEFAULT 'telegram_contact_sms_otp',
+    signature_hash VARCHAR(128) NOT NULL, -- اثر انگشت رمزنگاری SHA-256
+    status VARCHAR(20) NOT NULL DEFAULT 'valid' CHECK (status IN ('valid', 'revoked')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ایندکس‌ها جهت پاسخگویی بلادرنگ تلگرام و اعتبارسنجی سریع
+CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON public.users(telegram_id);
+CREATE INDEX IF NOT EXISTS idx_users_phone ON public.users(phone_number);
 CREATE INDEX IF NOT EXISTS idx_deals_contract_id ON public.deals(contract_id);
 CREATE INDEX IF NOT EXISTS idx_deals_invite_token ON public.deals(invite_token);
 CREATE INDEX IF NOT EXISTS idx_deals_creator_id ON public.deals(creator_id);
-CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
+CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);
+CREATE INDEX IF NOT EXISTS idx_signatures_contract_id ON public.signatures(contract_id);
+CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_hash);`;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans" dir="rtl">
@@ -1464,25 +1496,32 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                <h5 className="font-bold text-xs text-blue-400 mb-1">۱. State Machine / FSM</h5>
+                <h5 className="font-bold text-xs text-blue-400 mb-1">۱. احراز هویت بدون پسورد (Passwordless)</h5>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  گام‌های SELECT_ROLE ➔ SELECT_CATEGORY ➔ INPUT_TITLE ➔ INPUT_AMOUNT ➔ SELECT_FEE_PAYER ➔ SELECT_INSPECTION ➔ SELECT_REVISIONS ➔ CONFIRM_PREVIEW.
+                  حذف کامل رمز عبور ثابت؛ شناسایی آنی با Telegram User ID و دریافت شماره تاییدشده کاربر با دکمه <code className="text-blue-300">request_contact=True</code> تلگرام بدون تایپ دستی.
                 </p>
               </div>
 
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                <h5 className="font-bold text-xs text-emerald-400 mb-1">۲. مدیریت خطا (Error Handling)</h5>
+                <h5 className="font-bold text-xs text-amber-400 mb-1">۲. امضای قانونی و OTP پیامکی واقعی</h5>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  تبدیل خودکار ارقام فارسی/عربی، بررسی حداقل مبلغ معامله (۱۰,۰۰۰ ت)، پیشگیری از حمله Race Condition و اعتبارسنجی ورودی‌های غیرمتنی.
+                  دریافت نام و کد ملی، ارسال کد ۶ رقمی از طریق پنل پیامکی به خط کاربر، عدم افشای کد در چت تلگرام، انقضای ۳ دقیقه‌ای و مسدودسازی بعد از ۴ تلاش ناموفق.
                 </p>
               </div>
 
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                <h5 className="font-bold text-xs text-purple-400 mb-1">۳. دعوت و امضای الکترونیک</h5>
+                <h5 className="font-bold text-xs text-purple-400 mb-1">۳. شواهد غیرقابل انکار (Non-Repudiation)</h5>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  تولید لینک یکتای deal_token، نمایش قرارداد با شرایط توافق‌شده به طرف دوم و فعال‌سازی آنی فاز اسکرو با دکمه تایید قوانین.
+                  ذخیره در جدول <code className="text-purple-300">signatures</code> شامل: telegram_id، کد ملی، شماره موبایل، آدرس آی‌پی، تایم‌استمپ دقیق و اثر انگشت رمزنگاری <code className="text-purple-300">SHA-256</code>.
+                </p>
+              </div>
+
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                <h5 className="font-bold text-xs text-emerald-400 mb-1">۴. مدیریت حالت‌ها و اسکرو (deal_wizard.py)</h5>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  ماشین وضعیت تلگرام (FSM) با پشتیبانی از مهلت تست اختیاری، اصلاحیه رایگان، لینک اختصاصی دعوت و ادغام یکپارچه با Supabase PostgreSQL.
                 </p>
               </div>
             </div>

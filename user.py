@@ -2236,20 +2236,24 @@ def register_user_handlers(bot: TeleBot):
             "free_edits_total": free_edits,
         }
 
-        # تولید کد OTP برای نفر اول
-        import random
-        otp = str(random.randint(100000, 999999))
+        # تولید و ارسال کد OTP واقعی از طریق پیامک برای نفر اول (عدم چاپ در چت تلگرام)
+        target_phone = draft.get("buyer_phone" if role == "employer" else "seller_phone") or (user_info.get("phone_number") if user_info else "") or "شماره همراه"
+        masked_phone = f"{target_phone[:4]}***{target_phone[-4:]}" if len(target_phone) >= 10 else target_phone
+        
+        otp = auth.generate_secure_otp(str(user_id), purpose=f"creator_sign_{contract_id}")
+        auth.send_sms_otp(target_phone, otp, contract_id=contract_id)
+        
         data["final_payload"] = payload
         data["otp"] = otp
         db.set_user_state(user_id, "WAITING_CREATOR_SIGN_OTP", data)
 
         bot.send_message(
             message.chat.id,
-            f"🔐 **تایید نهایی و امضای قرارداد**\n\n"
-            f"شما در حال نهایی‌سازی قرارداد `{draft.get('title')}` هستید.\n"
-            f"برای ثبت امضای الکترونیک خود، لطفاً کد تایید زیر را ارسال کنید:\n\n"
-            f"`{otp}`\n\n"
-            f"⚠️ با ارسال این کد، شما صحت اطلاعات را تایید کرده و متعهد به اجرای بندهای قرارداد می‌شوید.",
+            f"🔐 **تایید نهایی و امضای قرارداد با پیامک امن**\n\n"
+            f"شما در حال نهایی‌سازی معامله `{draft.get('title')}` هستید.\n"
+            f"📱 **کد تأیید ۶ رقمی امنیتی (OTP)** به شماره موبایل شما (`{masked_phone}`) پیامک گردید.\n\n"
+            f"لطفاً کد تایید پیامک‌شده را ارسال فرمایید (مهلت اعتبار: ۳ دقیقه):\n"
+            f"⚠️ *با ارسال کد، امضای الکترونیک شما با شواهد غیرقابل انکار در سامانه میانجی ثبت خواهد شد.*",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
@@ -2257,14 +2261,14 @@ def register_user_handlers(bot: TeleBot):
     @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_CREATOR_SIGN_OTP")
     def process_creator_sign_otp(message: Message):
         user_id = message.from_user.id
-        # ۱. استانداردسازی کد OTP و دریافت استیت
+        # ۱. اعتبارسنجی کد OTP پیامکی از طریق auth_service
         text = utils.fa_to_en_digits(message.text.strip())
         state_tuple = db.get_user_state(user_id)
         data = state_tuple[1] if isinstance(state_tuple, tuple) and len(state_tuple) > 1 else {}
         
-        # مقایسه ایمن کد OTP (تبدیل هر دو طرف به String)
-        if str(text) != str(data.get("otp", "")):
-            bot.send_message(message.chat.id, "❌ کد وارد شده اشتباه است. دوباره تلاش کنید یا عملیات را لغو کنید.")
+        is_valid, verify_msg = auth.verify_sms_otp(str(user_id), text)
+        if not is_valid:
+            bot.send_message(message.chat.id, f"{verify_msg}\nلطفاً کد ۶ رقمی صحیح را ارسال کنید یا انصراف دهید:")
             return
 
         payload = data.get("final_payload")
@@ -2310,12 +2314,11 @@ def register_user_handlers(bot: TeleBot):
             payload["seller_signed_at"] = now
             payload["seller_otp_code"] = text
 
-        # ۴. بخش ذخیره‌سازی در دیتابیس (Supabase) - کاملاً جدا شده
+        # ۴. بخش ذخیره‌سازی در دیتابیس (Supabase)
         contract = None
         db_success = False
         try:
             logger.info(f"💾 [DB_SAVE_START] User {user_id} attempting to create contract {payload.get('contract_id')}")
-            # اصلاح نحوه فراخوانی: تفکیک آرگومان‌هایcreator_id و contract_data
             contract = db.create_contract(creator_id=user_id, contract_data=payload)
             if contract:
                 db_success = True
@@ -2333,16 +2336,38 @@ def register_user_handlers(bot: TeleBot):
             )
             return
 
-        # ۵. بخش اطلاع‌رسانی و عملیات جانبی (به‌صورت غیرمسدودکننده)
+        # ثبت شواهد غیرقابل انکار امضا در جدول signatures
         contract_id = payload.get("contract_id")
         cid = (contract.get("contract_id") if contract else None) or contract_id
+        try:
+            tg_username = message.from_user.username or ""
+            signer_phone = payload.get("buyer_phone" if role == "employer" else "seller_phone") or ""
+            signer_nid = payload.get("buyer_national_id" if role == "employer" else "seller_national_id") or ""
+            signer_fname = payload.get("buyer_fullname" if role == "employer" else "seller_fullname") or f"کاربر {user_id}"
+            
+            db.create_contract_signature(
+                contract_id=cid,
+                telegram_id=user_id,
+                full_name=signer_fname,
+                national_id=signer_nid,
+                phone_number=signer_phone,
+                role=role,
+                telegram_username=tg_username,
+                otp_code=text,
+                client_ip="127.0.0.1",
+                verification_method="telegram_contact_sms_otp"
+            )
+        except Exception as sig_err:
+            logger.warning(f"Notice logging creator signature: {sig_err}")
+
+        # ۵. بخش اطلاع‌رسانی و عملیات جانبی (به‌صورت غیرمسدودکننده)
         db.clear_user_state(user_id)
 
         try:
             executor.submit(
                 db.append_contract_history,
                 contract_id,
-                f"🆕 معامله توسط {('کارفرما' if role=='employer' else 'مجری')} ایجاد و با OTP تایید شد.",
+                f"🆕 معامله توسط {('کارفرما' if role=='employer' else 'مجری')} ایجاد و با رمز پیامکی (OTP) امضا شد.",
                 user_id
             )
         except Exception as e:
@@ -4087,8 +4112,14 @@ def register_user_handlers(bot: TeleBot):
             db.clear_user_state(user_id)
             return
             
-        import random
-        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        signer_phone = data.get("signer_phone") or ""
+        masked_phone = f"{signer_phone[:4]}***{signer_phone[-4:]}" if len(signer_phone) >= 10 else (signer_phone or "شماره همراه شما")
+        cid = data.get("contract_id", "")
+
+        # تولید کد OTP امن و ارسال از طریق پنل پیامک (بدون چاپ در چت تلگرام)
+        otp = auth.generate_secure_otp(str(user_id), purpose=f"sign_{cid}")
+        auth.send_sms_otp(signer_phone, otp, contract_id=cid)
+        
         data["otp"] = otp
         data["client_ip"] = "127.0.0.1"
         data["signed_at_timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -4097,8 +4128,10 @@ def register_user_handlers(bot: TeleBot):
         
         bot.send_message(
             message.chat.id,
-            f"🔑 **کد تأیید امضای الکترونیک (OTP):** `{otp}`\n\n"
-            f"لطفاً جهت نهایی‌سازی و ثبت رسمی سند، کد فوق را ارسال کنید:",
+            f"📱 **کد تأیید ۶ رقمی امنیتی به شماره موبایل شما (`{masked_phone}`) پیامک گردید.**\n\n"
+            f"لطفاً جهت نهایی‌سازی و ثبت رسمی سند در سامانه میانجی، کد تایید دریافتی را وارد فرمایید:\n"
+            f"_(مهلت اعتبار: ۳ دقیقه)_\n\n"
+            f"⚠️ *با ارسال کد پیامک‌شده، امضای الکترونیک غیرقابل انکار شما بر روی این قرارداد ثبت خواهد شد.*",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
@@ -4109,15 +4142,20 @@ def register_user_handlers(bot: TeleBot):
         text = utils.fa_to_en_digits(message.text.strip())
         _, data = db.get_user_state(user_id)
         
-        if not data or text != data.get("otp"):
-            bot.send_message(message.chat.id, "❌ کد تأیید (OTP) وارد شده اشتباه است. لطفاً دوباره وارد کنید:")
+        if not data:
+            db.clear_user_state(user_id)
+            return
+
+        is_valid, verify_msg = auth.verify_sms_otp(str(user_id), text)
+        if not is_valid:
+            bot.send_message(message.chat.id, f"{verify_msg}\nلطفاً کد ۶ رقمی صحیح را ارسال کنید یا انصراف دهید:")
             return
         
         db.clear_user_state(user_id)
         _execute_contract_signature(bot, message, user_id, data, otp_code=text)
 
     def _execute_contract_signature(bot, message_or_call, user_id, data, otp_code):
-        """اجرای نهایی امضا (بعد از تایید OTP) و ذخیره مشخصات کامل طرفین"""
+        """اجرای نهایی امضا (بعد از تایید OTP) و ذخیره شواهد غیرقابل انکار در جدول signatures"""
         user_info = db.get_user(user_id) or {}
         full_name = data.get("signer_fullname") or user_info.get("full_name") or f"کاربر {user_id}"
         phone = data.get("signer_phone") or user_info.get("phone_number") or db.get_current_user_phone(user_id) or ""
@@ -4145,6 +4183,25 @@ def register_user_handlers(bot: TeleBot):
             category = (draft.get("category") if draft else None) or (contract.get("category") if contract else "GEN") or "GEN"
             cid = cid or (contract.get("contract_id") if contract else None) or utils.generate_archive_contract_id(category)
             
+            # ثبت شواهد غیرقابل انکار امضا در جدول signatures
+            tg_username = ""
+            if hasattr(message_or_call, "from_user") and getattr(message_or_call.from_user, "username", None):
+                tg_username = message_or_call.from_user.username
+
+            sig_record = db.create_contract_signature(
+                contract_id=cid,
+                telegram_id=user_id,
+                full_name=full_name,
+                national_id=national_id,
+                phone_number=phone,
+                role=role,
+                telegram_username=tg_username,
+                otp_code=otp_code,
+                client_ip=client_ip,
+                verification_method="telegram_contact_sms_otp"
+            )
+            sig_hash = sig_record.get("signature_hash", "")
+
             updates = {
                 "contract_id": cid,
                 "status": "pending_party_b"
@@ -4160,7 +4217,8 @@ def register_user_handlers(bot: TeleBot):
                     "buyer_alt_phone": phone,
                     "buyer_national_id": national_id,
                     "buyer_ip": client_ip,
-                    "buyer_role": "employer"
+                    "buyer_role": "employer",
+                    "buyer_signature_hash": sig_hash
                 })
             else:
                 updates.update({
@@ -4173,7 +4231,8 @@ def register_user_handlers(bot: TeleBot):
                     "seller_alt_phone": phone,
                     "seller_national_id": national_id,
                     "seller_ip": client_ip,
-                    "seller_role": "freelancer"
+                    "seller_role": "freelancer",
+                    "seller_signature_hash": sig_hash
                 })
             
             if contract:
@@ -4188,7 +4247,7 @@ def register_user_handlers(bot: TeleBot):
                 
             db.append_contract_history(
                 cid,
-                f"✍️ قرارداد توسط طرف اول (سازنده - {('کارفرما' if role == 'employer' else 'مجری')}) با کد تایید OTP امضا و نهایی گردید.",
+                f"✍️ قرارداد توسط طرف اول (سازنده - {('کارفرما' if role == 'employer' else 'مجری')}) با رمز پیامکی OTP امضا و شواهد قانونی ({sig_hash[:16]}...) ثبت گردید.",
                 actor_id=user_id
             )
             
@@ -4197,7 +4256,7 @@ def register_user_handlers(bot: TeleBot):
             # اطلاع به طرف دوم در صورتی که شناسه او در قرارداد مشخص باشد
             notify_other_party(
                 bot, contract or updates, user_id,
-                f"✍️ طرف اول معامله شماره `{cid}` را امضا کرد.\n"
+                f"✍️ طرف اول معامله شماره `{cid}` را با رمز یکبارمصرف پیامکی امضا کرد.\n"
                 "برای بررسی و امضای سند، لطفاً از بخش «📜 معاملات من» وارد شوید."
             )
             
@@ -4208,10 +4267,11 @@ def register_user_handlers(bot: TeleBot):
             utils.send_celebration(
                 bot,
                 chat_id,
-                f"✨ **امضای شما با موفقیت ثبت شد** ✨\n\n"
+                f"✨ **امضای رسمی شما با موفقیت ثبت شد** ✨\n\n"
                 f"📄 قرارداد شماره `{cid}` ثبت گردید و در وضعیت **«در انتظار امضای طرف دوم»** قرار گرفت.\n\n"
+                f"🔒 **شواهد قانونی امضا:** `{sig_hash}`\n\n"
                 f"🔗 **لینک دعوت و امضای طرف دوم:**\n`{share_link}`\n\n"
-                f"💡 لطفاً این لینک را برای طرف دوم ارسال کنید تا وارد ربات شده و پس از بررسی، قرارداد را امضا کند.",
+                f"💡 لطفاً این لینک را برای طرف دوم ارسال کنید تا بدون نیاز به رمز عبور وارد شده و قرارداد را امضا کند.",
                 reply_markup=kb.get_contract_created_inline(cid, share_link)
             )
             bot.send_message(
@@ -4230,6 +4290,26 @@ def register_user_handlers(bot: TeleBot):
         is_buyer = contract.get("buyer_id") == user_id
         is_seller = contract.get("seller_id") == user_id
 
+        # ثبت شواهد غیرقابل انکار امضا در جدول signatures
+        tg_username = ""
+        if hasattr(message_or_call, "from_user") and getattr(message_or_call.from_user, "username", None):
+            tg_username = message_or_call.from_user.username
+
+        sig_role = "buyer" if is_buyer or (not contract.get("buyer_id") and contract.get("seller_id") != user_id) else "seller"
+        sig_record = db.create_contract_signature(
+            contract_id=cid,
+            telegram_id=user_id,
+            full_name=full_name,
+            national_id=national_id,
+            phone_number=phone,
+            role=sig_role,
+            telegram_username=tg_username,
+            otp_code=otp_code,
+            client_ip=client_ip,
+            verification_method="telegram_contact_sms_otp"
+        )
+        sig_hash = sig_record.get("signature_hash", "")
+
         updates = {}
         if is_buyer or (not contract.get("buyer_id") and contract.get("seller_id") != user_id):
             updates["buyer_otp_verified"] = True
@@ -4240,7 +4320,8 @@ def register_user_handlers(bot: TeleBot):
             updates["buyer_alt_phone"] = phone
             updates["buyer_national_id"] = national_id
             updates["buyer_ip"] = client_ip
-            updates["buyer_role"] = "employer"  # ✅ نقش خریدار/کارفرما
+            updates["buyer_role"] = "employer"
+            updates["buyer_signature_hash"] = sig_hash
             if not contract.get("buyer_id"):
                 updates["buyer_id"] = user_id
         elif is_seller or (not contract.get("seller_id") and contract.get("buyer_id") != user_id):
@@ -4252,7 +4333,8 @@ def register_user_handlers(bot: TeleBot):
             updates["seller_alt_phone"] = phone
             updates["seller_national_id"] = national_id
             updates["seller_ip"] = client_ip
-            updates["seller_role"] = "freelancer"  # ✅ نقش فروشنده/مجری
+            updates["seller_role"] = "freelancer"
+            updates["seller_signature_hash"] = sig_hash
             if not contract.get("seller_id"):
                 updates["seller_id"] = user_id
 
