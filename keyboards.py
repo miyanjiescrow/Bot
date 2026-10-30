@@ -582,60 +582,9 @@ def get_withdrawal_action_inline(req_id) -> InlineKeyboardMarkup:
 
 
 def get_contracts_categories_keyboard(stats: dict, contracts: list = None, user_id: int = None) -> InlineKeyboardMarkup:
-    """منوی دسته‌بندی و لیست معاملات من با دکمه‌های شیشه‌ای شامل عنوان و نام طرف مقابل"""
-    markup = InlineKeyboardMarkup(row_width=1)
+    """منوی اصلی دسته‌بندی معاملات من (بدون نمایش قراردادهای تکی در صفحه اصلی)"""
+    markup = InlineKeyboardMarkup(row_width=2)
     
-    # دکمه‌های شیشه‌ای اختصاصی برای هر معامله با عنوان و نام طرف مقابل
-    if contracts:
-        for c in contracts[:12]:
-            cid = c.get("contract_id") or c.get("id")
-            title = c.get("title") or "معامله بدون عنوان"
-            st = c.get("status", "draft")
-            
-            # مشخص کردن نام طرف مقابل
-            is_buyer = (c.get("buyer_id") == user_id)
-            if is_buyer:
-                other_name = c.get("seller_fullname") or c.get("seller_name")
-                other_uid = c.get("seller_id")
-            else:
-                other_name = c.get("buyer_fullname") or c.get("buyer_name")
-                other_uid = c.get("buyer_id")
-                
-            if not other_name and other_uid:
-                try:
-                    import database as db
-                    other_user = db.get_user(other_uid)
-                    if other_user:
-                        other_name = other_user.get("full_name") or (f"@{other_user.get('username')}" if other_user.get("username") else other_user.get("first_name"))
-                except Exception:
-                    pass
-                    
-            if not other_name:
-                other_name = "در انتظار طرف دوم" if st in ["draft", "pending_party_b", "pending_approval"] else "طرف مقابل"
-                
-            # آیکون وضعیت
-            if st in ["active", "in_progress", "paid"] or c.get("paid_at"):
-                icon = "🟢"
-            elif st in ["pending_approval", "pending_party_b", "awaiting_payment", "awaiting_receipt_approval", "receipt_submitted"]:
-                icon = "⏳"
-            elif st == "draft":
-                icon = "📁"
-            elif st in ["work_submitted", "delivered"]:
-                icon = "📦"
-            elif st in ["completed", "resolved_employer", "resolved_freelancer"]:
-                icon = "🏁"
-            elif st in ["cancelled", "refunded"]:
-                icon = "❌"
-            elif st in ["disputed", "in_dispute"]:
-                icon = "⚖️"
-            else:
-                icon = "📜"
-                
-            short_title = title[:24] + (".." if len(title) > 24 else "")
-            short_name = str(other_name)[:16]
-            btn_text = f"{icon} {short_title} | 👤 {short_name}"
-            markup.add(InlineKeyboardButton(btn_text, callback_data=f"view_deal_{cid}"))
-
     markup.row(
         InlineKeyboardButton(f"🟢 درحال انجام ({stats.get('active', 0)})", callback_data="contracts_cat:active"),
         InlineKeyboardButton(f"⏳ در انتظار اقدام ({stats.get('pending', 0)})", callback_data="contracts_cat:pending")
@@ -644,11 +593,94 @@ def get_contracts_categories_keyboard(stats: dict, contracts: list = None, user_
         InlineKeyboardButton(f"🏁 تکمیل شده ({stats.get('completed', 0)})", callback_data="contracts_cat:completed"),
         InlineKeyboardButton(f"📁 پیش‌نویس‌های من ({stats.get('drafts', 0)})", callback_data="contracts_cat:drafts")
     )
+    if stats.get('cancelled', 0) > 0:
+        markup.add(
+            InlineKeyboardButton(f"❌ لغوشده و مرجوعی ({stats.get('cancelled', 0)})", callback_data="contracts_cat:cancelled")
+        )
     markup.row(
-        InlineKeyboardButton("🔍 جست‌وجوی قرارداد با شناسه", callback_data="contracts_search"),
-        InlineKeyboardButton("➕ ایجاد پیش‌نویس جدید", callback_data="create_new_draft")
+        InlineKeyboardButton("🔍 جست‌وجوی معامله با شناسه", callback_data="contracts_search"),
+        InlineKeyboardButton("➕ ایجاد معامله جدید", callback_data="deal_start")
     )
     markup.add(InlineKeyboardButton("⬅️ بازگشت به منوی اصلی", callback_data="back_to_menu"))
+    return markup
+
+
+def get_category_contracts_keyboard(category: str, contracts: list, user_id: int = None, page: int = 0, page_size: int = 6) -> InlineKeyboardMarkup:
+    """کیبورد ماژولار نمایش لیست معاملات اختصاصی هر بخش با دکمه‌های شیشه‌ای، صفحه‌بندی و بازگشت"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    total = len(contracts)
+    start_idx = page * page_size
+    page_contracts = contracts[start_idx:start_idx + page_size]
+    
+    for c in page_contracts:
+        cid = c.get("contract_id") or c.get("id")
+        title = c.get("title") or "معامله بدون عنوان"
+        st = c.get("status", "draft")
+        
+        # مشخص کردن نام طرف مقابل
+        is_buyer = (c.get("buyer_id") == user_id)
+        if is_buyer:
+            other_name = c.get("seller_fullname") or c.get("seller_name")
+            other_uid = c.get("seller_id")
+        else:
+            other_name = c.get("buyer_fullname") or c.get("buyer_name")
+            other_uid = c.get("buyer_id")
+            
+        if not other_name and other_uid:
+            try:
+                import database as db
+                other_user = db.get_user(other_uid)
+                if other_user:
+                    other_name = other_user.get("full_name") or (f"@{other_user.get('username')}" if other_user.get("username") else other_user.get("first_name"))
+            except Exception:
+                pass
+                
+        if not other_name:
+            other_name = "در انتظار طرف دوم" if st in ["draft", "pending_party_b", "pending_counterparty", "pending_approval"] else "طرف مقابل"
+            
+        # آیکون وضعیت هوشمند
+        if st in ["active", "in_progress", "paid", "escrow_locked"]:
+            icon = "🟢"
+        elif st in ["work_submitted", "delivered", "in_inspection"]:
+            icon = "📦"
+        elif st in ["pending_approval", "pending_party_b", "pending_counterparty", "awaiting_payment", "awaiting_escrow_deposit", "awaiting_receipt_approval", "receipt_submitted", "revisions_requested"]:
+            icon = "⏳"
+        elif st == "draft":
+            icon = "📁"
+        elif st in ["completed", "resolved_employer", "resolved_freelancer"]:
+            icon = "🏁"
+        elif st in ["cancelled", "refunded"]:
+            icon = "❌"
+        elif st in ["disputed", "in_dispute"]:
+            icon = "⚖️"
+        else:
+            icon = "📜"
+            
+        short_title = title[:20] + (".." if len(title) > 20 else "")
+        short_name = str(other_name)[:14]
+        btn_text = f"{icon} {short_title} | 👤 {short_name}"
+        markup.add(InlineKeyboardButton(btn_text, callback_data=f"view_deal_{cid}"))
+        
+    # نوار صفحه‌بندی هوشمند در صورت وجود بیش از page_size مورد
+    total_pages = (total + page_size - 1) // page_size
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("➡️ صفحه قبل", callback_data=f"cat_page:{category}:{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton(f"📄 {page + 1} از {total_pages}", callback_data="none"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("صفحه بعد ⬅️", callback_data=f"cat_page:{category}:{page + 1}"))
+        markup.row(*nav_buttons)
+        
+    # دکمه‌های اقدام و بازگشت
+    if category == "drafts":
+        markup.add(InlineKeyboardButton("➕ ایجاد پیش‌نویس جدید", callback_data="create_new_draft"))
+    else:
+        markup.add(InlineKeyboardButton("➕ ایجاد معامله جدید", callback_data="deal_start"))
+        
+    markup.add(InlineKeyboardButton("🔙 بازگشت به دسته‌بندی معاملات", callback_data="back_to_contracts_menu"))
+    markup.add(InlineKeyboardButton("🏠 منوی اصلی ربات", callback_data="back_to_menu"))
     return markup
 
 def get_draft_management_keyboard(contract_id: str) -> InlineKeyboardMarkup:
@@ -760,6 +792,7 @@ def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, 
         markup.add(InlineKeyboardButton("📖 مشاهده متن کامل و تعهدات", callback_data=f"view_contract_terms:{contract_id}"))
     
     markup.add(InlineKeyboardButton("📑 پیش‌نمایش و دریافت PDF", callback_data=f"get_pdf_{contract_id}"))
+    markup.add(InlineKeyboardButton("🔙 بازگشت به لیست معاملات", callback_data="back_to_contracts_menu"))
     return markup
 
 def get_contract_created_inline(contract_id: str, share_link: str) -> InlineKeyboardMarkup:

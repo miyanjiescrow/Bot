@@ -62,6 +62,7 @@ const App = () => {
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedPy, setCopiedPy] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [contractCategoryFilter, setContractCategoryFilter] = useState<'all' | 'active' | 'pending' | 'completed' | 'drafts' | 'cancelled'>('all');
   
   // Interactive Wizard State
   const [wizardStep, setWizardStep] = useState<number>(1);
@@ -1272,70 +1273,136 @@ CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);`;
         )}
 
         {/* Tab: Contracts Explorer */}
-        {activeTab === 'contracts' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-            <h3 className="text-sm font-bold text-white mb-3 flex items-center justify-between">
-              <span>لیست قراردادها و اسکروهای ثبت‌شده در ربات</span>
-              <span className="text-xs text-slate-400">تعداد: {contracts.length} معامله</span>
-            </h3>
+        {activeTab === 'contracts' && (() => {
+          const activeDeals = contracts.filter(c => ['active', 'in_progress', 'paid', 'escrow_locked', 'in_inspection', 'work_submitted', 'delivered'].includes(c.status));
+          const pendingDeals = contracts.filter(c => ['pending_approval', 'pending_counterparty', 'pending_party_b', 'awaiting_payment', 'awaiting_escrow_deposit', 'awaiting_receipt_approval', 'receipt_submitted', 'revisions_requested', 'disputed', 'in_dispute'].includes(c.status));
+          const completedDeals = contracts.filter(c => ['completed', 'resolved_employer', 'resolved_freelancer'].includes(c.status));
+          const draftsDeals = contracts.filter(c => c.status === 'draft');
+          const cancelledDeals = contracts.filter(c => ['cancelled', 'refunded'].includes(c.status));
 
-            <div className="space-y-3">
-              {contracts.map((c, i) => (
-                <div
-                  key={i}
-                  className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-slate-700 transition"
-                >
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-xs font-bold text-blue-400">{c.contract_id}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                        c.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
-                        c.status === 'completed' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' :
-                        c.status === 'in_dispute' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
-                        'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                      }`}>
-                        {c.status}
-                      </span>
-                      {c.has_inspection_period && (
-                        <span className="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
-                          <Clock className="w-2.5 h-2.5" />
-                          مهلت تست: {c.inspection_period_hours || 0}h
-                        </span>
-                      )}
-                      {c.free_edits !== undefined && (
-                        <span className="text-[10px] bg-purple-500/10 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded-full">
-                          ویرایش رایگان: {c.free_edits} بار
-                        </span>
-                      )}
-                    </div>
-                    <h4 className="text-xs font-bold text-white">{c.title}</h4>
-                    <p className="text-[11px] text-slate-400">
-                      کارفرما: {c.buyer_fullname || '---'} | مجری: {c.seller_fullname || '---'} | مهلت: {c.deadline} روز
-                    </p>
-                  </div>
+          const filteredContracts = contractCategoryFilter === 'all' ? contracts :
+            contractCategoryFilter === 'active' ? activeDeals :
+            contractCategoryFilter === 'pending' ? pendingDeals :
+            contractCategoryFilter === 'completed' ? completedDeals :
+            contractCategoryFilter === 'drafts' ? draftsDeals : cancelledDeals;
 
-                  <div className="flex items-center gap-3">
-                    <div className="text-left">
-                      <span className="text-xs font-bold text-emerald-400 block">
-                        {(c.amount || 0).toLocaleString('fa-IR')} تومان
-                      </span>
-                      <span className="text-[10px] text-slate-500">صندوق امن میانجی</span>
-                    </div>
+          const categoryTabs = [
+            { id: 'all' as const, label: 'همه معاملات', count: contracts.length, icon: '📜' },
+            { id: 'active' as const, label: 'درحال انجام', count: activeDeals.length, icon: '🟢' },
+            { id: 'pending' as const, label: 'در انتظار اقدام', count: pendingDeals.length, icon: '⏳' },
+            { id: 'completed' as const, label: 'تکمیل شده', count: completedDeals.length, icon: '🏁' },
+            { id: 'drafts' as const, label: 'پیش‌نویس‌ها', count: draftsDeals.length, icon: '📁' },
+            { id: 'cancelled' as const, label: 'لغوشده', count: cancelledDeals.length, icon: '❌' }
+          ];
 
-                    <a
-                      href={`/api/contracts/${c.contract_id}/pdf`}
-                      download
-                      className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>دانلود PDF</span>
-                    </a>
-                  </div>
+          return (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <ScrollText className="w-4 h-4 text-blue-400" />
+                    <span>پنل ماژولار و دسته‌بندی قراردادهای اسکرو</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    معاملات در دسته‌های اختصاصی تفکیک شده‌اند تا به صورت مجزا و منظم قابل مدیریت باشند.
+                  </p>
                 </div>
-              ))}
+                <span className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-lg border border-slate-700 self-start sm:self-auto font-mono">
+                  {filteredContracts.length} معامله در این بخش
+                </span>
+              </div>
+
+              {/* Modular Category Filter Buttons */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                {categoryTabs.map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setContractCategoryFilter(tab.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
+                      contractCategoryFilter === tab.id
+                        ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/20'
+                        : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <span>{tab.icon}</span>
+                    <span>{tab.label}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                      contractCategoryFilter === tab.id ? 'bg-blue-800/80 text-white' : 'bg-slate-800 text-slate-400'
+                    }`}>
+                      {tab.count}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Contracts List */}
+              <div className="space-y-3">
+                {filteredContracts.length === 0 ? (
+                  <div className="text-center py-10 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                    <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto opacity-70" />
+                    <p className="text-xs text-slate-300 font-bold">هیچ معامله‌ای در این دسته‌بندی یافت نشد.</p>
+                    <p className="text-[11px] text-slate-500">جهت ایجاد قرارداد جدید می‌توانید از تب «ایجاد معامله» استفاده کنید.</p>
+                  </div>
+                ) : (
+                  filteredContracts.map((c, i) => (
+                    <div
+                      key={i}
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-slate-700 transition"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-xs font-bold text-blue-400">{c.contract_id}</span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                            c.status === 'active' || c.status === 'escrow_locked' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
+                            c.status === 'completed' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' :
+                            c.status === 'in_dispute' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
+                            c.status === 'draft' ? 'bg-purple-500/10 text-purple-300 border border-purple-500/30' :
+                            'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                          }`}>
+                            {c.status}
+                          </span>
+                          {c.has_inspection_period && (
+                            <span className="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              <Clock className="w-2.5 h-2.5" />
+                              مهلت تست: {c.inspection_period_hours || 0}h
+                            </span>
+                          )}
+                          {c.free_edits !== undefined && (
+                            <span className="text-[10px] bg-purple-500/10 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded-full">
+                              ویرایش رایگان: {c.free_edits} بار
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="text-xs font-bold text-white">{c.title}</h4>
+                        <p className="text-[11px] text-slate-400">
+                          کارفرما: {c.buyer_fullname || '---'} | مجری: {c.seller_fullname || '---'} | مهلت: {c.deadline || 7} روز
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-left">
+                          <span className="text-xs font-bold text-emerald-400 block">
+                            {(c.amount || 0).toLocaleString('fa-IR')} تومان
+                          </span>
+                          <span className="text-[10px] text-slate-500">صندوق امن میانجی</span>
+                        </div>
+
+                        <a
+                          href={`/api/contracts/${c.contract_id}/pdf`}
+                          download
+                          className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>دانلود PDF</span>
+                        </a>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Tab: Supabase SQL Schema */}
         {activeTab === 'database' && (

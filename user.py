@@ -291,17 +291,40 @@ def _get_main_menu_for_user(user_id: int, is_admin: bool = False):
 
 def _get_contract_category_logic(status: str) -> str:
     """دسته‌بندی وضعیت‌های مختلف در گروه‌های اصلی برای منوی «معاملات من»"""
-    if status == "draft":
+    if not status or status == "draft":
         return "drafts"
-    if status in ["active", "in_progress", "paid"]:
+    if status in [
+        "active",
+        "in_progress",
+        "paid",
+        "escrow_locked",
+        "in_inspection",
+        "work_submitted",
+        "delivered"
+    ]:
         return "active"
-    if status in ["pending_approval", "awaiting_payment", "pending_payment", "awaiting_receipt_approval", "awaiting_extra_edit_receipt", "receipt_submitted", "delivered", "work_submitted", "disputed", "in_dispute", "awaiting_edit_price", "bargaining"]:
+    if status in [
+        "pending_approval",
+        "pending_counterparty",
+        "pending_party_b",
+        "awaiting_payment",
+        "pending_payment",
+        "awaiting_escrow_deposit",
+        "awaiting_receipt_approval",
+        "awaiting_extra_edit_receipt",
+        "receipt_submitted",
+        "revisions_requested",
+        "awaiting_edit_price",
+        "bargaining",
+        "disputed",
+        "in_dispute"
+    ]:
         return "pending"
     if status in ["completed", "resolved_employer", "resolved_freelancer"]:
         return "completed"
     if status in ["cancelled", "refunded"]:
         return "cancelled"
-    return "other"
+    return "pending"
 
 
 def _get_contracts_stats(contracts: list) -> dict:
@@ -311,6 +334,8 @@ def _get_contracts_stats(contracts: list) -> dict:
         cat = _get_contract_category_logic(status)
         if cat in stats:
             stats[cat] += 1
+        else:
+            stats["pending"] += 1
     return stats
 
 
@@ -2531,14 +2556,15 @@ def register_user_handlers(bot: TeleBot):
             "📑 **پنل مدیریت هوشمند معاملات شما**\n"
             "──────────────────\n"
             f"شما دارای **{contracts_count}** معامله/پیش‌نویس در سامانه میانجی هستید.\n"
-            "جهت مشاهده و پیگیری وضعیت، روی دکمه شیشه‌ای معامله مورد نظر کلیک کنید:\n\n"
-            f"📊 **آمار کلی:**\n"
-            f"• درحال انجام: `{stats.get('active', 0)}`\n"
-            f"• در انتظار اقدام: `{stats.get('pending', 0)}`\n"
-            f"• پیش‌نویس‌ها: `{stats.get('drafts', 0)}`\n"
-            f"• تکمیل شده: `{stats.get('completed', 0)}`",
+            "لطفاً جهت مشاهده و مدیریت لیست هر بخش، یکی از دسته‌بندی‌های زیر را انتخاب کنید:\n\n"
+            f"📊 **آمار کلی وضعیت‌ها:**\n"
+            f"• 🟢 درحال انجام: `{stats.get('active', 0)}`\n"
+            f"• ⏳ در انتظار اقدام: `{stats.get('pending', 0)}`\n"
+            f"• 📁 پیش‌نویس‌های من: `{stats.get('drafts', 0)}`\n"
+            f"• 🏁 تکمیل شده: `{stats.get('completed', 0)}`" +
+            (f"\n• ❌ لغوشده: `{stats.get('cancelled', 0)}`" if stats.get('cancelled', 0) > 0 else ""),
             parse_mode="Markdown",
-            reply_markup=kb.get_contracts_categories_keyboard(stats, contracts=contracts, user_id=user_id)
+            reply_markup=kb.get_contracts_categories_keyboard(stats)
         )
 
     @bot.callback_query_handler(func=lambda call: call.data == "contracts_search")
@@ -2618,98 +2644,62 @@ def register_user_handlers(bot: TeleBot):
         for c in matching[:5][::-1]:
             render_contract_card(message.chat.id, user_id, c)
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("contracts_cat:"))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("contracts_cat:") or call.data.startswith("cat_page:"))
     def handle_contracts_category(call: CallbackQuery):
         user_id = call.from_user.id
-        category = call.data.split(":")[1]
-        
-        contracts = db.get_user_contracts(user_id)
-        if category == "drafts":
-            filtered = [c for c in contracts if c.get("status") == "draft"]
-            if not filtered:
-                bot.answer_callback_query(call.id)
-                empty_markup = InlineKeyboardMarkup(row_width=1)
-                empty_markup.add(
-                    InlineKeyboardButton("➕ ایجاد پیش‌نویس جدید", callback_data="create_new_draft"),
-                    InlineKeyboardButton("🔙 بازگشت به منوی معاملات", callback_data="back_to_contracts_menu")
-                )
-                try:
-                    bot.edit_message_text(
-                        "📁 **پیش‌نویس‌های من**\n\nشما در حال حاضر هیچ پیش‌نویس فعالی ندارید.\nجهت ثبت و ذخیره یک پیش‌نویس جدید روی دکمه زیر کلیک کنید:",
-                        call.message.chat.id,
-                        call.message.message_id,
-                        parse_mode="Markdown",
-                        reply_markup=empty_markup
-                    )
-                except Exception:
-                    bot.send_message(
-                        call.message.chat.id,
-                        "📁 **پیش‌نویس‌های من**\n\nشما در حال حاضر هیچ پیش‌نویس فعالی ندارید.\nجهت ثبت و ذخیره یک پیش‌نویس جدید روی دکمه زیر کلیک کنید:",
-                        parse_mode="Markdown",
-                        reply_markup=empty_markup
-                    )
-                return
-
-            bot.answer_callback_query(call.id)
-            bot.send_message(call.message.chat.id, "📁 **پیش‌نویس‌های معامله شما:**\n*(جدیدترین پیش‌نویس‌ها در زیر نمایش داده شده‌اند)*")
-            latest_drafts = filtered[:5][::-1]
-            for d in latest_drafts:
-                cid = d.get("contract_id") or d.get("id")
-                title = d.get("title", "بدون عنوان")
-                amount = utils.format_currency(d.get("amount", 0))
-                text = (
-                    f"📝 **پیش‌نویس: {title}**\n"
-                    f"📌 شناسه: `{cid}`\n"
-                    f"💰 مبلغ: {amount} تومان"
-                )
-                bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=kb.get_draft_management_keyboard(cid))
-            
-            # ارسال دکمه ایجاد پیش‌نویس جدید در انتهای لیست پیش‌نویس‌ها
-            add_more_markup = InlineKeyboardMarkup()
-            add_more_markup.add(
-                InlineKeyboardButton("➕ ایجاد پیش‌نویس جدید دیگر", callback_data="create_new_draft"),
-                InlineKeyboardButton("🔙 بازگشت به معاملات من", callback_data="back_to_contracts_menu")
-            )
-            bot.send_message(call.message.chat.id, "➕ جهت ساخت پیش‌نویس جدید می‌توانید از دکمه زیر استفاده کنید:", reply_markup=add_more_markup)
-            return
-
-        filtered = [c for c in contracts if _get_contract_category_logic(c.get("status")) == category and c.get("status") != "draft"]
-        
-        if not filtered:
-            bot.answer_callback_query(call.id, "⚠️ معامله‌ای در این دسته یافت نشد.", show_alert=True)
-            return
-            
         bot.answer_callback_query(call.id)
+
+        if call.data.startswith("cat_page:"):
+            parts = call.data.split(":")
+            category = parts[1]
+            page = int(parts[2])
+        else:
+            category = call.data.split(":")[1]
+            page = 0
+
+        contracts = db.get_user_contracts(user_id)
+        filtered = [c for c in contracts if _get_contract_category_logic(c.get("status")) == category]
 
         cat_labels = {
             "active": "🟢 در حال انجام",
             "pending": "⏳ در انتظار اقدام",
             "completed": "🏁 تکمیل شده",
-            "cancelled": "❌ لغوشده / مرجوعی"
+            "drafts": "📁 پیش‌نویس‌های من",
+            "cancelled": "❌ لغوشده و مرجوعی"
         }
-        label = cat_labels.get(category, "نامشخص")
-        
-        header_text = f"📑 **۳ معامله آخر شما ({label}):**\n*(جدیدترین معامله در پایین‌ترین پیام نزدیک به کیبورد قرار دارد)*"
+        label = cat_labels.get(category, "معاملات")
 
+        if not filtered:
+            empty_markup = InlineKeyboardMarkup(row_width=1)
+            if category == "drafts":
+                empty_markup.add(InlineKeyboardButton("➕ ایجاد پیش‌نویس جدید", callback_data="create_new_draft"))
+            else:
+                empty_markup.add(InlineKeyboardButton("➕ ایجاد معامله جدید", callback_data="deal_start"))
+            empty_markup.add(InlineKeyboardButton("🔙 بازگشت به دسته‌بندی معاملات", callback_data="back_to_contracts_menu"))
+
+            text = (
+                f"📂 **دسته‌بندی: {label}**\n"
+                "──────────────────\n"
+                f"⚠️ در حال حاضر هیچ معامله‌ای در بخش **«{label}»** یافت نشد.\n\n"
+                "جهت ثبت یا شروع معامله جدید می‌توانید از دکمه‌های زیر استفاده فرمایید:"
+            )
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=empty_markup)
+            except Exception:
+                bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=empty_markup)
+            return
+
+        markup = kb.get_category_contracts_keyboard(category, filtered, user_id=user_id, page=page, page_size=6)
+        text = (
+            f"📂 **لیست معاملات شما — {label}**\n"
+            "──────────────────\n"
+            f"تعداد کل در این دسته: **{len(filtered)}** معامله\n\n"
+            "جهت مشاهده کارت مشخصات، دانلود سند PDF یا پیگیری وضعیت، روی دکمه معامله مورد نظر کلیک کنید:"
+        )
         try:
-            bot.edit_message_text(
-                header_text,
-                call.message.chat.id,
-                call.message.message_id,
-                parse_mode="Markdown"
-            )
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
         except Exception:
-            bot.send_message(
-                call.message.chat.id,
-                header_text,
-                parse_mode="Markdown"
-            )
-        
-        # گرفتن ۳ معامله آخر (جدیدترین‌ها) و معکوس کردن ترتیب آن‌ها
-        # تا جدیدترین معامله (آخرین ساخته شده) نزدیک‌ترین پیام به کیبورد باشد
-        latest_3 = filtered[:3][::-1]
-        for c in latest_3:
-            render_contract_card(call.message.chat.id, user_id, c)
+            bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("resume_draft_"))
     def handle_resume_draft(call: CallbackQuery):
@@ -2829,14 +2819,15 @@ def register_user_handlers(bot: TeleBot):
             "📑 **پنل مدیریت هوشمند معاملات شما**\n"
             "──────────────────\n"
             f"شما دارای **{contracts_count}** معامله/پیش‌نویس در سامانه میانجی هستید.\n"
-            "جهت مشاهده و پیگیری وضعیت، روی دکمه شیشه‌ای معامله مورد نظر کلیک کنید:\n\n"
-            f"📊 **آمار کلی:**\n"
-            f"• درحال انجام: `{stats.get('active', 0)}`\n"
-            f"• در انتظار اقدام: `{stats.get('pending', 0)}`\n"
-            f"• پیش‌نویس‌ها: `{stats.get('drafts', 0)}`\n"
-            f"• تکمیل شده: `{stats.get('completed', 0)}`"
+            "لطفاً جهت مشاهده و مدیریت لیست هر بخش، یکی از دسته‌بندی‌های زیر را انتخاب کنید:\n\n"
+            f"📊 **آمار کلی وضعیت‌ها:**\n"
+            f"• 🟢 درحال انجام: `{stats.get('active', 0)}`\n"
+            f"• ⏳ در انتظار اقدام: `{stats.get('pending', 0)}`\n"
+            f"• 📁 پیش‌نویس‌های من: `{stats.get('drafts', 0)}`\n"
+            f"• 🏁 تکمیل شده: `{stats.get('completed', 0)}`" +
+            (f"\n• ❌ لغوشده: `{stats.get('cancelled', 0)}`" if stats.get('cancelled', 0) > 0 else "")
         )
-        markup = kb.get_contracts_categories_keyboard(stats, contracts=contracts, user_id=user_id)
+        markup = kb.get_contracts_categories_keyboard(stats)
         try:
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
         except Exception:

@@ -152,22 +152,73 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
 
   if (clean.includes('معاملات من') || clean.includes('لیست معاملات')) {
     const userDeals = getContracts({ userId: currentUid });
-    const listText = userDeals.slice(0, 4).map((d, i) => {
-      const statusFa = d.status === 'active' ? '🟢 درحال انجام' :
-        d.status === 'work_submitted' ? '📦 تحویل داده شده' :
-        d.status === 'completed' ? '🏁 تکمیل شده' :
-        d.status === 'draft' ? '📁 پیش‌نویس' : '⏳ در انتظار اقدام';
-      return `${i + 1}. ${d.title.slice(0, 32)} (${d.contract_id})\n   💰 مبلغ: ${formatCurrency(d.amount)} | وضعیت: ${statusFa}`;
+    const activeCount = userDeals.filter(d => ['active', 'in_progress', 'paid', 'escrow_locked', 'in_inspection', 'work_submitted', 'delivered'].includes(d.status)).length;
+    const pendingCount = userDeals.filter(d => ['pending_approval', 'pending_counterparty', 'pending_party_b', 'awaiting_payment', 'awaiting_escrow_deposit', 'awaiting_receipt_approval', 'receipt_submitted', 'revisions_requested', 'disputed', 'in_dispute'].includes(d.status)).length;
+    const completedCount = userDeals.filter(d => ['completed', 'resolved_employer', 'resolved_freelancer'].includes(d.status)).length;
+    const draftsCount = userDeals.filter(d => d.status === 'draft').length;
+
+    return {
+      reply: `📑 **پنل مدیریت هوشمند معاملات شما**\n──────────────────\n` +
+        `شما دارای **${userDeals.length}** معامله/پیش‌نویس در سامانه میانجی هستید.\n` +
+        `جهت مشاهده و مدیریت لیست هر بخش، روی دسته‌بندی مورد نظر کلیک کنید:\n\n` +
+        `📊 **آمار کلی وضعیت‌ها:**\n` +
+        `• 🟢 درحال انجام: \`${activeCount}\`\n` +
+        `• ⏳ در انتظار اقدام: \`${pendingCount}\`\n` +
+        `• 📁 پیش‌نویس‌های من: \`${draftsCount}\`\n` +
+        `• 🏁 تکمیل شده: \`${completedCount}\``,
+      keyboard: [
+        [`🟢 درحال انجام (${activeCount})`, `⏳ در انتظار اقدام (${pendingCount})`],
+        [`🏁 تکمیل شده (${completedCount})`, `📁 پیش‌نویس‌های من (${draftsCount})`],
+        ['🔍 جست‌وجوی قرارداد با شناسه', '🤝 ثبت معامله جدید'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    };
+  }
+
+  if (clean.includes('درحال انجام') || clean.includes('در انتظار اقدام') || clean.includes('تکمیل شده') || clean.includes('پیش‌نویس')) {
+    const userDeals = getContracts({ userId: currentUid });
+    let categoryKey = 'active';
+    let categoryTitle = '🟢 درحال انجام';
+
+    if (clean.includes('در انتظار اقدام')) {
+      categoryKey = 'pending';
+      categoryTitle = '⏳ در انتظار اقدام';
+    } else if (clean.includes('تکمیل شده')) {
+      categoryKey = 'completed';
+      categoryTitle = '🏁 تکمیل شده';
+    } else if (clean.includes('پیش‌نویس')) {
+      categoryKey = 'drafts';
+      categoryTitle = '📁 پیش‌نویس‌های من';
+    }
+
+    const filtered = userDeals.filter(d => {
+      if (categoryKey === 'drafts') return d.status === 'draft';
+      if (categoryKey === 'active') return ['active', 'in_progress', 'paid', 'escrow_locked', 'in_inspection', 'work_submitted', 'delivered'].includes(d.status);
+      if (categoryKey === 'pending') return ['pending_approval', 'pending_counterparty', 'pending_party_b', 'awaiting_payment', 'awaiting_escrow_deposit', 'awaiting_receipt_approval', 'receipt_submitted', 'revisions_requested', 'disputed', 'in_dispute'].includes(d.status);
+      if (categoryKey === 'completed') return ['completed', 'resolved_employer', 'resolved_freelancer'].includes(d.status);
+      return false;
+    });
+
+    if (filtered.length === 0) {
+      return {
+        reply: `📂 **دسته‌بندی: ${categoryTitle}**\n──────────────────\n⚠️ هیچ معامله‌ای در این بخش یافت نشد.`,
+        keyboard: [
+          ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
+          ['🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
+
+    const listLines = filtered.map((d, i) => {
+      const other = d.buyer_id === currentUid ? (d.seller_fullname || 'مجری') : (d.buyer_fullname || 'کارفرما');
+      return `${i + 1}. **${d.title}**\n   🆔 شناسه: \`${d.contract_id}\` | 👤 طرف مقابل: ${other}\n   💰 مبلغ: ${formatCurrency(d.amount)} | وضعیت: ${d.status}`;
     }).join('\n\n');
 
     return {
-      reply: `📜 **لیست معاملات شما در سامانه میانجی**\n\n` +
-        `تعداد معاملات ثبت‌شده: ${userDeals.length} فقره\n\n` +
-        (listText || 'شما هنوز معامله‌ای ثبت نکرده‌اید.') +
-        `\n\nجهت دریافت فایل PDF رسمی قرارداد یا پرداخت اسکرو به برگه قراردادها مراجعه فرمایید.`,
-      keyboard: [
-        ['🤝 ثبت معامله جدید', '🔙 بازگشت به منوی اصلی']
-      ]
+      reply: `📂 **لیست معاملات شما — ${categoryTitle}**\n──────────────────\nتعداد در این دسته: **${filtered.length}** معامله\n\n${listLines}`,
+      keyboard: filtered.slice(0, 4).map(d => [`📄 ${d.contract_id}: ${d.title.slice(0, 25)}`]).concat([
+        ['📜 بازگشت به دسته‌بندی معاملات', '🔙 بازگشت به منوی اصلی']
+      ])
     };
   }
 
