@@ -52,8 +52,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
-const HOST = '0.0.0.0';
+const portArgIndex = process.argv.indexOf('--port');
+const portFromArg = portArgIndex !== -1 ? Number(process.argv[portArgIndex + 1]) : null;
+const hostArgIndex = process.argv.indexOf('--host');
+const hostFromArg = hostArgIndex !== -1 ? process.argv[hostArgIndex + 1] : null;
+
+const PORT = Number(process.env.PORT) || portFromArg || 3000;
+const HOST = process.env.HOST || hostFromArg || '0.0.0.0';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -68,6 +73,10 @@ app.use('/fonts', express.static(path.join(__dirname, 'Font')));
 let pythonBotProcess: any = null;
 
 function ensurePythonBotRunning() {
+  if (!process.env.BOT_TOKEN) {
+    console.log('ℹ️ BOT_TOKEN not configured in environment. Python Telegram bot will remain idle.');
+    return;
+  }
   const logFilePath = path.join(__dirname, 'bot.log');
   const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
 
@@ -87,6 +96,10 @@ function ensurePythonBotRunning() {
 
         pythonBotProcess.on('exit', (exitCode: any, signal: any) => {
           console.log(`⚠️ Python bot exited with code ${exitCode} (${signal}).`);
+        });
+
+        pythonBotProcess.on('error', (err: any) => {
+          console.log(`⚠️ Python bot process error: ${err.message}`);
         });
       } else {
         console.log('🤖 Python Telegram Bot is already active.');
@@ -1507,20 +1520,64 @@ async function startServer() {
   if (isDev) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, host: HOST, port: PORT },
+      server: {
+        middlewareMode: true,
+        hmr: false
+      },
       appType: 'spa'
     });
     app.use(vite.middlewares);
+
+    // Fallback handler for HTML5 SPA routing in dev mode
+    app.use(async (req: Request, res: Response, next) => {
+      if (req.originalUrl.startsWith('/api')) {
+        return next();
+      }
+      const url = req.originalUrl;
+      try {
+        const indexHtmlPath = path.resolve(__dirname, 'index.html');
+        if (fs.existsSync(indexHtmlPath)) {
+          let template = fs.readFileSync(indexHtmlPath, 'utf-8');
+          template = await vite.transformIndexHtml(url, template);
+          res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+          return;
+        }
+        next();
+      } catch (e: any) {
+        vite.ssrFixStacktrace(e);
+        next(e);
+      }
+    });
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('/*', (req: Request, res: Response) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    const distDir = path.join(__dirname, 'dist');
+    if (fs.existsSync(distDir)) {
+      app.use(express.static(distDir));
+    }
+    app.use((req: Request, res: Response, next) => {
+      if (req.originalUrl.startsWith('/api')) {
+        return next();
+      }
+      const distIndex = path.join(__dirname, 'dist', 'index.html');
+      if (fs.existsSync(distIndex)) {
+        res.sendFile(distIndex);
+      } else {
+        res.sendFile(path.join(__dirname, 'index.html'));
+      }
     });
   }
 
-  app.listen(PORT, HOST, () => {
+  const server = app.listen(PORT, HOST, () => {
     console.log(`🚀 Miyanji Escrow Platform server running on http://${HOST}:${PORT}`);
   });
+
+  const handleShutdown = () => {
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', handleShutdown);
+  process.on('SIGINT', handleShutdown);
 }
 
 startServer().catch(err => {
