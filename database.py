@@ -329,12 +329,14 @@ def register_or_update_user(
             return user_rec
 
         try:
-            # جستجو بر اساس آیدی
+            # جستجو بر اساس آیدی یا telegram_id
             res = supabase.table("users").select("*").eq("id", user_id).execute()
+            if not res.data:
+                res = supabase.table("users").select("*").eq("telegram_id", user_id).execute()
             existing_user = res.data[0] if res.data else None
 
             if existing_user:
-                update_data = {}
+                update_data = {"telegram_id": user_id}
                 if first_name: update_data["full_name"] = first_name
                 if username: update_data["username"] = username
                 if phone_number: update_data["phone_number"] = phone_number
@@ -358,20 +360,20 @@ def register_or_update_user(
                         _user_info_last_update[user_id] = datetime.now()
 
                     # اجرای آپدیت واقعی
-                    supabase.table("users").update(update_data).eq("id", user_id).execute()
+                    supabase.table("users").update(update_data).eq("id", existing_user.get("id", user_id)).execute()
                     existing_user.update(update_data)
                 
                 return existing_user
             else:
                 new_user = {
                     "id": user_id,
+                    "telegram_id": user_id,
                     "username": username or "",
                     "full_name": full_name or f"{first_name or 'کاربر'}",
                     "phone_number": phone_number,
-                    "password_hash": kwargs.get("password_hash"),
                     "wallet_balance": kwargs.get("wallet_balance", 0.0),
                     "invited_by": invited_by if (invited_by and invited_by != user_id) else None,
-                    "role": role,
+                    "role": role or "employer",
                     "impersonated_by": None,
                     "is_verified": kwargs.get("is_verified", False),
                     "national_id": kwargs.get("national_id"),
@@ -926,10 +928,19 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
             _user_info_cache[user_id] = user_data
             _user_info_last_update[user_id] = now
             return user_data
-        return None
+            
+        # بررسی بر اساس telegram_id
+        res_tg = supabase.table("users").select("*").eq("telegram_id", user_id).execute()
+        if res_tg.data:
+            user_data = res_tg.data[0]
+            _user_info_cache[user_id] = user_data
+            _user_info_last_update[user_id] = now
+            return user_data
+
+        return _in_memory_users.get(user_id)
     except Exception as e:
         logger.error(f"Error fetching user {user_id}: {e}")
-        return _user_info_cache.get(user_id)
+        return _user_info_cache.get(user_id) or _in_memory_users.get(user_id)
 
 
 def set_user_role(user_id: int, role: str) -> bool:
@@ -2818,11 +2829,23 @@ class Database:
 
 def get_current_user_phone(telegram_id: int) -> Optional[str]:
     """دریافت شماره تلفن نشست فعال برای یک telegram_id از جدول users"""
-    if not supabase: return None
+    if telegram_id in _user_info_cache and _user_info_cache[telegram_id].get("phone_number"):
+        return _user_info_cache[telegram_id]["phone_number"]
+
+    if telegram_id in _in_memory_users and _in_memory_users[telegram_id].get("phone_number"):
+        return _in_memory_users[telegram_id]["phone_number"]
+
+    if not supabase: 
+        return None
     try:
         res = supabase.table("users").select("phone_number").eq("id", telegram_id).execute()
-        if res.data and len(res.data) > 0:
+        if res.data and len(res.data) > 0 and res.data[0].get("phone_number"):
             return res.data[0].get("phone_number")
+        
+        res_tg = supabase.table("users").select("phone_number").eq("telegram_id", telegram_id).execute()
+        if res_tg.data and len(res_tg.data) > 0 and res_tg.data[0].get("phone_number"):
+            return res_tg.data[0].get("phone_number")
+            
         return None
     except Exception as e:
         logger.error(f"Error getting session for {telegram_id}: {e}")

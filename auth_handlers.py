@@ -1,13 +1,11 @@
 """
 ==============================================================================
 سامانه هوشمند واسطه‌گری امن و اسکرو میانجی (Miyanji Escrow)
-هندلرهای اختصاصی ثبت‌نام و ورود بدون رمز عبور (Passwordless Auth Handlers)
-ورود و احراز هویت ۱۰۰٪ خودکار با استفاده از Telegram ID و دکمه Share Contact تلگرام
+هندلرهای اختصاصی ورود، ثبت‌نام و پروفایل کاربری با احراز هویت تدریجی (Progressive Profiling)
 ==============================================================================
 """
 
 import logging
-import re
 from telebot import TeleBot
 from telebot.types import (
     Message, 
@@ -28,51 +26,38 @@ import utils
 logger = logging.getLogger("Miyanji_AuthHandlers")
 
 
-def get_contact_share_keyboard(is_cancelable: bool = False) -> ReplyKeyboardMarkup:
+def get_contact_share_keyboard() -> ReplyKeyboardMarkup:
     """
-    کیبورد اختصاصی دریافت مستقیم شماره تماس کاربر با یک لمس (بدون تایپ دستی)
-    از طریق قابلیت امن request_contact تلگرام جهت تایید اصالت شماره سیم‌کارت
+    کیبورد تک‌دکمه‌ای اختصاصی دریافت شماره تماس تلگرام (Share Contact)
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add(KeyboardButton("📱 اشتراک‌گذاری شماره موبایل من", request_contact=True))
-    if is_cancelable:
-        markup.add(KeyboardButton("❌ انصراف"))
+    markup.add(KeyboardButton("📱 تایید و ارسال شماره تماس", request_contact=True))
     return markup
 
 
-def show_passwordless_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = None):
+def show_welcome_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = None):
     """
-    نمایش پیام خوش‌آمدگویی و درخواست اشتراک‌گذاری شماره تماس برای کاربران جدید یا بدون شماره
+    نمایش پیام رسمی خوش‌آمدگویی و درخواست تایید شماره تماس با تک‌دکمه
     """
-    if pending_contract_id:
-        text = (
-            "🤝 **به سامانه هوشمند واسطه‌گری میانجی خوش آمدید**\n\n"
-            f"شما برای بررسی و امضای معامله شماره `{pending_contract_id}` دعوت شده‌اید.\n\n"
-            "جهت ورود آسان و ثبت رسمی هویت شما در سند الکترونیک، لطفاً با لمس دکمه زیر شماره تماس تلگرام خود را به اشتراک بگذارید (نیازی به پسورد نیست):"
-        )
-    else:
-        text = (
-            "🛡 **به پلتفرم واسطه‌گری امن و اسکرو میانجی (Miyanji) خوش آمدید**\n\n"
-            "سامانه رسمی ثبت قراردادهای الکترونیک و پرداخت امن فریلنسری.\n\n"
-            "✨ **ورود سریع و بدون رمز عبور (Passwordless):**\n"
-            "جهت ایجاد حساب یا ورود به سیستم، کافیست دکمه زیر را لمس فرمایید تا حساب شما به‌صورت خودکار بر پایه شناسه تلگرام و شماره شما فعال شود:"
-        )
-    
+    text = (
+        "🛡 به پلتفرم واسطه‌گری و پرداخت امن «میانجی» خوش آمدید\n\n"
+        "با میانجی می‌توانید پروژه‌ها و معاملات خود را در محیطی امن، قانونی و با ضمانت کامل بازگشت یا آزادسازی وجه انجام دهید.\n\n"
+        "📱 برای شروع استفاده از امکانات ربات، لطفاً از دکمه زیر شماره تماس خود را تایید کنید:"
+    )
     bot.send_message(
         chat_id, 
         text, 
-        reply_markup=get_contact_share_keyboard(is_cancelable=bool(pending_contract_id)), 
-        parse_mode="Markdown"
+        reply_markup=get_contact_share_keyboard()
     )
 
 
 def show_main_dashboard(bot: TeleBot, chat_id: int, user_id: int):
     """
-    نمایش مستقیم داشبورد و منوی اصلی ربات برای کاربران احراز هویت شده
+    نمایش منوی اصلی ربات برای کاربران احراز هویت شده
     """
     user = db.get_user(user_id) or {}
     full_name = user.get("full_name") or f"کاربر {user_id}"
-    phone = user.get("phone_number") or ""
+    phone = user.get("phone_number") or db.get_current_user_phone(user_id) or ""
     masked_phone = f"{phone[:4]}***{phone[-4:]}" if len(phone) >= 10 else phone
     
     text = (
@@ -86,9 +71,59 @@ def show_main_dashboard(bot: TeleBot, chat_id: int, user_id: int):
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
 
+def show_user_profile(bot: TeleBot, chat_id: int, user_id: int):
+    """
+    نمایش کارت مشخصات پروفایل کاربری از دیتابیس Supabase
+    در صورتی که شماره ثبت شده باشد، کارت کامل شامل امتیاز اعتبار و دکمه‌ها نشان داده می‌شود.
+    تنها در صورتی که کاربر هنوز شماره‌اش را ثبت نکرده باشد، درخواست ارسال شماره داده می‌شود.
+    """
+    user = db.get_user(user_id) or {}
+    phone = user.get("phone_number") or db.get_current_user_phone(user_id)
+
+    # اگر کاربر هنوز شماره‌اش را ثبت نکرده باشد، درخواست ارسال شماره داده می‌شود
+    if not phone:
+        show_welcome_landing(bot, chat_id)
+        return
+
+    full_name = user.get("full_name") or f"کاربر {user_id}"
+    raw_nid = user.get("national_id")
+    has_nid = bool(raw_nid and len(str(raw_nid).strip()) == 10)
+    national_id = str(raw_nid).strip() if has_nid else "ثبت نشده (امضا در اولین معامله)"
+    
+    # محاسبه امتیاز اعتبار بر اساس تکمیل اطلاعات و فعالیت
+    is_verified = bool(user.get("is_verified", False))
+    credit_score = 100 if (is_verified and has_nid) else 85
+    score_display = f"{credit_score} / ۱۰۰ ⭐️ (عالی)"
+    user_level = "سطح طلایی 🌟" if (is_verified and has_nid) else "سطح پایه (شماره تاییدشده) 🥈"
+
+    profile_text = (
+        "👤 **پروفایل کاربری | سامانه واسطه‌گری امن میانجی**\n"
+        "────────────────────────────\n"
+        f"📱 **شماره تماس:** `{phone}`\n"
+        f"👤 **نام و نام خانوادگی:** {utils.escape_markdown(full_name)}\n"
+        f"🪪 **کد ملی:** `{national_id}`\n"
+        f"⭐️ **امتیاز اعتبار:** {score_display}\n"
+        f"🎖 **سطح کاربری:** {user_level}\n"
+        f"🆔 **شناسه تلگرام:** `{user_id}`\n"
+        "────────────────────────────\n"
+        "جهت ویرایش مشخصات یا ورود به نسخه وب، از گزینه‌های زیر استفاده نمایید:"
+    )
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://miyanji.ir"
+    
+    markup.add(
+        InlineKeyboardButton("✏️ ویرایش مشخصات (نام و کد ملی)", callback_data="profile_edit_info"),
+        InlineKeyboardButton("🌐 ورود به Web App (نسخه وب)", url=web_app_url),
+        InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="profile_back")
+    )
+
+    bot.send_message(chat_id, profile_text, reply_markup=markup, parse_mode="Markdown")
+
+
 def show_contract_invite(bot: TeleBot, chat_id: int, user_id: int, contract: dict, contract_id: str):
     """
-    هدایت کاربر (به‌خصوص طرف دوم معامله) به مشاهده مشخصات معامله و امضای دیجیتال
+    هدایت کاربر به مشاهده مشخصات معامله و امضای دیجیتال
     """
     creator_id = contract.get("created_by") or contract.get("creator_id")
     creator_info = db.get_user(creator_id) if creator_id else None
@@ -140,7 +175,7 @@ def show_contract_invite(bot: TeleBot, chat_id: int, user_id: int, contract: dic
 def register_auth_handlers(bot: TeleBot):
 
     # ====================================================
-    # ۱. دستور /start و هدایت هوشمند بدون نیاز به رمز عبور
+    # ۱. دستور /start با احراز هویت خودکار و پیام خوش‌آمدگویی دقیق
     # ====================================================
     @bot.message_handler(commands=['start'])
     def start_handler(message: Message):
@@ -149,18 +184,17 @@ def register_auth_handlers(bot: TeleBot):
             args = message.text.split()
             pending_contract_id = None
 
-            # بررسی پارامتر پیوستن به معامله با لینک عمیق (Deep Linking)
             if len(args) > 1 and args[1].startswith(("c_", "contract_", "deal_")):
                 raw_param = args[1]
                 pending_contract_id = utils.normalize_deal_id(raw_param)
                 logger.info(f"🔗 [START_DEEP_LINK] User {user_id} joined with deal: {pending_contract_id}")
 
-            # بررسی وضعیت ثبت‌نام کاربر در جدول Supabase با شناسه یکتای تلگرام
+            # بررسی وجود شماره تلفن در Supabase دیتابیس
             user = db.get_user(user_id)
-            has_verified_phone = bool(user and user.get("phone_number"))
+            phone = (user.get("phone_number") if user else None) or db.get_current_user_phone(user_id)
 
-            if has_verified_phone:
-                # کاربر قبلاً شماره تماس خود را به اشتراک گذاشته است -> ورود آنی و خودکار
+            if phone:
+                # کاربر قبلاً شماره خود را ثبت کرده است -> ورود مستقیم بدون درخواست مجدد
                 db.clear_user_state(user_id)
                 if pending_contract_id:
                     contract = db.get_contract(pending_contract_id)
@@ -172,17 +206,17 @@ def register_auth_handlers(bot: TeleBot):
                 
                 show_main_dashboard(bot, message.chat.id, user_id)
             else:
-                # کاربر جدید یا بدون شماره تلفن -> درخواست ارسال شماره با یک لمس
+                # کاربر جدید یا بدون شماره تلفن -> نمایش پیام دقیق خوش‌آمدگویی و فقط یک دکمه ارسال شماره
                 st_data = {"pending_contract_id": pending_contract_id} if pending_contract_id else {}
                 db.set_user_state(user_id, "WAITING_CONTACT_SHARE", st_data)
-                show_passwordless_landing(bot, message.chat.id, pending_contract_id)
+                show_welcome_landing(bot, message.chat.id, pending_contract_id)
 
         except Exception as e:
             logger.error(f"Error in start_handler: {e}", exc_info=True)
             bot.send_message(message.chat.id, "❌ خطای سیستمی رخ داد. لطفاً دوباره تلاش کنید.")
 
     # ====================================================
-    # ۲. دریافت امن شماره موبایل از طریق Contact تلگرام (بدون تایپ دستی)
+    # ۲. دریافت شماره موبایل (احراز هویت تدریجی - Progressive Profiling)
     # ====================================================
     @bot.message_handler(content_types=['contact'])
     def contact_received_handler(message: Message):
@@ -193,13 +227,13 @@ def register_auth_handlers(bot: TeleBot):
             if not contact:
                 return
 
-            # اعتبارسنجی امنیتی حیاتی: آیا شماره متعلق به صاحب اکانت تلگرام است؟
+            # اعتبارسنجی: بررسی مطابقت شماره با حساب تلگرام
             if contact.user_id and contact.user_id != user_id:
                 bot.send_message(
                     message.chat.id, 
                     "⚠️ **خطای امنیتی:** شماره ارسال شده متعلق به حساب کاربری تلگرام شما نیست!\n"
-                    "لطفاً فقط شماره متعلق به خودتان را به اشتراک بگذارید.",
-                    reply_markup=get_contact_share_keyboard(is_cancelable=True)
+                    "لطفاً فقط شماره متعلق به خودتان را تایید و ارسال نمایید.",
+                    reply_markup=get_contact_share_keyboard()
                 )
                 return
 
@@ -208,18 +242,18 @@ def register_auth_handlers(bot: TeleBot):
             if not norm_phone:
                 bot.send_message(
                     message.chat.id, 
-                    "⚠️ فرمت شماره موبایل نامعتبر است. لطفاً از شماره استاندارد همراه استفاده نمایید.",
-                    reply_markup=get_contact_share_keyboard(is_cancelable=True)
+                    "⚠️ فرمت شماره موبایل نامعتبر است. لطفاً از دکمه ارسال شماره استفاده فرمایید.",
+                    reply_markup=get_contact_share_keyboard()
                 )
                 return
 
-            # دریافت نام و نام کاربری تلگرام جهت ثبت در دیتابیس
+            # احراز هویت تدریجی: در این مرحله فقط شماره موبایل ذخیره می‌شود
             first_name = message.from_user.first_name or ""
             last_name = message.from_user.last_name or ""
             full_name = f"{first_name} {last_name}".strip() or f"کاربر {user_id}"
             username = message.from_user.username or ""
 
-            # ثبت بدون رمز در دیتابیس Supabase
+            # ذخیره در دیتابیس Supabase
             auth_svc.register_passwordless_user(
                 telegram_id=user_id,
                 phone_number=norm_phone,
@@ -228,20 +262,18 @@ def register_auth_handlers(bot: TeleBot):
                 full_name=full_name
             )
 
-            # بررسی قرارداد معلق در استیت کاربر
+            # بررسی قرارداد معلق در استیت
             _, st_data = db.get_user_state(user_id)
             pending_cid = st_data.get("pending_contract_id") if isinstance(st_data, dict) else None
             db.clear_user_state(user_id)
 
             bot.send_message(
                 message.chat.id,
-                "✅ **احراز هویت و ورود شما با موفقیت انجام شد.**\n"
-                f"شماره موبایل `{norm_phone}` به شناسه تلگرام شما متصل گردید.",
+                f"✅ **شماره تماس شما ({norm_phone}) با موفقیت تایید و ثبت شد.**",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode="Markdown"
             )
 
-            # در صورتی که کاربر به دعوت یک قرارداد آمده بود، بلافاصله آن را نمایش می‌دهیم
             if pending_cid:
                 contract = db.get_contract(pending_cid)
                 if contract:
@@ -254,72 +286,37 @@ def register_auth_handlers(bot: TeleBot):
             logger.error(f"Error in contact_received_handler: {e}", exc_info=True)
             bot.send_message(message.chat.id, "❌ خطایی در ثبت شماره رخ داد. لطفاً مجدداً دکمه ارسال شماره را لمس فرمایید.")
 
-    # پشتیبانی از انصراف حین ارسال شماره
+    # پشتیبانی از دستورات انصراف
     @bot.message_handler(func=lambda msg: msg.text in ["❌ انصراف", "/cancel", "🔙 انصراف و بازگشت"])
     def cancel_auth_flow(message: Message):
         user_id = message.from_user.id
         db.clear_user_state(user_id)
-        bot.send_message(
-            message.chat.id, 
-            "🔙 فرآیند لغو شد.", 
-            reply_markup=ReplyKeyboardRemove()
-        )
         user = db.get_user(user_id)
-        if user and user.get("phone_number"):
+        phone = (user.get("phone_number") if user else None) or db.get_current_user_phone(user_id)
+        
+        bot.send_message(message.chat.id, "🔙 عملیات لغو شد.", reply_markup=ReplyKeyboardRemove())
+        if phone:
             show_main_dashboard(bot, message.chat.id, user_id)
         else:
-            show_passwordless_landing(bot, message.chat.id)
+            show_welcome_landing(bot, message.chat.id)
 
     # ====================================================
-    # ۳. پروفایل کاربری بدون نیاز به رمز عبور
+    # ۳. هندلر دکمه پروفایل کاربری (رفع باگ ارسال مجدد شماره)
     # ====================================================
-    @bot.message_handler(func=lambda msg: msg.text in ["👤 پروفایل کاربری", "پروفایل من", "/profile"])
+    @bot.message_handler(func=lambda msg: msg.text in ["👤 پروفایل کاربری", "پروفایل من", "پروفایل", "/profile"])
     def profile_menu_handler(message: Message):
         try:
             user_id = message.from_user.id
-            user = db.get_user(user_id) or {}
-            phone = user.get("phone_number") or db.get_current_user_phone(user_id)
-
-            if not phone:
-                show_passwordless_landing(bot, message.chat.id)
-                return
-
-            full_name = user.get("full_name") or f"کاربر {user_id}"
-            national_id = user.get("national_id") or "ثبت نشده"
-            sheba = user.get("sheba") or "ثبت نشده"
-            is_verified = user.get("is_verified", False)
-            kyc_level = "طلایی 🌟" if (is_verified and national_id != "ثبت نشده") else "پایه (شماره تایید شده) 🥈"
-
-            profile_text = (
-                "👤 **پروفایل کاربری سامانه میانجی**\n"
-                "────────────────────────────\n"
-                f"▫️ **نام و نام خانوادگی:** {utils.escape_markdown(full_name)}\n"
-                f"▫️ **شماره موبایل تاییدشده:** `{phone}`\n"
-                f"▫️ **کد ملی:** `{national_id}`\n"
-                f"▫️ **شماره شبا:** `{sheba}`\n"
-                f"▫️ **شناسه یکتای تلگرام:** `{user_id}`\n"
-                f"▫️ **سطح کاربری:** {kyc_level}\n"
-                f"▫️ **امنیت ورود:** بدون رمز عبور (احراز هویت شده با تلگرام)\n"
-                "────────────────────────────\n"
-                "جهت ویرایش یا تکمیل اطلاعات، از دکمه‌های زیر استفاده فرمایید:"
-            )
-
-            markup = InlineKeyboardMarkup(row_width=1)
-            markup.add(
-                InlineKeyboardButton("🪪 احراز هویت با کد ملی (سطح طلایی)", callback_data="start_kyc_direct"),
-                InlineKeyboardButton("🔄 به‌روزرسانی شماره موبایل", callback_data="auth_relink_phone"),
-                InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="profile_back")
-            )
-
-            bot.send_message(message.chat.id, profile_text, reply_markup=markup, parse_mode="Markdown")
-
+            db.clear_user_state(user_id)
+            show_user_profile(bot, message.chat.id, user_id)
         except Exception as e:
             logger.error(f"Error in profile_menu_handler: {e}", exc_info=True)
+            bot.send_message(message.chat.id, "⚠️ خطا در دریافت اطلاعات پروفایل.")
 
     # ====================================================
-    # ۴. کال‌بک‌های پروفایل و به‌روزرسانی شماره تماس
+    # ۴. کال‌بک‌های ویرایش اطلاعات و بازگشت
     # ====================================================
-    @bot.callback_query_handler(func=lambda call: call.data in ["auth_relink_phone", "profile_back", "start_kyc_direct"])
+    @bot.callback_query_handler(func=lambda call: call.data in ["profile_back", "profile_edit_info", "auth_relink_phone"])
     def profile_callbacks(call: CallbackQuery):
         try:
             user_id = call.from_user.id
@@ -333,6 +330,22 @@ def register_auth_handlers(bot: TeleBot):
                     pass
                 show_main_dashboard(bot, chat_id, user_id)
 
+            elif call.data == "profile_edit_info":
+                # شروع فرآیند اختیاری تکمیل و ویرایش مشخصات (نام و کد ملی)
+                db.set_user_state(user_id, "WAITING_PROFILE_FULLNAME", {})
+                try:
+                    bot.delete_message(chat_id, call.message.message_id)
+                except Exception:
+                    pass
+                bot.send_message(
+                    chat_id,
+                    "✏️ **ویرایش مشخصات پروفایل:**\n\n"
+                    "لطفاً **نام و نام خانوادگی کامل** خود را ارسال فرمایید:\n"
+                    "_(مثال: علیرضا رضوانی)_",
+                    parse_mode="Markdown",
+                    reply_markup=kb.get_cancel_keyboard()
+                )
+
             elif call.data == "auth_relink_phone":
                 db.set_user_state(user_id, "WAITING_CONTACT_SHARE", {})
                 try:
@@ -341,26 +354,83 @@ def register_auth_handlers(bot: TeleBot):
                     pass
                 bot.send_message(
                     chat_id,
-                    "📱 **به‌روزرسانی شماره موبایل**\n\n"
-                    "لطفاً شماره موبایل جدید خود را از طریق دکمه زیر ارسال کنید:",
-                    reply_markup=get_contact_share_keyboard(is_cancelable=True)
-                )
-
-            elif call.data == "start_kyc_direct":
-                # هدایت به جریان احراز هویت کد ملی
-                db.set_user_state(user_id, "WAITING_KYC_NATIONAL_ID", {})
-                try:
-                    bot.delete_message(chat_id, call.message.message_id)
-                except Exception:
-                    pass
-                bot.send_message(
-                    chat_id,
-                    "🪪 **احراز هویت و ارتقا به سطح طلایی**\n\n"
-                    "لطفاً **کد ملی ۱۰ رقمی** خود را بدون خط تیره ارسال فرمایید:\n"
-                    "_(مثال: 0012345678)_",
-                    parse_mode="Markdown",
-                    reply_markup=kb.get_cancel_keyboard()
+                    "📱 لطفاً از طریق دکمه زیر شماره همراه خود را تایید کنید:",
+                    reply_markup=get_contact_share_keyboard()
                 )
 
         except Exception as e:
             logger.error(f"Error in profile_callbacks: {e}", exc_info=True)
+
+    # دریافت نام و نام خانوادگی در ویرایش پروفایل
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_PROFILE_FULLNAME")
+    def process_profile_fullname_step(message: Message):
+        user_id = message.from_user.id
+        text = (message.text or "").strip()
+
+        if text in ["❌ انصراف", "🔙 بازگشت به منوی اصلی", "/cancel"]:
+            db.clear_user_state(user_id)
+            show_user_profile(bot, message.chat.id, user_id)
+            return
+
+        if len(text) < 3 or len(text.split()) < 2:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ لطفاً نام و نام خانوادگی خود را کامل وارد فرمایید (حداقل دو کلمه):",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+            return
+
+        # ذخیره موقت نام و درخواست کد ملی
+        db.set_user_state(user_id, "WAITING_PROFILE_NATIONAL_ID", {"full_name": text})
+        bot.send_message(
+            message.chat.id,
+            f"✅ نام ثبت شد: **{text}**\n\n"
+            "🪪 اکنون لطفاً **کد ملی ۱۰ رقمی** خود را بدون خط تیره ارسال فرمایید:\n"
+            "_(جهت امضای رسمی معاملات و اعتبار قانونی)_",
+            parse_mode="Markdown",
+            reply_markup=kb.get_cancel_keyboard()
+        )
+
+    # دریافت کد ملی در ویرایش پروفایل
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_PROFILE_NATIONAL_ID")
+    def process_profile_national_id_step(message: Message):
+        user_id = message.from_user.id
+        text = (message.text or "").strip()
+
+        if text in ["❌ انصراف", "🔙 بازگشت به منوی اصلی", "/cancel"]:
+            db.clear_user_state(user_id)
+            show_user_profile(bot, message.chat.id, user_id)
+            return
+
+        clean_nid = utils.fa_to_en_digits(text).replace("-", "").strip()
+
+        # اعتبارسنجی الگوریتم کد ملی ثبت‌احوال
+        if not utils.validate_iranian_national_code(clean_nid):
+            bot.send_message(
+                message.chat.id,
+                "⚠️ **کد ملی نامعتبر است.** لطفاً یک کد ملی معتبر ۱۰ رقمی وارد فرمایید:",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+            return
+
+        _, data = db.get_user_state(user_id)
+        saved_name = data.get("full_name") if isinstance(data, dict) else None
+
+        # ثبت قطعی در دیتابیس Supabase
+        db.register_or_update_user(
+            user_id=user_id,
+            full_name=saved_name,
+            national_id=clean_nid,
+            is_verified=True
+        )
+        db.clear_user_state(user_id)
+
+        bot.send_message(
+            message.chat.id,
+            "🎉 **مشخصات شما با موفقیت در سامانه میانجی ثبت و تایید گردید.**\n\n"
+            "حساب کاربری شما به سطح طلایی ارتقا یافت.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        show_user_profile(bot, message.chat.id, user_id)

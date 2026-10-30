@@ -14,7 +14,9 @@ def start_reminder_service(bot):
     logger.info("🔔 سرویس یادآوری‌های خودکار فعال شد.")
 
 def _reminder_loop(bot):
-    """حلقه اصلی بررسی یادآوری‌ها (هر ۳۰ دقیقه)"""
+    """حلقه اصلی بررسی یادآوری‌ها (هر ۳۰ دقیقه پس از آماده‌سازی کامل شبکه)"""
+    # وقفه اولیه جهت اطمینان از بالا آمدن کامل شبکه و DNS سرور
+    time.sleep(25)
     while True:
         try:
             _check_payment_reminders(bot)
@@ -25,6 +27,25 @@ def _reminder_loop(bot):
         # هر ۳۰ دقیقه یکبار چک کن
         time.sleep(1800)
 
+def _get_active_contracts_for_reminder(status_filter):
+    """کوئری ایمن به جداول deals یا contracts با مقاومت در برابر خطای موقت شبکه"""
+    if not db.supabase:
+        return []
+    for tbl in ["deals", "contracts"]:
+        try:
+            if isinstance(status_filter, list):
+                res = db.supabase.table(tbl).select("*").in_("status", status_filter).execute()
+            else:
+                res = db.supabase.table(tbl).select("*").eq("status", status_filter).execute()
+            if res.data:
+                return res.data
+        except Exception as e:
+            err_str = str(e)
+            if "Name or service not known" in err_str or "Errno -2" in err_str:
+                logger.warning(f"Notice: DNS/network not ready for reminders ({tbl}): {e}")
+            continue
+    return []
+
 def _check_payment_reminders(bot):
     """
     بررسی معامله‌هایی که ۲۴ ساعت از امضای نفر دوم گذشته اما هنوز پرداخت نشده‌اند.
@@ -32,8 +53,7 @@ def _check_payment_reminders(bot):
     now = datetime.now(timezone.utc)
     try:
         # دریافت معامله‌های در انتظار پرداخت
-        res = db.supabase.table("contracts").select("*").eq("status", "awaiting_payment").execute()
-        contracts = res.data or []
+        contracts = _get_active_contracts_for_reminder("awaiting_payment")
         
         for c in contracts:
             try:
@@ -81,8 +101,7 @@ def _check_deadline_reminders(bot):
     """
     now = datetime.now(timezone.utc)
     try:
-        res = db.supabase.table("contracts").select("*").in_("status", ["active", "in_progress"]).execute()
-        contracts = res.data or []
+        contracts = _get_active_contracts_for_reminder(["active", "in_progress"])
         
         for c in contracts:
             try:

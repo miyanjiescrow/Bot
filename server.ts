@@ -1057,16 +1057,25 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  if (input.includes('پروفایل')) {
+  if (input.includes('پروفایل') || input === '/profile') {
     const user = getCurrentUser();
+    const hasNid = Boolean(user.national_id && user.national_id.length === 10);
+    const scoreDisplay = (user.is_verified && hasNid) ? '۱۰۰ / ۱۰۰ ⭐️ (عالی)' : '۸۵ / ۱۰۰ (پایه)';
+    const userLevel = (user.is_verified && hasNid) ? 'سطح طلایی 🌟' : 'سطح پایه (شماره تاییدشده) 🥈';
+
     return res.json({
-      reply: `👤 **پروفایل کاربری میانجی**\n\n` +
-             `نام و نام‌خانوادگی: ${user.full_name}\n` +
-             `شماره تماس: ${user.phone_number}\n` +
-             `کد ملی: ${user.national_id ? `${user.national_id.slice(0, 3)}***${user.national_id.slice(-3)}` : 'ثبت نشده'}\n` +
-             `وضعیت احراز هویت: ${user.is_verified ? '✅ تایید شده (سطح طلایی)' : '⚠️ در انتظار احراز هویت'}`,
+      reply: `👤 **پروفایل کاربری | سامانه واسطه‌گری امن میانجی**\n` +
+             `────────────────────────────\n` +
+             `📱 **شماره تماس:** \`${user.phone_number}\`\n` +
+             `👤 **نام و نام خانوادگی:** ${user.full_name}\n` +
+             `🪪 **کد ملی:** \`${hasNid ? user.national_id : 'ثبت نشده (امضا در اولین معامله)'}\`\n` +
+             `⭐️ **امتیاز اعتبار:** ${scoreDisplay}\n` +
+             `🎖 **سطح کاربری:** ${userLevel}\n` +
+             `🆔 **شناسه تلگرام:** \`${user.id}\`\n` +
+             `────────────────────────────\n` +
+             `جهت ویرایش مشخصات یا ورود به نسخه وب، از گزینه‌های زیر استفاده نمایید:`,
       keyboard: [
-        ['🪪 احراز هویت هوشمند', '✏️ ویرایش مشخصات'],
+        ['✏️ ویرایش مشخصات (نام و کد ملی)', '🌐 ورود به Web App'],
         ['🔙 بازگشت به منوی اصلی']
       ]
     });

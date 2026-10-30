@@ -39,7 +39,9 @@ def healthz():
     return "OK", 200
 
 def run_flask():
-    for p in [int(os.environ.get("FLASK_PORT", 8888)), 8889, 8890, 8891]:
+    preferred_port = int(os.environ.get("PORT") or os.environ.get("FLASK_PORT") or 8888)
+    ports_to_try = [preferred_port, 8888, 8889, 8890]
+    for p in ports_to_try:
         try:
             from werkzeug.serving import make_server
             srv = make_server('0.0.0.0', p, app)
@@ -132,7 +134,18 @@ def cleanup_and_reset_telegram_session(token: str, bot_instance=None, drop_pendi
 
 class BotWorkerExceptionHandler(telebot.ExceptionHandler):
     def handle(self, exception):
-        logger.error(f"🚨 [BOT_WORKER_ERROR] Unhandled exception in handler thread: {exception}", exc_info=True)
+        # Do not swallow polling-level API exceptions or conflicts (409, 429, etc.)
+        # Returning False allows telebot to break out of __threaded_polling so our
+        # outer supervisor loop can back off, wait for the old container to shut down, and reconnect.
+        if isinstance(exception, telebot.apihelper.ApiTelegramException):
+            if exception.error_code in (409, 429, 502, 503, 504):
+                logger.warning(f"⚔️ Telebot ApiTelegramException ({exception.error_code}): {exception.description} -> Triggering outer recovery loop")
+                return False
+        err_str = str(exception)
+        if any(term in err_str for term in ["Conflict", "409", "terminated by other getUpdates"]):
+            logger.warning("⚔️ Polling Conflict error caught -> Triggering outer recovery loop")
+            return False
+        logger.error(f"🚨 [BOT_WORKER_ERROR] Exception in message handler: {exception}", exc_info=True)
         return True
 
 def main():
@@ -221,7 +234,7 @@ def main():
                 none_stop=True,
                 timeout=25,
                 long_polling_timeout=20,
-                skip_pending=False
+                skip_pending=True
             )
             conflict_count = 0
             time.sleep(1)
@@ -232,16 +245,24 @@ def main():
                 pass
             if e.error_code == 409 or "Conflict" in str(e) or "terminated by other getUpdates" in str(e):
                 conflict_count += 1
-                wait_time = min(10 + conflict_count * 5, 45)
+                wait_time = min(15 + conflict_count * 10, 60)
                 logger.warning(
-                    f"⚔️ Polling Conflict (409) detected [Attempt #{conflict_count}]: {e.description}. "
-                    f"Waiting {wait_time}s for competing instance to release session..."
+                    f"⚔️ [CONFLICT_409] Duplicate bot instance detected on Telegram API! [Attempt #{conflict_count}]\n"
+                    f"   Detail: {e.description}\n"
+                    f"   Another instance (e.g., previous deployment on Render, or local terminal) is calling getUpdates.\n"
+                    f"   Pausing polling for {wait_time}s to allow the competing instance to release session..."
                 )
+                time.sleep(wait_time)
+                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
+                time.sleep(2)
+            elif e.error_code == 429:
+                wait_time = int(getattr(e, 'parameters', {}).get('retry_after', 15) if getattr(e, 'parameters', None) else 15)
+                logger.warning(f"⚠️ Telegram Rate Limit (429). Retrying after {wait_time}s...")
                 time.sleep(wait_time)
             else:
                 conflict_count = 0
                 logger.error(f"💥 Telegram API error ({e.error_code}): {e.description}")
-                time.sleep(3)
+                time.sleep(5)
         except Exception as e:
             try:
                 bot.stop_polling()
@@ -250,16 +271,18 @@ def main():
             err_msg = str(e)
             if "409" in err_msg or "Conflict" in err_msg or "terminated by other getUpdates" in err_msg:
                 conflict_count += 1
-                wait_time = min(10 + conflict_count * 5, 45)
+                wait_time = min(15 + conflict_count * 10, 60)
                 logger.warning(
-                    f"⚔️ Polling Conflict (409) string matched [Attempt #{conflict_count}]: {err_msg}. "
+                    f"⚔️ [CONFLICT_409] String matched [Attempt #{conflict_count}]: {err_msg}. "
                     f"Waiting {wait_time}s for competing instance to release session..."
                 )
                 time.sleep(wait_time)
+                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
+                time.sleep(2)
             else:
                 conflict_count = 0
                 logger.error(f"💥 General Polling Error: {e}", exc_info=True)
-                time.sleep(3)
+                time.sleep(5)
 
 if __name__ == "__main__":
     main()

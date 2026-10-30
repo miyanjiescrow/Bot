@@ -690,7 +690,8 @@ def register_user_handlers(bot: TeleBot):
             "🤝 ایجاد معامله جدید": lambda m: start_new_contract(m),
             "📜 لیست معاملات من": lambda m: show_my_contracts(m),
             "📜 معاملات من": lambda m: show_my_contracts(m),
-            "👤 پروفایل کاربری": lambda m: handle_identity_verification(m),
+            "👤 پروفایل کاربری": lambda m: __import__('auth_handlers').show_user_profile(bot, m.chat.id, m.from_user.id),
+            "پروفایل من": lambda m: __import__('auth_handlers').show_user_profile(bot, m.chat.id, m.from_user.id),
             "💎 پنل سفیران": lambda m: handle_ambassador_panel(m),
             "⚡ پنل مدیریت هوشمند": lambda m: show_admin_panel(m),
             "پنل مدیریت": lambda m: show_admin_panel(m),
@@ -1049,8 +1050,9 @@ def register_user_handlers(bot: TeleBot):
             elif text in ["📜 لیست معاملات من", "📜 معاملات من"]:
                 show_my_contracts(message)
                 return
-            elif text in ["👤 پروفایل کاربری", "پروفایل کاربری", "پروفایل"]:
-                handle_identity_verification(message)
+            elif text in ["👤 پروفایل کاربری", "پروفایل کاربری", "پروفایل", "پروفایل من"]:
+                from auth_handlers import show_user_profile
+                show_user_profile(bot, message.chat.id, user_id)
                 return
             elif text in ["💎 پنل سفیران", "پنل سفیران"]:
                 handle_ambassador_panel(message)
@@ -7874,49 +7876,8 @@ def register_user_handlers(bot: TeleBot):
             )
             return
 
-        user_info = db.get_user(user_id)
-        current_name = user_info.get("full_name", "ثبت نشده") if user_info else "ثبت نشده"
-        current_id = user_info.get("national_id", "ثبت نشده") if user_info else "ثبت نشده"
-        is_verified = user_info.get("is_verified", False) if user_info else False
-        kyc_status = user_info.get("kyc_status") if user_info else None
-        
-        if is_verified:
-            status_icon = "✅ تایید شده (سطح طلایی)"
-        elif kyc_status == "pending":
-            status_icon = "⏳ در حال بررسی توسط مدیریت"
-        elif kyc_status == "rejected":
-            status_icon = "❌ رد شده (نیازمند اصلاح)"
-        else:
-            status_icon = "⚠️ تایید نشده"
-
-        edit_text = (
-            "🔐 **احراز هویت هوشمند میانجی**\n\n"
-            f"وضعیت حساب: **{status_icon}**\n"
-            f"**نام و فامیل:** {current_name}\n"
-            f"**کد ملی:** {current_id}\n\n"
-        )
-        
-        if is_verified:
-            edit_text += "💡 حساب شما تایید شده است و نیازی به اقدام مجدد نیست."
-        elif kyc_status == "pending":
-            edit_text += "⏳ اطلاعات شما برای مدیریت ارسال شده است و به زودی پس از بررسی تایید خواهد شد."
-        elif kyc_status == "rejected":
-            edit_text += "⚠️ درخواست قبلی شما تایید نشد. لطفاً کد ملی و اطلاعات خود را مجدداً با دقت وارد کنید."
-        else:
-            edit_text += "⚠️ برای انجام تراکنش‌های مالی، ایجاد قرارداد و واریز وجه، باید احراز هویت خود را تکمیل کنید."
-
-        markup = kb.InlineKeyboardMarkup(row_width=1)
-        if not is_verified:
-            btn_title = "🔄 ویرایش و ارسال مجدد" if kyc_status in ["rejected", "pending"] else "🚀 شروع احراز هویت"
-            markup.add(kb.InlineKeyboardButton(btn_title, callback_data="start_kyc"))
-        
-        markup.add(
-            kb.InlineKeyboardButton("✏️ ویرایش نام و فامیل", callback_data="edit_fullname"),
-            kb.InlineKeyboardButton("✏️ ویرایش کد ملی", callback_data="edit_national_id"),
-            kb.InlineKeyboardButton("❌ بازگشت", callback_data="back_to_menu")
-        )
-
-        bot.send_message(message.chat.id, edit_text, parse_mode="Markdown", reply_markup=markup)
+        from auth_handlers import show_user_profile
+        show_user_profile(bot, message.chat.id, user_id)
 
 
     @bot.callback_query_handler(func=lambda call: call.data == "start_kyc")
