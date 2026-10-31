@@ -69,8 +69,9 @@ const portFromArg = portArgIndex !== -1 ? Number(process.argv[portArgIndex + 1])
 const hostArgIndex = process.argv.indexOf('--host');
 const hostFromArg = hostArgIndex !== -1 ? process.argv[hostArgIndex + 1] : null;
 
-const PORT = Number(process.env.PORT) || portFromArg || 3000;
-const HOST = process.env.HOST || hostFromArg || '0.0.0.0';
+// AI Studio Dev Server strictly listens on port 3000
+const PORT = portFromArg || 3000;
+const HOST = '0.0.0.0';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
