@@ -58,6 +58,80 @@ interface BotStatus {
   };
 }
 
+const FormattedTelegramMessage: React.FC<{ text: string; isUser: boolean }> = ({ text, isUser }) => {
+  if (isUser) {
+    return <span className="whitespace-pre-wrap">{text}</span>;
+  }
+
+  // Parse lines into normal text vs Telegram blockquote (> ...)
+  const lines = text.split('\n');
+  const blocks: Array<{ type: 'quote' | 'normal'; lines: string[] }> = [];
+  let currentBlock: { type: 'quote' | 'normal'; lines: string[] } | null = null;
+
+  for (const line of lines) {
+    const isQuote = line.trim().startsWith('>');
+    const cleanedLine = isQuote ? line.trim().replace(/^>\s*/, '') : line;
+
+    if (!currentBlock || currentBlock.type !== (isQuote ? 'quote' : 'normal')) {
+      if (currentBlock) blocks.push(currentBlock);
+      currentBlock = { type: isQuote ? 'quote' : 'normal', lines: [cleanedLine] };
+    } else {
+      currentBlock.lines.push(cleanedLine);
+    }
+  }
+  if (currentBlock) blocks.push(currentBlock);
+
+  const renderInline = (str: string) => {
+    // Match bold, code, and links
+    const parts = str.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return parts.map((part, idx) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={idx} className="font-bold text-white">{part.slice(2, -2)}</strong>;
+      }
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return (
+          <code key={idx} className="bg-slate-900/90 text-blue-300 font-mono text-[10px] px-1.5 py-0.5 rounded border border-slate-700/70 mx-0.5 inline-block">
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+      return part;
+    });
+  };
+
+  return (
+    <div className="space-y-1.5 text-xs leading-relaxed">
+      {blocks.map((block, bIdx) => {
+        if (block.type === 'quote') {
+          return (
+            <div
+              key={bIdx}
+              className="bg-blue-950/40 border-r-2 border-blue-400 rounded-lg pr-3 pl-2.5 py-1.5 my-1 text-slate-200 text-[11px] leading-relaxed shadow-inner"
+            >
+              {block.lines.map((l, lIdx) => (
+                <div key={lIdx} className="min-h-[1.2rem]">
+                  {renderInline(l)}
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        return (
+          <div key={bIdx} className="whitespace-pre-wrap">
+            {block.lines.map((l, lIdx) => (
+              <React.Fragment key={lIdx}>
+                {renderInline(l)}
+                {lIdx < block.lines.length - 1 && '\n'}
+              </React.Fragment>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const App = () => {
   const [activeTab, setActiveTab] = useState<'wizard' | 'simulator' | 'contracts' | 'database' | 'python_code' | 'wallet' | 'logs'>('wizard');
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
@@ -1495,13 +1569,13 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                     className={`flex flex-col ${msg.sender === 'user' ? 'items-start' : 'items-end'}`}
                   >
                     <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed whitespace-pre-wrap ${
+                      className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed ${
                         msg.sender === 'user'
                           ? 'bg-blue-600 text-white rounded-br-none'
-                          : 'bg-slate-800 text-slate-100 border border-slate-700/70 rounded-bl-none'
+                          : 'bg-slate-800 text-slate-100 border border-slate-700/70 rounded-bl-none shadow-md'
                       }`}
                     >
-                      {msg.text}
+                      <FormattedTelegramMessage text={msg.text} isUser={msg.sender === 'user'} />
                     </div>
 
                     {msg.keyboard && msg.keyboard.length > 0 && (

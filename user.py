@@ -1295,19 +1295,36 @@ def register_user_handlers(bot: TeleBot):
         
         bot.send_message(
             message.chat.id,
-            "👤 **لطفاً نقش خود را در این معامله مشخص کنید:**",
+            "🤝 **ثبت معامله امن در میانجی**\n"
+            "> 🛡 وجه معامله تا تایید نهایی در صندوق امانت مسدود می‌ماند.\n\n"
+            "👤 **نقش خود را در این معامله مشخص فرمایید:**",
+            parse_mode="Markdown",
             reply_markup=kb.get_role_keyboard()
         )
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_ROLE_SELECTION")
+    def _is_role_msg(msg: Message) -> bool:
+        if not msg.text:
+            return False
+        st = db.get_user_state(msg.from_user.id)[0]
+        if st == "WAITING_ROLE_SELECTION":
+            return True
+        # بازگشت مطمئن در صورت خروج از وضعیت یا کلیک مستقیم کاربر روی کیبورد
+        txt = msg.text
+        if ("کارفرما" in txt or "مجری" in txt) and not any(k in txt for k in ["افزودن", "کسر", "۵۰٪", "پیشنهاد", "تغییر"]):
+            return True
+        return False
+
+    @bot.message_handler(func=_is_role_msg)
     def process_role_selection(message: Message):
         user_id = message.from_user.id
-        role_text = message.text
+        role_text = message.text or ""
 
         if "کارفرما" in role_text:
             role = "employer"
+            role_label = "کارفرما (خریدار)"
         elif "مجری" in role_text:
             role = "freelancer"
+            role_label = "مجری (پیمانکار)"
         else:
             bot.send_message(message.chat.id, "⚠️ لطفاً یکی از گزینه‌های موجود در کیبورد را انتخاب کنید.", reply_markup=kb.get_role_keyboard())
             return
@@ -1316,31 +1333,48 @@ def register_user_handlers(bot: TeleBot):
         
         bot.send_message(
             message.chat.id,
-            "📂 **دسته‌بندی معامله خود را انتخاب کنید:**",
+            "📂 **انتخاب دسته‌بندی خدمت**\n"
+            f"> 👤 نقش شما: **{role_label}** ثبت شد.\n\n"
+            "حوزه فعالیت و زمینه پروژه خود را انتخاب کنید:",
+            parse_mode="Markdown",
             reply_markup=kb.get_category_keyboard()
         )
 
     # ====================================================
     # ۴. انتخاب دسته‌بندی معامله
     # ====================================================
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_CATEGORY_SELECTION")
+    def _is_cat_msg(msg: Message) -> bool:
+        if not msg.text:
+            return False
+        st = db.get_user_state(msg.from_user.id)[0]
+        if st == "WAITING_CATEGORY_SELECTION":
+            return True
+        txt = msg.text
+        return any(k in txt for k in ["برنامه‌نویسی", "طراحی", "گرافیک", "دانشجویی", "آموزشی", "دیجیتال"]) and st in ["WAITING_ROLE_SELECTION", "WAITING_CATEGORY_SELECTION", "IDLE"]
+
+    @bot.message_handler(func=_is_cat_msg)
     def process_category_selection(message: Message):
         user_id = message.from_user.id
         state_tuple = db.get_user_state(user_id)
         data = state_tuple[1] if isinstance(state_tuple, tuple) and len(state_tuple) > 1 else {}
         draft = data.get("contract_draft", {}) if isinstance(data, dict) else {}
         
-        cat_text = message.text
+        cat_text = message.text or ""
         if "برنامه‌نویسی" in cat_text:
             category = "DEV"
+            cat_label = "💻 برنامه‌نویسی و IT"
         elif "طراحی" in cat_text or "گرافیک" in cat_text:
             category = "DESIGN"
+            cat_label = "🎨 طراحی و گرافیک"
         elif "دانشجویی" in cat_text:
             category = "ACADEMIC"
+            cat_label = "🎓 خدمات دانشجویی"
         elif "آموزشی" in cat_text:
             category = "TEACHING"
+            cat_label = "📚 خدمات آموزشی"
         else:
             category = "GEN"
+            cat_label = "📑 خدمات دیجیتال"
 
         draft["category"] = category
         draft["milestones"] = []
@@ -1348,20 +1382,15 @@ def register_user_handlers(bot: TeleBot):
 
         bot.send_message(
             message.chat.id,
-            f"✍️ **مرحله ۱ از ۵ — عنوان معامله**\n\n"
-            "یک عنوان کوتاه برای پروژه خود ارسال کنید.\n"
-            "مثال: «طراحی لوگو» یا «فروش اکانت اینستاگرام»",
+            "✍️ **مرحله ۱ از ۵ — عنوان معامله**\n"
+            f"> 🏷 دسته‌بندی: **{cat_label}**\n\n"
+            "یک عنوان کوتاه و مشخص ارسال کنید:\n(مثلاً «طراحی لوگو» یا «ربات پایتون»)",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
 
     # ====================================================
-    # ۵. ویزارد گام‌به‌گام ایجاد معامله (جایگزین فرم متنی یکجای قدیمی)
-    # به‌جای این‌که کاربر مجبور باشد یک قالب چندخطی را دقیق کپی/پر کند،
-    # اطلاعات با چند سوال ساده و پی‌درپی (هرکدام یک پیام کوتاه یا یک دکمه)
-    # از او گرفته می‌شود. ساختار draft نهایی دقیقاً همان چیزی است که پیش‌نمایش،
-    # منوی ویرایش و ثبت نهایی معامله قبلاً با آن کار می‌کردند — یعنی این تغییر
-    # فقط روش «جمع‌آوری» اطلاعات را ساده کرده و به هیچ بخش دیگری آسیب نمی‌زند.
+    # ۵. ویزارد گام‌به‌گام ایجاد معامله
     # ====================================================
 
     @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "WAITING_WIZARD_TITLE")
@@ -1372,15 +1401,16 @@ def register_user_handlers(bot: TeleBot):
 
         title = (message.text or "").strip()
         if len(title) < 3:
-            bot.send_message(message.chat.id, "⚠️ عنوان خیلی کوتاه است. لطفاً یک عنوان واضح‌تر بنویسید (حداقل ۳ حرف).")
+            bot.send_message(message.chat.id, "⚠️ عنوان خیلی کوتاه است. لطفاً حداقل ۳ حرف ارسال کنید.")
             return
 
         draft["title"] = title[:200]
         db.set_user_state(user_id, "WAITING_WIZARD_AMOUNT", {"contract_draft": draft})
         bot.send_message(
             message.chat.id,
-            "💵 **مرحله ۲ از ۵ — مبلغ کل معامله**\n\n"
-            "مبلغ کل را به تومان (عددی) وارد کنید:",
+            "💰 **مرحله ۲ از ۵ — مبلغ معامله**\n"
+            f"> 📝 پروژه: «{title[:45]}»\n\n"
+            "مبلغ کل را به **تومان** (عددی) وارد کنید:",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
@@ -1400,8 +1430,9 @@ def register_user_handlers(bot: TeleBot):
         db.set_user_state(user_id, "WAITING_WIZARD_COMMISSION_PAYER", {"contract_draft": draft})
         bot.send_message(
             message.chat.id,
-            "⚖️ **مرحله ۲.۵ از ۵ — پرداخت کارمزد**\n\n"
-            "چه کسی کارمزد خدمات میانجی را پرداخت می‌کند؟",
+            "⚖️ **مرحله ۲.۵ از ۵ — پرداخت کارمزد اسکرو**\n"
+            f"> 💰 مبلغ پروژه: {utils.format_currency(parsed_amount)}\n\n"
+            "چه کسی کارمزد خدمات امنیتی اسکرو را پرداخت می‌کند؟",
             parse_mode="Markdown",
             reply_markup=kb.get_wizard_commission_payer_inline()
         )

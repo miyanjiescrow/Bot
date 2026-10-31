@@ -295,8 +295,9 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     };
 
     return res.json({
-      reply: '🤝 **روند جدید و هوشمند ایجاد معامله میانجی (کمتر از ۴۵ ثانیه)**\n──────────────────\n' +
-             'لطفاً نقش خود را در این معامله مشخص کنید:',
+      reply: '🤝 **ثبت معامله امن در اسکرو میانجی**\n' +
+             '> 🛡 وجه معامله تا تایید نهایی در صندوق امن امانت مسدود می‌ماند.\n\n' +
+             '👤 **نقش خود را در این معامله مشخص فرمایید:**',
       keyboard: [
         ['💼 کارفرما (خریدار)', '🛠 مجری (پیمانکار)'],
         ['🔙 انصراف و بازگشت']
@@ -305,28 +306,23 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
   }
 
   // گام ۲: انتخاب نقش و سوال دسته‌بندی
-  if (simulatorState.state === 'DEAL_ROLE') {
-    const isEmployer = input.includes('کارفرما') || input.includes('خریدار');
-    const isFreelancer = input.includes('مجری') || input.includes('پیمانکار') || input.includes('فروشنده');
+  const isDirectRoleClick = (input.includes('کارفرما') || input.includes('خریدار') || input.includes('مجری') || input.includes('پیمانکار')) &&
+                           !input.includes('افزودن به واریزی') && !input.includes('کسر از دریافتی') && !input.includes('۵۰٪') && !input.includes('امضا') && !input.includes('قرارداد');
 
-    if (!isEmployer && !isFreelancer) {
-      return res.json({
-        reply: '⚠️ لطفاً نقش خود را از گزینه‌های زیر انتخاب فرمایید:',
-        keyboard: [
-          ['💼 کارفرما (خریدار)', '🛠 مجری (پیمانکار)'],
-          ['🔙 انصراف و بازگشت']
-        ]
-      });
-    }
+  if (simulatorState.state === 'DEAL_ROLE' || (isDirectRoleClick && (simulatorState.state === 'IDLE' || !simulatorState.dealDraft?.role))) {
+    const isEmployer = input.includes('کارفرما') || input.includes('خریدار');
+    const roleTitle = isEmployer ? 'کارفرما (خریدار)' : 'مجری (پیمانکار)';
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       role: isEmployer ? 'employer' : 'freelancer'
     };
     simulatorState.state = 'DEAL_CATEGORY';
 
     return res.json({
-      reply: '📂 **مرحله ۲ از ۶ — دسته‌بندی خدمت:**\n\nحوزه فعالیت و زمینه پروژه خود را انتخاب کنید:',
+      reply: '📂 **انتخاب دسته‌بندی خدمت**\n' +
+             `> 👤 نقش شما: **${roleTitle}** ثبت گردید.\n\n` +
+             'حوزه فعالیت و زمینه پروژه خود را انتخاب کنید:',
       keyboard: [
         ['🎨 طراحی و گرافیک', '💻 برنامه‌نویسی'],
         ['🎓 خدمات دانشجویی', '✍️ تولید محتوا'],
@@ -337,38 +333,39 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
   }
 
   // گام ۳: انتخاب دسته‌بندی و دریافت عنوان کوتاه
-  if (simulatorState.state === 'DEAL_CATEGORY') {
+  const isCategoryClick = !input.includes('امضا') && !input.includes('OTP') && !input.includes('تایید') &&
+                          (input.includes('طراحی') || input.includes('گرافیک') || input.includes('برنامه‌نویسی') || 
+                           input.includes('دانشجویی') || input.includes('محتوا') || input === '📑 سایر خدمات دیجیتال');
+
+  if (simulatorState.state === 'DEAL_CATEGORY' || (isCategoryClick && (!simulatorState.dealDraft?.title && simulatorState.dealDraft?.role))) {
     let cat = 'GEN';
-    let catLabel = 'سایر خدمات دیجیتال';
+    let catLabel = 'خدمات دیجیتال';
 
     if (input.includes('طراحی') || input.includes('گرافیک')) {
       cat = 'DS';
-      catLabel = 'طراحی و گرافیک (لوگو، بنر، هویت بصری)';
+      catLabel = 'طراحی و گرافیک';
     } else if (input.includes('برنامه‌نویسی') || input.includes('کد')) {
       cat = 'DEV';
-      catLabel = 'برنامه‌نویسی و IT (وبسایت، اپلیکیشن، ربات)';
+      catLabel = 'برنامه‌نویسی و IT';
     } else if (input.includes('دانشجویی') || input.includes('پژوهشی')) {
       cat = 'ACAD';
-      catLabel = 'خدمات دانشجویی و آکادمیک (ترجمه، سمینار، ویراستاری)';
+      catLabel = 'خدمات دانشجویی';
     } else if (input.includes('محتوا') || input.includes('سئو')) {
       cat = 'CNT';
       catLabel = 'تولید محتوا و سئو';
     }
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       category: cat,
       categoryLabel: catLabel
     };
     simulatorState.state = 'DEAL_TITLE';
 
     return res.json({
-      reply: `✍️ **مرحله ۳ از ۶ — عنوان کوتاه پروژه:**\n(دسته‌بندی: ${catLabel})\n\n` +
-             'لطفاً یک عنوان خلاصه و گویا برای این معامله ارسال کنید:\n\n' +
-             '💡 *نمونه‌ها:*\n' +
-             '• «طراحی لوگو و هویت بصری استارتاپ»\n' +
-             '• «کدنویسی بک‌اند ربات تلگرام با پایتون»\n' +
-             '• «ترجمه و ویرایش مقاله تخصصی ۵۰۰۰ کلمه‌ای»',
+      reply: `✍️ **عنوان کوتاه پروژه**\n` +
+             `> 🏷 دسته‌بندی: **${catLabel}**\n\n` +
+             'لطفاً یک عنوان خلاصه و گویا ارسال فرمایید (مثلاً «طراحی لوگو» یا «ربات پایتون»):',
       keyboard: [
         ['🔙 انصراف و بازگشت']
       ]
@@ -380,25 +377,22 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     const title = input.trim();
     if (title.length < 3) {
       return res.json({
-        reply: '⚠️ عنوان وارد شده خیلی کوتاه است. لطفاً حداقل ۳ حرف بنویسید:',
+        reply: '⚠️ **عنوان خیلی کوتاه است.** لطفاً حداقل ۳ حرف ارسال کنید:',
         keyboard: [['🔙 انصراف و بازگشت']]
       });
     }
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       title
     };
     simulatorState.state = 'DEAL_AMOUNT';
 
     return res.json({
-      reply: `💵 **مرحله ۴ از ۶ — مبلغ کل معامله:**\n\n` +
-             `پروژه: «${title}»\n` +
-             `لطفاً مبلغ کل را به **تومان** وارد کنید:\n\n` +
-             `💡 *مثال‌های معتبر:*\n` +
-             `• \`2500000\` یا \`2,500,000\`\n` +
-             `• \`۲.۵ میلیون\` یا \`۵۰۰ هزار\`\n\n` +
-             `یا یکی از مبالغ پیشنهادی زیر را انتخاب کنید:`,
+      reply: `💰 **مبلغ کل معامله**\n` +
+             `> 📝 پروژه: «${title}»\n` +
+             `> 🔒 وجه در طول انجام پروژه در صندوق امانت میانجی محفوظ است.\n\n` +
+             `لطفاً مبلغ کل را به **تومان** وارد کرده یا از گزینه‌های زیر برگزینید:`,
       keyboard: [
         ['1,000,000 تومان', '2,500,000 تومان'],
         ['5,000,000 تومان', '10,000,000 تومان'],
@@ -407,12 +401,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // گام ۵: دریافت مبلغ و سوال تعیین‌کننده کارمزد
+  // گام ۵: دریافت مبلغ و سوال شرح تعهدات
   if (simulatorState.state === 'DEAL_AMOUNT') {
     const parsedAmount = parseFlexibleAmount(input);
     if (!parsedAmount || parsedAmount < 10000) {
       return res.json({
-        reply: '⚠️ **مبلغ نامعتبر است.** حداقل مبلغ معامله ۱۰,۰۰۰ تومان می‌باشد. لطفاً مجدداً وارد فرمایید:',
+        reply: '⚠️ **مبلغ نامعتبر است.** حداقل مبلغ ۱۰,۰۰۰ تومان می‌باشد. لطفاً مجدداً وارد فرمایید:',
         keyboard: [
           ['1,000,000 تومان', '2,500,000 تومان'],
           ['5,000,000 تومان', '10,000,000 تومان'],
@@ -422,17 +416,16 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     }
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       amount: parsedAmount
     };
     simulatorState.state = 'DEAL_DESCRIPTION';
 
     return res.json({
-      reply: `📝 **مرحله ۵ از ۶ — شرح دقیق تعهدات و خواسته‌های پروژه:**\n────────────────────────────\n` +
-             `> ⚖️ **ملاک انحصاری داوری هیئت حل اختلاف میانجی:**\n` +
-             `> قضاوت هیئت داوری صرفاً و منحصراً بر مبنای همین متنی است که در این بخش می‌نویسید. هرگونه توافق، چت یا قول شفاهی خارج از این قرارداد در زمان بروز اختلاف فاقد اعتبار و استناد است.\n>\n` +
-             `> 📋 **موارد پیشنهادی:** فرمت دقیق فایل‌های تحویلی (سورس‌کد، فایل لایه باز برداری AI/SVG، داکیومنت PDF)، استانداردهای کیفی، نحوه تست و داکیومنت نصب.\n\n` +
-             `✍️ **لطفاً شرح تعهدات و خواسته‌های پروژه را تایپ و ارسال فرمایید:**\n(یا یکی از گزینه‌های پیشنهادی زیر را انتخاب کنید)`,
+      reply: `📋 **تعهدات فنی و اقلام تحویلی پروژه**\n` +
+             `> ⚖️ **ملاک انحصاری داوری حقوقی:**\n` +
+             `> قضاوت هیئت حل اختلاف میانجی صرفاً بر مبنای همین متنی است که در این بخش نوشته می‌شود؛ توافقات خارج از قرارداد (چت شخصی تلگرام یا تلفنی) فاقد اعتبار است.\n\n` +
+             `✍️ **تعهدات و فرمت فایل‌های تحویلی را بنویسید یا یک گزینه را انتخاب کنید:**`,
       keyboard: [
         ['تحویل سورس‌کد کامل به همراه مستندات راه‌اندازی و داکیومنت فنی'],
         ['تحویل فایل‌های لایه باز برداری وکتور (AI و SVG) با کیفیت ۳۰۰ DPI'],
@@ -442,12 +435,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // گام ۵: دریافت شرح دقیق تعهدات (ملاک داوری) و سوال تعیین‌کننده کارمزد
+  // گام ۶: دریافت شرح دقیق تعهدات و سوال تعیین‌کننده کارمزد
   if (simulatorState.state === 'DEAL_DESCRIPTION') {
     const desc = input.trim();
     if (desc.length < 5) {
       return res.json({
-        reply: '⚠️ لطفاً توضیحات کامل‌تری بنویسید (حداقل ۵ کاراکتر). ملاک داوری رسمی میانجی همین متن خواهد بود:',
+        reply: '⚠️ لطفاً تعهدات را کامل‌تر بنویسید (حداقل ۵ کاراکتر):',
         keyboard: [
           ['تحویل سورس‌کد کامل به همراه مستندات راه‌اندازی و داکیومنت فنی'],
           ['تحویل فایل‌های لایه باز برداری وکتور (AI و SVG) با کیفیت ۳۰۰ DPI'],
@@ -458,7 +451,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     }
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       description: desc
     };
     simulatorState.state = 'DEAL_COMMISSION_PAYER';
@@ -467,9 +460,8 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     const fee = Math.round(parsedAmount * 0.05);
 
     return res.json({
-      reply: `⚖️ **مرحله ۶ از ۷ — پرداخت‌کننده کارمزد میانجی:**\n\n` +
-             `💰 مبلغ پروژه: **${formatCurrency(parsedAmount)}**\n` +
-             `📊 کل کارمزد اسکرو (۵٪): **${formatCurrency(fee)}**\n\n` +
+      reply: `⚖️ **پرداخت‌کننده کارمزد اسکرو**\n` +
+             `> 💰 مبلغ پروژه: **${formatCurrency(parsedAmount)}** | کارمزد (۵٪): **${formatCurrency(fee)}**\n\n` +
              `چه کسی کارمزد خدمات امنیتی اسکرو را پرداخت می‌کند؟`,
       keyboard: [
         ['💼 کارفرما (افزودن به واریزی کارفرما)'],
@@ -480,22 +472,22 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // گام ۶: بخش اختیاری پیشرفته ۱ - مهلت بررسی و تست (Inspection Period)
+  // گام ۷: بخش اختیاری پیشرفته ۱ - مهلت بررسی و تست (Inspection Period)
   if (simulatorState.state === 'DEAL_COMMISSION_PAYER') {
     let payer: 'employer' | 'freelancer' | 'split_50_50' = 'split_50_50';
     if (input.includes('کارفرما')) payer = 'employer';
     else if (input.includes('مجری')) payer = 'freelancer';
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       commission_payer: payer
     };
     simulatorState.state = 'DEAL_INSPECTION';
 
     return res.json({
-      reply: `🛡 **مرحله ۷ از ۷ — بخش‌های اختیاری (۱/۲): مهلت تست و بررسی (Inspection Period):**\n\n` +
-             `آیا کارفرما پس از اعلام تحویل پروژه توسط مجری، مهلت تست داشته باشد؟\n` +
-             `*(در طی این زمان، وجه در امانت میانجی محفوظ است تا خروجی تست و تایید شود)*`,
+      reply: `⏱ **مهلت تست و بررسی خروجی (Inspection Period)**\n` +
+             `> 🔍 فرصت خریدار جهت ارزیابی کار قبل از آزادسازی قطعی وجه به مجری.\n\n` +
+             `مدت زمان مورد نظر خود را انتخاب فرمایید:`,
       keyboard: [
         ['⚡ تایید آنی (بدون مهلت تست)'],
         ['⏱ ۲۴ ساعت مهلت تست', '⏱ ۴۸ ساعت مهلت تست'],
@@ -505,12 +497,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // گام ۷: بخش اختیاری پیشرفته ۲ - اصلاحیه رایگان (Free Revisions)
+  // گام ۸: بخش اختیاری پیشرفته ۲ - اصلاحیه رایگان (Free Revisions)
   if (simulatorState.state === 'DEAL_INSPECTION') {
     if (input.includes('زمان دلخواه')) {
       simulatorState.state = 'DEAL_INSPECTION_CUSTOM';
       return res.json({
-        reply: '✍️ لطفاً مهلت تست مورد نظر خود را به **ساعت** وارد فرمایید (مثلاً `36` یا `96`):',
+        reply: '✍️ لطفاً مهلت تست را به **ساعت** وارد فرمایید (مثلاً `36`):',
         keyboard: [['🔙 انصراف و بازگشت']]
       });
     }
@@ -521,16 +513,16 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     else if (input.includes('72') || input.includes('۷۲')) hours = 72;
 
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       has_inspection_period: hours > 0,
       inspection_period_hours: hours
     };
     simulatorState.state = 'DEAL_REVISIONS';
 
     return res.json({
-      reply: `🔄 **بخش‌های اختیاری پیشرفته (۲/۲) — اصلاحیه رایگان (Free Revisions):**\n\n` +
-             `آیا پروژه شامل ویرایش/اصلاحیه رایگان پس از تحویل است؟\n` +
-             `*(پس از اتمام این سهمیه، مجری می‌تواند برای اصلاحات بعدی هزینه جداگانه تعیین کند)*`,
+      reply: `🔄 **سهمیه اصلاحیه و ویرایش رایگان**\n` +
+             `> ✨ تعداد دفعاتی که مجری بدون هزینه مازاد، اصلاحات را اعمال می‌نماید.\n\n` +
+             `سهمیه ویرایش را مشخص فرمایید:`,
       keyboard: [
         ['🚫 بدون ویرایش رایگان'],
         ['۱ بار اصلاحیه رایگان', '۲ بار اصلاحیه رایگان'],
@@ -543,15 +535,16 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
   if (simulatorState.state === 'DEAL_INSPECTION_CUSTOM') {
     const rawH = parseFlexibleAmount(input) || 24;
     simulatorState.dealDraft = {
-      ...simulatorState.dealDraft,
+      ...(simulatorState.dealDraft || {}),
       has_inspection_period: true,
       inspection_period_hours: rawH
     };
     simulatorState.state = 'DEAL_REVISIONS';
 
     return res.json({
-      reply: `🔄 **بخش‌های اختیاری پیشرفته (۲/۲) — اصلاحیه رایگان (Free Revisions):**\n\n` +
-             `آیا پروژه شامل ویرایش/اصلاحیه رایگان پس از تحویل است؟`,
+      reply: `🔄 **سهمیه اصلاحیه و ویرایش رایگان**\n` +
+             `> ✨ تعداد دفعاتی که مجری بدون هزینه مازاد، اصلاحات را اعمال می‌نماید.\n\n` +
+             `سهمیه ویرایش را مشخص فرمایید:`,
       keyboard: [
         ['🚫 بدون ویرایش رایگان'],
         ['۱ بار اصلاحیه رایگان', '۲ بار اصلاحیه رایگان'],
@@ -561,7 +554,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // گام ۸: هدایت مستقیم طرف اول به تایید مشخصات و امضای دیجیتال
+  // گام ۹: هدایت مستقیم طرف اول به تایید مشخصات و امضای دیجیتال
   if (simulatorState.state === 'DEAL_REVISIONS' || simulatorState.state === 'DEAL_REVISIONS_CUSTOM') {
     let revCount = 2;
     if (input.includes('بدون ویرایش') || input.includes('0') || input.includes('۰')) revCount = 0;
@@ -582,12 +575,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     const currentUser = getCurrentUser();
 
     const inspFa = (draft.inspection_period_hours || 0) > 0
-      ? `⏱ ${draft.inspection_period_hours} ساعت پس از تحویل`
-      : '⚡ تایید آنی (بدون مهلت تست)';
+      ? `${draft.inspection_period_hours} ساعت`
+      : 'تایید آنی';
 
     const revFa = revCount === 0
-      ? '🚫 بدون ویرایش رایگان'
-      : (revCount === -1 ? '🤝 توافقی بین طرفین' : `✅ ${revCount} بار اصلاحیه رایگان`);
+      ? 'بدون ویرایش'
+      : (revCount === -1 ? 'توافقی' : `${revCount} بار رایگان`);
 
     const payerFa = draft.commission_payer === 'employer'
       ? 'کارفرما'
@@ -597,23 +590,14 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
 
     return res.json({
       reply: `📜 **پیش‌نویس قرارداد هوشمند اسکرو میانجی**\n` +
-             `🆔 **شناسه اختصاصی:** \`${contractId}\`\n` +
-             `────────────────────────────\n` +
-             `📝 **موضوع:** ${draft.title}\n` +
-             `📂 **دسته‌بندی:** ${draft.categoryLabel || 'خدمات دیجیتال'}\n` +
-             `💰 **مبلغ معامله:** ${formatCurrency(amount)}\n` +
-             `⚖️ **کارمزد:** ${payerFa}\n` +
-             `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
-             `🔄 **سهمیه اصلاحیه:** ${revFa}\n\n` +
-             `📋 **تعهدات فنی قرارداد (ملاک رسمی داوری حقوقی):**\n` +
-             `> ${draft.description || 'تعهدات مستقیم واردشده توسط کاربر'}\n` +
-             `────────────────────────────\n` +
-             `✍️ **امضای دیجیتال و احراز هویت طرف اول (سازنده):**\n` +
-             `جهت انعقاد رسمی سند و صدور لینک دعوت طرف دوم، لطفاً اطلاعات خود را تایید فرمایید:\n\n` +
-             `👤 **نام و نام‌خانوادگی:** ${currentUser.full_name}\n` +
-             `🪪 **کد ملی:** \`${currentUser.national_id || '0012345678'}\`\n` +
-             `📱 **شماره همراه:** \`${currentUser.phone_number}\`\n\n` +
-             `برای تایید اطلاعات و صدور امضا، روی دکمه زیر کلیک فرمایید:`,
+             `🆔 شناسه: \`${contractId}\`\n` +
+             `> 📝 **موضوع:** ${draft.title}\n` +
+             `> 💰 **مبلغ:** ${formatCurrency(amount)} | ⚖️ **کارمزد:** ${payerFa}\n` +
+             `> 🛡 **مهلت تست:** ${inspFa} | 🔄 **اصلاحیه:** ${revFa}\n` +
+             `> 📋 **تعهدات فنی:** ${draft.description || 'تعهدات مشخص شده'}\n\n` +
+             `✍️ **امضای دیجیتال طرف اول (${currentUser.full_name}):**\n` +
+             `> 🪪 کد ملی: \`${currentUser.national_id || '0012345678'}\` | 📱 همراه: \`${currentUser.phone_number}\`\n\n` +
+             `جهت انعقاد رسمی و صدور لینک دعوت، دکمه زیر را لمس فرمایید:`,
       keyboard: [
         ['✍️ تایید مشخصات و امضای دیجیتال قرارداد (با OTP)'],
         ['🔙 انصراف و بازگشت']
