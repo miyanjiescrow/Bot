@@ -48,6 +48,7 @@ import {
   getSignatures,
 } from './src/db';
 import { isSupabaseConfigured } from './src/lib/supabase';
+import { startBot } from './src/bot';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,8 +112,9 @@ function ensurePythonBotRunning() {
   }
 }
 
-// Start Python bot on server init
+// Start Python & Node.js bot instances
 ensurePythonBotRunning();
+startBot();
 
 // ====================================================
 // ۲. مسیرهای وضعیت و کنترل ربات پایتون (Bot Status & Diagnostics)
@@ -281,6 +283,30 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
+  // تشخیص هوشمند دستورات اولویت‌دار (کد قرارداد، اقدامات چرخه حیات، یا منوهای اصلی)
+  const hasContractCode = Boolean(input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i) || input.startsWith('c_') || input.startsWith('deal_'));
+  const isLifecycleAction = input.includes('واریز وجه') || input.includes('واریز به صندوق امانت') ||
+                            input.includes('تحویل فایل') || input.includes('تحویل خروجی') || input.includes('تحویل پروژه') || input.includes('تحویل کار') ||
+                            input.includes('تایید نهایی') || input.includes('آزادسازی وجه') || input.includes('تایید تحویل') ||
+                            input.includes('درخواست اصلاحیه') || input.includes('اصلاح کار') ||
+                            input.includes('ثبت اختلاف') || input.includes('ارجاع به داوری') || input.includes('داوری') ||
+                            input.includes('دانلود سند رسمی PDF') || input.includes('دانلود PDF');
+  const isGlobalMenuCommand = input.includes('معاملات من') || input.includes('لیست معاملات') ||
+                              input.includes('درحال انجام') || input.includes('در انتظار اقدام') || input.includes('تکمیل شده') || input.includes('پیش‌نویس') ||
+                              input.includes('کیف پول') || input.includes('اعتبار') || input.includes('شارژ') || input.includes('تسویه') ||
+                              input.includes('پروفایل') || input.includes('سفیران') || input.includes('پشتیبانی') ||
+                              input.includes('جست‌وجوی قرارداد') || input.includes('پیگیری با شناسه');
+
+  // اگر کاربر کدی یا دستوری خارج از ایجاد معامله وارد کرد، وضعیت ویزارد معامله را لغو و ریست کن
+  if ((hasContractCode || isLifecycleAction || isGlobalMenuCommand) &&
+      simulatorState.state !== 'DEAL_PARTY1_SIGN_OTP' &&
+      simulatorState.state !== 'WAITING_SIGN_OTP' &&
+      simulatorState.state !== 'WAITING_DEPOSIT_RECEIPT') {
+    if (simulatorState.state.startsWith('DEAL_')) {
+      simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
+    }
+  }
+
   // ====================================================
   // جریان جدید و هوشمند ایجاد معامله (New Smart Deal Flow)
   // ====================================================
@@ -306,7 +332,8 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
   }
 
   // گام ۲: انتخاب نقش و سوال دسته‌بندی
-  const isDirectRoleClick = (input.includes('کارفرما') || input.includes('خریدار') || input.includes('مجری') || input.includes('پیمانکار')) &&
+  const isDirectRoleClick = !isLifecycleAction && !hasContractCode && !isGlobalMenuCommand &&
+                           (input.includes('کارفرما') || input.includes('خریدار') || input.includes('مجری') || input.includes('پیمانکار')) &&
                            !input.includes('افزودن به واریزی') && !input.includes('کسر از دریافتی') && !input.includes('۵۰٪') && !input.includes('امضا') && !input.includes('قرارداد');
 
   if (simulatorState.state === 'DEAL_ROLE' || (isDirectRoleClick && (simulatorState.state === 'IDLE' || !simulatorState.dealDraft?.role))) {
@@ -333,7 +360,8 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
   }
 
   // گام ۳: انتخاب دسته‌بندی و دریافت عنوان کوتاه
-  const isCategoryClick = !input.includes('امضا') && !input.includes('OTP') && !input.includes('تایید') &&
+  const isCategoryClick = !isLifecycleAction && !hasContractCode && !isGlobalMenuCommand &&
+                          !input.includes('امضا') && !input.includes('OTP') && !input.includes('تایید') &&
                           (input.includes('طراحی') || input.includes('گرافیک') || input.includes('برنامه‌نویسی') || 
                            input.includes('دانشجویی') || input.includes('محتوا') || input === '📑 سایر خدمات دیجیتال');
 
@@ -750,7 +778,148 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  // بررسی وارد کردن مستقیم کد معامله در هر حالتی
+  // ====================================================
+  // چرخه کامل حیات معامله (Contract Lifecycle Actions)
+  // ====================================================
+
+  // ۱. واریز و قفل وجه در صندوق امانت اسکرو توسط کارفرما
+  if (input.includes('واریز وجه') || input.includes('واریز به صندوق امانت')) {
+    const codeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
+    const targetCode = codeMatch ? codeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken);
+    let deal = targetCode ? getContract(targetCode) : undefined;
+    if (!deal) deal = getContracts().find(c => c.status === 'awaiting_escrow_deposit') || getContracts()[0];
+
+    if (deal) {
+      await payContractEscrow(deal.contract_id, getCurrentUserId());
+      return res.json({
+        reply: `🎉 **وجه معامله \`${deal.contract_id}\` با موفقیت در صندوق امانت اسکرو واریز و مسدود گردید!**\n──────────────────\n` +
+               `> 🔒 مبلغ: **${formatCurrency(deal.amount)}** در صندوق امانت میانجی قفل شد.\n` +
+               `> 🛡 هیچ وجهی بدون تایید رضایت نهایی خریدار آزاد نمی‌گردد.\n\n` +
+               `🛠 **به مجری پروژه اطلاع‌رسانی شد:** مجری گرامی، وجه در امانت قفل گردید و می‌توانید کار را با اطمینان کامل آغاز فرمایید.\nپس از اتمام کار، دکمه تحویل پروژه را بزنید.`,
+        keyboard: [
+          [`📦 تحویل فایل‌ها و خروجی پروژه (${deal.contract_id})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${deal.contract_id})`],
+          [`📄 دانلود سند رسمی PDF (${deal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+  }
+
+  // ۲. تحویل فایل‌ها و خروجی پروژه توسط مجری
+  if (input.includes('تحویل فایل') || input.includes('تحویل پروژه') || input.includes('تحویل خروجی') || input.includes('تحویل کار')) {
+    const codeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
+    const targetCode = codeMatch ? codeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken);
+    let deal = targetCode ? getContract(targetCode) : undefined;
+    if (!deal) deal = getContracts().find(c => ['active', 'in_progress', 'paid', 'escrow_locked'].includes(c.status)) || getContracts()[0];
+
+    if (deal) {
+      await deliverContract(deal.contract_id, { notes: 'خروجی کار و فایل‌های پروژه در محیط امن تحویل کارفرما گردید.' });
+      return res.json({
+        reply: `📦 **فایل‌ها و خروجی پروژه \`${deal.contract_id}\` با موفقیت تحویل کارفرما گردید!**\n──────────────────\n` +
+               `> ⏱ مهلت تست و ارزیابی خروجی: **${deal.inspection_period_hours ? `${deal.inspection_period_hours} ساعت` : 'تایید آنی'}**\n` +
+               `> 🔄 سهمیه اصلاحیه رایگان: **${deal.free_edits_left ?? deal.free_edits ?? 2} بار**\n\n` +
+               `کارفرما مطلع شد تا پروژه را ارزیابی کند. پس از بررسی، کارفرما می‌تواند وجه را آزاد نماید یا درخواست ویرایش دهد.`,
+        keyboard: [
+          [`✅ تایید نهایی و آزادسازی وجه به مجری (${deal.contract_id})`],
+          [`🔄 درخواست اصلاحیه و ویرایش (${deal.contract_id})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${deal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+  }
+
+  // ۳. تایید کار توسط کارفرما و آزادسازی قطعی وجه به مجری
+  if (input.includes('تایید نهایی') || input.includes('آزادسازی وجه') || input.includes('تایید تحویل')) {
+    const codeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
+    const targetCode = codeMatch ? codeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken);
+    let deal = targetCode ? getContract(targetCode) : undefined;
+    if (!deal) deal = getContracts().find(c => ['work_submitted', 'delivered', 'in_inspection'].includes(c.status)) || getContracts()[0];
+
+    if (deal) {
+      await approveContract(deal.contract_id);
+      return res.json({
+        reply: `🎉 **پروژه \`${deal.contract_id}\` با رضایت کامل تایید شد و تسویه گردید!**\n──────────────────\n` +
+               `> 💰 مبلغ خالص به کیف پول مجری واریز شد.\n` +
+               `> 🏁 وضعیت قرارداد: **تکمیل شده و تسویه قطعی (Completed) ✅**\n` +
+               `> 📄 سند رسمی پایان کار و گواهی اختتام با امضای دیجیتال صادر شد.`,
+        keyboard: [
+          [`📄 دانلود سند رسمی PDF (${deal.contract_id})`],
+          ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
+          ['💳 کیف پول و اعتبار', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+  }
+
+  // ۴. درخواست اصلاحیه پروژه
+  if (input.includes('درخواست اصلاحیه') || input.includes('اصلاح کار')) {
+    const codeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
+    const targetCode = codeMatch ? codeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken);
+    let deal = targetCode ? getContract(targetCode) : undefined;
+    if (!deal) deal = getContracts().find(c => ['work_submitted', 'delivered', 'in_inspection'].includes(c.status)) || getContracts()[0];
+
+    if (deal) {
+      const left = Math.max(0, (deal.free_edits_left ?? 2) - 1);
+      await updateContract(deal.contract_id, {
+        status: 'revisions_requested',
+        free_edits_left: left
+      });
+      return res.json({
+        reply: `🔄 **درخواست اصلاحیه برای معامله \`${deal.contract_id}\` با موفقیت ثبت شد.**\n──────────────────\n` +
+               `> 📋 پیام بازنگری به مجری ابلاغ شد.\n` +
+               `> 🔄 سهمیه اصلاحیه رایگان باقی‌مانده: **${left} بار**\n\n` +
+               `مجری محترم پس از اعمال اصلاحات، خروجی ویرایش‌شده را مجدداً ارسال خواهد فرمود.`,
+        keyboard: [
+          [`📦 تحویل فایل‌ها و خروجی پروژه (${deal.contract_id})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${deal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+  }
+
+  // ۵. ثبت اختلاف و ارجاع به هیئت داوری
+  if (input.includes('ثبت اختلاف') || input.includes('ارجاع به داوری') || input.includes('داوری')) {
+    const codeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
+    const targetCode = codeMatch ? codeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken);
+    let deal = targetCode ? getContract(targetCode) : undefined;
+    if (!deal) deal = getContracts()[0];
+
+    if (deal) {
+      await createDispute(deal.contract_id, getCurrentUserId(), 'عدم توافق طرفین بر سر مشخصات تحویلی پروژه', 'quality');
+      return res.json({
+        reply: `⚖️ **پرونده معامله \`${deal.contract_id}\` به هیئت داوری حقوقی سه جانبه میانجی ارجاع شد.**\n──────────────────\n` +
+               `> 🛡 **پوشش قانون تجارت الکترونیک (ماده ۶ و ۱۰):**\n` +
+               `> وجوه تا زمان صدور رای نهایی در صندوق امانت قفل می‌ماند.\n` +
+               `> کارشناسان حقوقی میانجی شواهد و متن مکتوب قرارداد را بررسی کرده و رای قطعی را صادر خواهند نمود.`,
+        keyboard: [
+          [`💬 ارسال لایحه/شواهد به داور (${deal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+  }
+
+  // ۶. دریافت مستقیم سند رسمی PDF
+  if (input.includes('دانلود سند رسمی PDF') || input.includes('دانلود PDF')) {
+    const codeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
+    const targetCode = codeMatch ? codeMatch[1].toUpperCase() : (simulatorState.signingContractId || simulatorState.activeDealToken || 'DEV-842-190');
+    return res.json({
+      reply: `📄 **سند رسمی الکترونیک قرارداد میانجی (PDF)**\n──────────────────\n` +
+             `🆔 شناسه معامله: \`${targetCode}\`\n` +
+             `🔐 وضعیت: دارای مهر زمانی و اثر انگشت دیجیتال SHA-256 معتبر\n\n` +
+             `📥 جهت دانلود و مشاهده فایل رسمی PDF با فرمت استاندارد، پیوند زیر را باز فرمایید:\n` +
+             `/api/contracts/${targetCode}/pdf`,
+      keyboard: [
+        ['📜 لیست معاملات من', '🤝 ثبت معامله جدید'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  // ۷. بررسی وارد کردن مستقیم کد معامله یا استعلام آن با وضعیت هوشمند
   const dealCodeMatch = input.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i) || 
     (input.startsWith('c_') ? [null, input.replace('c_', '')] : null) ||
     (simulatorState.state === 'WAITING_SEARCH_CONTRACT' ? [null, input.trim()] : null);
@@ -771,6 +940,75 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       });
     }
 
+    simulatorState.activeDealToken = targetDeal.contract_id;
+    simulatorState.signingContractId = targetDeal.contract_id;
+
+    // الف) اگر قرارداد تکمیل شده باشد
+    if (['completed', 'resolved_employer', 'resolved_freelancer'].includes(targetDeal.status)) {
+      return res.json({
+        reply: `🏁 **معامله تکمیل و تسویه شده — \`${targetDeal.contract_id}\`**\n──────────────────\n` +
+               `> 📝 **موضوع:** ${targetDeal.title}\n` +
+               `> 💰 **مبلغ کل:** ${formatCurrency(targetDeal.amount)}\n` +
+               `> ✅ **وضعیت:** تحویل تایید گردیده و تسویه کامل انجام شد.\n\n` +
+               `سند رسمی خاتمه کار با مهر دیجیتال صادر گردیده است:`,
+        keyboard: [
+          [`📄 دانلود سند رسمی PDF (${targetDeal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+
+    // ب) اگر در انتظار واریز وجه امانت باشد
+    if (targetDeal.status === 'awaiting_escrow_deposit') {
+      return res.json({
+        reply: `💳 **قرارداد \`${targetDeal.contract_id}\` (در انتظار واریز وجه امانت)**\n──────────────────\n` +
+               `> 📝 **موضوع:** ${targetDeal.title}\n` +
+               `> 💰 **مبلغ معامله:** ${formatCurrency(targetDeal.amount)}\n` +
+               `> ✍️ **امضاها:** هر دو طرف قرارداد را به صورت الکترونیک امضا کرده‌اند ✅\n\n` +
+               `جهت آغاز رسمی کار توسط مجری، لطفاً وجه را به صندوق امن امانت واریز فرمایید:`,
+        keyboard: [
+          [`💳 واریز وجه به صندوق امانت (${targetDeal.contract_id})`],
+          [`📄 دانلود سند رسمی PDF (${targetDeal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+
+    // ج) اگر در حال انجام باشد
+    if (['active', 'in_progress', 'paid', 'escrow_locked'].includes(targetDeal.status)) {
+      return res.json({
+        reply: `🟢 **معامله در حال انجام — \`${targetDeal.contract_id}\`**\n──────────────────\n` +
+               `> 📝 **موضوع:** ${targetDeal.title}\n` +
+               `> 🔒 **مبلغ امانت:** ${formatCurrency(targetDeal.amount)} (محفوظ در صندوق امانت میانجی)\n` +
+               `> 🛡 **مهلت تست:** ${targetDeal.inspection_period_hours ? `${targetDeal.inspection_period_hours} ساعت` : 'تایید آنی'}\n\n` +
+               `پروژه توسط مجری در حال پیگیری است. پس از اتمام، مجری فایل‌ها را تحویل می‌دهد:`,
+        keyboard: [
+          [`📦 تحویل فایل‌ها و خروجی پروژه (${targetDeal.contract_id})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${targetDeal.contract_id})`],
+          [`📄 دانلود سند رسمی PDF (${targetDeal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+
+    // د) اگر کار تحویل داده شده باشد
+    if (['work_submitted', 'delivered', 'in_inspection'].includes(targetDeal.status)) {
+      return res.json({
+        reply: `📦 **پروژه تحویل داده شد — \`${targetDeal.contract_id}\`**\n──────────────────\n` +
+               `> 📝 **موضوع:** ${targetDeal.title}\n` +
+               `> ⏱ **وضعیت:** در حال ارزیابی و تست توسط کارفرما\n` +
+               `> 🔄 **سهمیه اصلاحیه باقی‌مانده:** ${targetDeal.free_edits_left ?? targetDeal.free_edits ?? 2} بار\n\n` +
+               `اقدام مورد نظر خود را انتخاب نمایید:`,
+        keyboard: [
+          [`✅ تایید نهایی و آزادسازی وجه به مجری (${targetDeal.contract_id})`],
+          [`🔄 درخواست اصلاحیه و ویرایش (${targetDeal.contract_id})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${targetDeal.contract_id})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      });
+    }
+
+    // ه) در انتظار امضای طرف دوم (دعوت اولیه)
     simulatorState = {
       state: 'WAITING_COUNTERPARTY_ACCEPT',
       depositAmount: 0,
@@ -1157,7 +1395,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
              `────────────────────────────\n` +
              `جهت ویرایش مشخصات یا ورود به نسخه وب، از گزینه‌های زیر استفاده نمایید:`,
       keyboard: [
-        ['✏️ ویرایش مشخصات (نام و کد ملی)', '🌐 ورود به Web App'],
+        ['🪪 احراز هویت هوشمند', '💳 کیف پول و اعتبار'],
         ['🔙 بازگشت به منوی اصلی']
       ]
     });

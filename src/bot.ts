@@ -468,13 +468,34 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
           `> ${contract.description || 'تعهدات مشخص شده در سند قرارداد'}\n\n` +
           `🛡 **راهنمای ضد فیشینگ:**\n` +
           `> این استعلام مستقیماً از سرور امن میانجی انجام گرفته است. هیچ لینکی خارج از تلگرام نیاز نیست.\n\n` +
-          `وضعیت فعلی: **${contract.status === 'pending_party_b' ? 'در انتظار امضای طرف دوم ⏳' : contract.status}**`,
+          `وضعیت فعلی: **${contract.status === 'pending_party_b' ? 'در انتظار امضای طرف دوم ⏳' : contract.status === 'awaiting_escrow_deposit' ? 'در انتظار واریز وجه به صندوق امانت ⏳' : contract.status === 'in_inspection' || contract.status === 'work_submitted' ? 'پروژه تحویل داده شده (در حال ارزیابی)' : contract.status === 'completed' ? 'تکمیل شده و تسویه قطعی ✅' : contract.status}**`,
         keyboard: contract.status === 'pending_party_b'
           ? [
               [`✍️ امضا و پذیرش رسمی قرارداد ${contract.contract_id}`],
               ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
             ]
+          : contract.status === 'awaiting_escrow_deposit'
+          ? [
+              [`💳 واریز وجه به صندوق امانت (${contract.contract_id})`],
+              [`📄 دانلود سند رسمی PDF (${contract.contract_id})`],
+              ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+            ]
+          : ['active', 'in_progress', 'paid', 'escrow_locked'].includes(contract.status)
+          ? [
+              [`📦 تحویل فایل‌ها و خروجی پروژه (${contract.contract_id})`],
+              [`⚖️ ثبت اختلاف و ارجاع به داوری (${contract.contract_id})`],
+              [`📄 دانلود سند رسمی PDF (${contract.contract_id})`],
+              ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+            ]
+          : ['work_submitted', 'delivered', 'in_inspection'].includes(contract.status)
+          ? [
+              [`✅ تایید نهایی و آزادسازی وجه به مجری (${contract.contract_id})`],
+              [`🔄 درخواست اصلاحیه و ویرایش (${contract.contract_id})`],
+              [`⚖️ ثبت اختلاف و ارجاع به داوری (${contract.contract_id})`],
+              ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+            ]
           : [
+              [`📄 دانلود سند رسمی PDF (${contract.contract_id})`],
               ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
             ]
       };
@@ -501,11 +522,127 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
           `وضعیت معامله: **در انتظار واریز وجه به صندوق امانت (Awaiting Escrow Deposit)**\n\n` +
           `کارفرما اکنون می‌تواند وجه را به صندوق امانت میانجی واریز نماید تا پروژه آغاز شود.`,
         keyboard: [
-          ['📜 لیست معاملات من', '💳 کیف پول و اعتبار'],
-          ['🔙 بازگشت به منوی اصلی']
+          [`💳 واریز وجه به صندوق امانت (${targetId})`],
+          [`📄 دانلود سند رسمی PDF (${targetId})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
         ]
       };
     }
+  }
+
+  // واریز وجه به صندوق امانت
+  if (clean.includes('واریز وجه') || clean.includes('صندوق امانت')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    const contract = getContract(targetId);
+    if (contract) {
+      contract.status = 'active';
+      return {
+        reply: `🎉 **وجه معامله \`${targetId}\` در صندوق امن امانت اسکرو قفل گردید!**\n──────────────────\n` +
+          `> 🔒 مبلغ: **${formatCurrency(contract.amount)}** در صندوق امانت میانجی محفوظ شد.\n` +
+          `> 🛠 به مجری پروژه اطلاع‌رسانی گردید تا کار را آغاز کند.`,
+        keyboard: [
+          [`📦 تحویل فایل‌ها و خروجی پروژه (${targetId})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${targetId})`],
+          [`📄 دانلود سند رسمی PDF (${targetId})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
+  }
+
+  // تحویل خروجی پروژه
+  if (clean.includes('تحویل فایل') || clean.includes('تحویل خروجی') || clean.includes('تحویل پروژه')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    const contract = getContract(targetId);
+    if (contract) {
+      contract.status = 'work_submitted';
+      return {
+        reply: `📦 **فایل‌های خروجی معامله \`${targetId}\` با موفقیت تحویل کارفرما گردید!**\n──────────────────\n` +
+          `> ⏱ مهلت ارزیابی خروجی: **${contract.inspection_period_hours || 48} ساعت**\n` +
+          `> 🔄 سهمیه اصلاحیه باقی‌مانده: **${contract.free_edits ?? 2} بار**\n\n` +
+          `کارفرما پس از بررسی کار می‌تواند تایید نهایی را صادر یا درخواست اصلاحیه دهد.`,
+        keyboard: [
+          [`✅ تایید نهایی و آزادسازی وجه به مجری (${targetId})`],
+          [`🔄 درخواست اصلاحیه و ویرایش (${targetId})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${targetId})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
+  }
+
+  // تایید نهایی و آزادسازی وجه
+  if (clean.includes('تایید نهایی') || clean.includes('آزادسازی وجه')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    const contract = getContract(targetId);
+    if (contract) {
+      contract.status = 'completed';
+      return {
+        reply: `🎉 **معامله \`${targetId}\` با موفقیت تایید و تسویه قطعی شد!**\n──────────────────\n` +
+          `> 💰 وجه به کیف پول مجری واریز گردید.\n` +
+          `> 📄 سند رسمی اختتام کار با گواهی دیجیتال صادر شد.`,
+        keyboard: [
+          [`📄 دانلود سند رسمی PDF (${targetId})`],
+          ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
+          ['💳 کیف پول و اعتبار', '🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
+  }
+
+  // درخواست ویرایش و اصلاحیه
+  if (clean.includes('درخواست اصلاحیه') || clean.includes('ویرایش')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    const contract = getContract(targetId);
+    if (contract) {
+      contract.status = 'revisions_requested';
+      return {
+        reply: `🔄 **درخواست اصلاحیه برای معامله \`${targetId}\` ثبت و به مجری ابلاغ شد.**\n──────────────────\n` +
+          `مجری پس از اعمال ویرایش‌های درخواستی، نسخه جدید را تحویل خواهد داد.`,
+        keyboard: [
+          [`📦 تحویل فایل‌ها و خروجی پروژه (${targetId})`],
+          [`⚖️ ثبت اختلاف و ارجاع به داوری (${targetId})`],
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
+  }
+
+  // ثبت اختلاف
+  if (clean.includes('ثبت اختلاف') || clean.includes('داوری')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    const contract = getContract(targetId);
+    if (contract) {
+      contract.status = 'in_dispute';
+      return {
+        reply: `⚖️ **پرونده معامله \`${targetId}\` به هیئت داوری حقوقی میانجی ارجاع شد.**\n──────────────────\n` +
+          `وجوه در صندوق مسدود بوده و کارشناسان حقوقی بر مبنای مستندات مکتوب رای را صادر خواهند نمود.`,
+        keyboard: [
+          ['📜 لیست معاملات من', '🔙 بازگشت به منوی اصلی']
+        ]
+      };
+    }
+  }
+
+  // دانلود PDF
+  if (clean.includes('دانلود سند رسمی PDF') || clean.includes('دانلود PDF')) {
+    const match = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/);
+    const targetId = match ? match[1] : 'DEV-842-190';
+    return {
+      reply: `📄 **سند رسمی الکترونیک قرارداد میانجی (PDF)**\n──────────────────\n` +
+        `🆔 شناسه معامله: \`${targetId}\`\n\n` +
+        `📥 جهت دانلود مستقیم فایل PDF پیوند زیر را باز فرمایید:\n` +
+        `/api/contracts/${targetId}/pdf`,
+      keyboard: [
+        ['📜 لیست معاملات من', '🤝 ثبت معامله جدید'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    };
   }
 
   return {
