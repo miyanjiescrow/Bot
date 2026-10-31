@@ -34,7 +34,10 @@ import {
   Search,
   Fingerprint,
   CheckCheck,
-  Key
+  Key,
+  ChevronDown,
+  ChevronUp,
+  HelpCircle
 } from 'lucide-react';
 
 interface BotStatus {
@@ -44,9 +47,14 @@ interface BotStatus {
   bot_token_configured: boolean;
   supabase_configured: boolean;
   supabase_url: string;
-  pid: string | null;
-  active_modules: string[];
-  recent_logs: string;
+  active_modules?: string[];
+  recent_logs?: string;
+  diagnostics?: {
+    has_token: boolean;
+    token_message: string;
+    python_note: string;
+    active_engine: string;
+  };
   stats: {
     activeContracts: number;
     pendingContracts: number;
@@ -142,6 +150,7 @@ const App = () => {
   const [copiedPy, setCopiedPy] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [contractCategoryFilter, setContractCategoryFilter] = useState<'all' | 'active' | 'pending' | 'completed' | 'drafts' | 'cancelled'>('all');
+  const [showDiagnostics, setShowDiagnostics] = useState(true);
 
   // Terminal Simulator State
   const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string; keyboard?: string[][] }>>([
@@ -357,13 +366,22 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-base font-bold text-white">سامانه هوشمند واسطه‌گری امن و اسکرو میانجی</h1>
-                <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[11px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  سیستم جدید ایجاد معامله
-                </span>
+                <button
+                  onClick={() => setShowDiagnostics(!showDiagnostics)}
+                  className={`text-[11px] px-2.5 py-0.5 rounded-full font-medium flex items-center gap-1.5 border transition active:scale-95 cursor-pointer ${
+                    botStatus?.bot_token_configured
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                  }`}
+                  title="کلیک برای مشاهده مرکز عیب‌یابی و وضعیت اتصال"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${botStatus?.bot_token_configured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                  <span>{botStatus?.bot_token_configured ? 'ربات تلگرام متصل است' : 'شبیه‌ساز فعال | منتظر BOT_TOKEN'}</span>
+                  <HelpCircle className="w-3 h-3 text-amber-400/80" />
+                </button>
               </div>
               <p className="text-xs text-slate-400">
-                طراحی گام‌به‌گام زیر ۴۵ ثانیه | پایتون ۳.۱۰ + TeleBot / python-telegram-bot + Supabase
+                سامانه هوشمند واسطه‌گری امن و قراردادهای اسکرو | شبیه‌ساز بلادرنگ وب + هسته Telegraf & Python
               </p>
             </div>
           </div>
@@ -467,6 +485,109 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
             <Terminal className="w-4 h-4" />
             لاگ‌های زنده
           </button>
+        </div>
+
+        {/* مرکز عیب‌یابی و راهنمای اتصال ربات */}
+        <div className={`rounded-2xl border transition-all ${
+          botStatus?.bot_token_configured
+            ? 'bg-emerald-950/20 border-emerald-800/40'
+            : 'bg-amber-950/20 border-amber-800/50'
+        }`}>
+          <div
+            onClick={() => setShowDiagnostics(!showDiagnostics)}
+            className="p-4 flex items-center justify-between cursor-pointer select-none"
+          >
+            <div className="flex items-center gap-3">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                botStatus?.bot_token_configured ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
+              }`}>
+                {botStatus?.bot_token_configured ? <ShieldCheck className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+              </div>
+              <div>
+                <h2 className="text-xs font-bold text-white flex items-center gap-2">
+                  <span>مرکز راهنمایی و عیب‌یابی ربات تلگرام میانجی</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                    botStatus?.bot_token_configured
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : 'bg-amber-500/20 text-amber-300'
+                  }`}>
+                    {botStatus?.bot_token_configured ? 'اتصال تلگرام فعال است' : 'شبیه‌ساز فعال | منتظر BOT_TOKEN'}
+                  </span>
+                </h2>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {botStatus?.bot_token_configured
+                    ? 'ربات متصل است و پیام‌های تلگرام به صورت زنده توسط موتور اختصاصی پردازش می‌شوند.'
+                    : 'علت عدم پاسخگویی در تلگرام: متغیر BOT_TOKEN در سرور تنظیم نشده و محیط هاست فعلی Node.js است.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-medium">
+                {showDiagnostics ? 'بستن راهنما' : 'مشاهده علل و راهکارها'}
+                {showDiagnostics ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </span>
+            </div>
+          </div>
+
+          {showDiagnostics && (
+            <div className="px-4 pb-4 pt-1 border-t border-slate-800/60 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                <div className="flex items-center gap-2 text-amber-400 font-bold">
+                  <Key className="w-4 h-4" />
+                  <span>۱. توکن تلگرام (BOT_TOKEN)</span>
+                </div>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  ربات تلگرام برای ارتباط با سرورهای تلگرام نیازمند یک توکن اختصاصی است.
+                </p>
+                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-slate-400 font-mono space-y-1 border border-slate-800/80">
+                  <p className="text-amber-300 font-sans">نحوه دریافت توکن:</p>
+                  <p>۱. مراجعه به <span className="text-blue-400">@BotFather</span> در تلگرام</p>
+                  <p>۲. ارسال دستور <code className="text-emerald-400">/newbot</code> و دریافت توکن</p>
+                  <p>۳. قرار دادن در متغیر محیطی سرور:</p>
+                  <code className="text-blue-300 block">BOT_TOKEN=123456:ABC...</code>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                <div className="flex items-center gap-2 text-blue-400 font-bold">
+                  <Terminal className="w-4 h-4" />
+                  <span>۲. ران‌تایم هاست (Node.js vs Python)</span>
+                </div>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  این کانتینر ابری بر بستر <strong>Node.js 22</strong> اجرا می‌شود و پکیج منیجر pip پایتون در آن موجود نیست.
+                </p>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  به همین دلیل موتور موازی با <strong>Telegraf</strong> درون Node.js پیاده‌سازی شده که به محض افزودن BOT_TOKEN بدون نیاز به پایتون کار می‌کند.
+                </p>
+                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-emerald-400 border border-slate-800/80">
+                  ✓ موتور Node.js Telegraf کاملاً آماده دریافت توکن است.
+                </div>
+              </div>
+
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold">
+                  <Bot className="w-4 h-4" />
+                  <span>۳. راه‌حل‌های فوری و دردسترس</span>
+                </div>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => setActiveTab('simulator')}
+                    className="w-full text-right bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 p-2 rounded-lg text-[11px] transition"
+                  >
+                    🚀 <strong>تست آنی در شبیه‌ساز وب:</strong>
+                    <span className="block text-[10px] text-slate-300 mt-0.5">تمام سناریوهای قرارداد، اسکرو، OTP و PDF بدون نیاز به تلگرام فعال است.</span>
+                  </button>
+
+                  <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-slate-400 border border-slate-800/80">
+                    <p className="text-slate-300 font-sans mb-1 font-bold">اجرای سورس پایتون در VPS شخصی:</p>
+                    <code className="text-purple-300 block font-mono">pip install -r requirements.txt</code>
+                    <code className="text-purple-300 block font-mono">python3 main.py</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Tab: Telegram Simulator */}

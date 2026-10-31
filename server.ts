@@ -97,11 +97,17 @@ function ensurePythonBotRunning() {
         pythonBotProcess.stderr?.pipe(logStream);
 
         pythonBotProcess.on('exit', (exitCode: any, signal: any) => {
-          console.log(`⚠️ Python bot exited with code ${exitCode} (${signal}).`);
+          if (exitCode !== 0) {
+            const exitMsg = `ℹ️ Python script ended (code ${exitCode}). Telegram services run directly via Node.js/Telegraf engine in this environment.\n`;
+            console.log(exitMsg);
+            try { fs.appendFileSync(logFilePath, exitMsg); } catch {}
+          } else {
+            console.log(`ℹ️ Python bot exited normally (${signal}).`);
+          }
         });
 
         pythonBotProcess.on('error', (err: any) => {
-          console.log(`⚠️ Python bot process error: ${err.message}`);
+          console.log(`⚠️ Python bot process error: ${err.message}. Defaulting to Node.js Telegraf engine.`);
         });
       } else {
         console.log('🤖 Python Telegram Bot is already active.');
@@ -144,11 +150,21 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
 
   const stats = getDashboardStats();
 
+  const isTokenSet = Boolean(process.env.BOT_TOKEN && process.env.BOT_TOKEN.includes(':'));
+
   res.json({
     status: 'online',
-    runtime: 'Python 3.10 (pyTelegramBotAPI + Flask + SQLite WAL)',
+    runtime: 'Node.js 22 + Telegraf (با پشتیبانی از سورس پایتون ۳.۱۰)',
     bot_username: process.env.BOT_USERNAME || 'mianji_ir_bot',
-    bot_token_configured: Boolean(process.env.BOT_TOKEN && process.env.BOT_TOKEN.includes(':')),
+    bot_token_configured: isTokenSet,
+    diagnostics: {
+      has_token: isTokenSet,
+      token_message: isTokenSet
+        ? '✅ توکن ربات تلگرام در متغیرهای محیطی ثبت شده است.'
+        : '⚠️ متغیر BOT_TOKEN در تنظیمات سرور ثبت نشده است. تلگرام بدون توکن به پیام‌ها پاسخ نمی‌دهد.',
+      python_note: 'محیط هاست فعلی کانتینر Node.js 22 است؛ برای اجرای محلی یا مستقل پایتون، پکیج‌های requirements.txt باید با pip نصب شوند.',
+      active_engine: isTokenSet ? 'Telegraf Node.js (اتصال مستقیم به تلگرام)' : 'Web Simulator Console (شبیه‌ساز مستقل وب)'
+    },
     supabase_configured: isSupabaseConfigured(),
     supabase_url: process.env.SUPABASE_URL ? 'متصل (Supabase Cloud)' : 'پایگاه داده محلی WAL و حافظه پایدار',
     pid: botPid,
