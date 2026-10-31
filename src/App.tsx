@@ -141,7 +141,7 @@ const FormattedTelegramMessage: React.FC<{ text: string; isUser: boolean }> = ({
 };
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState<'simulator' | 'contracts' | 'wallet' | 'logs' | 'database' | 'python_code'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'contracts' | 'wallet' | 'logs' | 'database' | 'python_code' | 'security'>('simulator');
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [contracts, setContracts] = useState<any[]>([]);
@@ -151,6 +151,19 @@ const App = () => {
   const [copiedLink, setCopiedLink] = useState(false);
   const [contractCategoryFilter, setContractCategoryFilter] = useState<'all' | 'active' | 'pending' | 'completed' | 'drafts' | 'cancelled'>('all');
   const [showDiagnostics, setShowDiagnostics] = useState(true);
+
+  // Security Hub States (Phone-First & Financial PIN)
+  const [securityStatus, setSecurityStatus] = useState<any>(null);
+  const [pinInput, setPinInput] = useState('');
+  const [pinVerifyInput, setPinVerifyInput] = useState('');
+  const [pinActionMsg, setPinActionMsg] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [otpCodeInput, setOtpCodeInput] = useState('');
+  const [otpSentMsg, setOtpSentMsg] = useState<string | null>(null);
+  const [newPinAfterOtp, setNewPinAfterOtp] = useState('');
+  const [newShebaInput, setNewShebaInput] = useState('');
+  const [newShebaOwner, setNewShebaOwner] = useState('');
+  const [shebaMsg, setShebaMsg] = useState<string | null>(null);
+  const [testPhoneInput, setTestPhoneInput] = useState('');
 
   // Terminal Simulator State
   const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string; keyboard?: string[][] }>>([
@@ -177,10 +190,11 @@ const App = () => {
         if (data) setBotStatus(data);
       }
 
-      const [resC, resT, resL] = await Promise.all([
+      const [resC, resT, resL, resS] = await Promise.all([
         fetch('/api/contracts').catch(() => null),
         fetch('/api/wallet/transactions').catch(() => null),
-        fetch('/api/bot/logs').catch(() => null)
+        fetch('/api/bot/logs').catch(() => null),
+        fetch('/api/security/status').catch(() => null)
       ]);
 
       if (resC && resC.ok) {
@@ -194,6 +208,10 @@ const App = () => {
       if (resL && resL.ok) {
         const logData = await resL.json().catch(() => null);
         if (logData?.logs) setLogs(logData.logs);
+      }
+      if (resS && resS.ok) {
+        const sData = await resS.json().catch(() => null);
+        if (sData) setSecurityStatus(sData);
       }
     } catch {
       // Gracefully silent during server reloads or offline iframe states
@@ -250,6 +268,139 @@ const App = () => {
     }
   };
 
+  // Security Hub Handlers
+  const handleSetPin = async () => {
+    if (!pinInput || pinInput.length < 4) {
+      setPinActionMsg({ text: 'پین مالی باید حداقل ۴ رقم باشد.', type: 'error' });
+      return;
+    }
+    try {
+      const res = await fetch('/api/security/pin/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: pinInput })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPinActionMsg({ text: '✅ ' + data.message, type: 'success' });
+        setPinInput('');
+        fetchBotData();
+      } else {
+        setPinActionMsg({ text: '❌ ' + (data.error || 'خطا در ثبت پین'), type: 'error' });
+      }
+    } catch {
+      setPinActionMsg({ text: '❌ خطای برقراری ارتباط با سرور', type: 'error' });
+    }
+  };
+
+  const handleVerifyPin = async () => {
+    if (!pinVerifyInput) {
+      setPinActionMsg({ text: 'لطفاً پین مورد نظر جهت تست را وارد کنید.', type: 'error' });
+      return;
+    }
+    try {
+      const res = await fetch('/api/security/pin/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: pinVerifyInput })
+      });
+      const data = await res.json();
+      if (res.ok && data.valid) {
+        setPinActionMsg({ text: '🟢 ' + data.message, type: 'success' });
+      } else {
+        setPinActionMsg({ text: '🔴 ' + (data.message || 'پین اشتباه است'), type: 'error' });
+      }
+      fetchBotData();
+    } catch {
+      setPinActionMsg({ text: '❌ خطا در ارسال درخواست', type: 'error' });
+    }
+  };
+
+  const handleRequestOtp = async () => {
+    try {
+      const res = await fetch('/api/security/pin/reset-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setOtpSentMsg(`📩 کد OTP به شماره ${data.phone} پیامک شد. (کد تستی: ${data.demoOtp})`);
+        setOtpCodeInput(data.demoOtp || '');
+      } else {
+        setOtpSentMsg(`❌ ${data.error || 'خطا در ارسال پیامک'}`);
+      }
+    } catch {
+      setOtpSentMsg('❌ خطا در ارسال درخواست پیامک');
+    }
+  };
+
+  const handleConfirmOtpAndResetPin = async () => {
+    if (!otpCodeInput || !newPinAfterOtp) {
+      setPinActionMsg({ text: 'لطفاً کد پیامکی و پین جدید را وارد فرمایید.', type: 'error' });
+      return;
+    }
+    try {
+      const res = await fetch('/api/security/pin/reset-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otp: otpCodeInput, newPin: newPinAfterOtp })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPinActionMsg({ text: '✅ ' + data.message, type: 'success' });
+        setOtpCodeInput('');
+        setNewPinAfterOtp('');
+        setOtpSentMsg(null);
+        fetchBotData();
+      } else {
+        setPinActionMsg({ text: '❌ ' + (data.error || 'خطا در بازنشانی پین'), type: 'error' });
+      }
+    } catch {
+      setPinActionMsg({ text: '❌ خطا در برقراری ارتباط', type: 'error' });
+    }
+  };
+
+  const handleBindSheba = async () => {
+    if (!newShebaInput) {
+      setShebaMsg('لطفاً شماره شبا را وارد فرمایید.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/security/sheba/bind', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheba: newShebaInput, ownerName: newShebaOwner })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setShebaMsg('✅ شماره شبا استعلام و با کد ملی صاحب حساب قفل شد.');
+        setNewShebaInput('');
+        setNewShebaOwner('');
+        fetchBotData();
+      } else {
+        setShebaMsg('❌ ' + (data.error || 'خطا در تطابق شبا'));
+      }
+    } catch {
+      setShebaMsg('❌ خطا در ثبت شبا');
+    }
+  };
+
+  const handleSwitchAccount = async (phone: string) => {
+    try {
+      const res = await fetch('/api/security/switch-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        fetchBotData();
+        setPinActionMsg({ text: `👤 حساب فعال به ${data.user.full_name} (${data.user.phone_number}) تغییر یافت.`, type: 'info' });
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   const sqlSchemaCode = `-- =============================================================================
 -- Miyanji Escrow System: Complete Supabase PostgreSQL Schema
@@ -485,6 +636,18 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
             <Terminal className="w-4 h-4" />
             لاگ‌های زنده
           </button>
+
+          <button
+            onClick={() => setActiveTab('security')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition ${
+              activeTab === 'security'
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            امنیت و هویت کاربری (شماره + پین مالی)
+          </button>
         </div>
 
         {/* مرکز عیب‌یابی و راهنمای اتصال ربات */}
@@ -683,6 +846,9 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                   { label: '📄 دریافت سند رسمی PDF با گواهی دیجیتال', cmd: '📄 دانلود سند رسمی PDF (DEV-842-190)' },
                   { label: '📜 لیست معاملات من', cmd: '📜 لیست معاملات من' },
                   { label: '💳 کیف پول و شارژ حساب', cmd: '💳 کیف پول و اعتبار' },
+                  { label: '💸 درخواست تسویه (با پین مالی)', cmd: '💸 درخواست تسویه و برداشت' },
+                  { label: '🔐 تنظیم یا تغییر پین امنیتی مالی', cmd: '🔐 تنظیم/تغییر پین مالی' },
+                  { label: '🛡 مرکز امنیت و هویت کاربری', cmd: '🛡 مرکز امنیت و هویت' },
                   { label: '👤 پروفایل و استعلام شاهکار', cmd: '👤 پروفایل کاربری' },
                   { label: '💎 پنل سفیران و معرف', cmd: '💎 پنل سفیران' }
                 ].map((item, idx) => (
@@ -994,6 +1160,443 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                   {logLine}
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Tab: Security & Identity Hub (Phone-First + Financial PIN) */}
+        {activeTab === 'security' && (
+          <div className="space-y-6">
+            {/* Header Banner */}
+            <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/40 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+              <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-2">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>معماری امنیت سه‌لایه Zero-Trust میانجی</span>
+                  </div>
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    مرکز امنیت، هویت کاربری و پین مالی
+                  </h2>
+                  <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
+                    در اسکرو میانجی، <strong>شماره تلفن همراه</strong> ملاک یکتای هویت در وب‌سایت، تلگرام و اپلیکیشن است. امنیت حساب بدون نیاز به رمزهای عبور ایستای ناامن، با <strong>پین‌کد مالی ضد نفوذ</strong> و <strong>قانون طلایی تطابق شبا با کد ملی</strong> تضمین شده است.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3 text-right">
+                    <p className="text-[10px] text-slate-400">امتیاز امنیت حساب (Security Score):</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="w-24 bg-slate-800 h-2 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                          style={{ width: `${securityStatus?.user?.security_score || 95}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-bold text-emerald-400 font-mono">
+                        {securityStatus?.user?.security_score || 95}/100
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Account Identity Card & Switcher */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-600 to-emerald-600 flex items-center justify-center text-white font-bold text-base shadow-md">
+                    {securityStatus?.user?.full_name ? securityStatus.user.full_name[0] : 'ع'}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-white">{securityStatus?.user?.full_name || 'کاربر میانجی'}</h3>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                        {securityStatus?.user?.role === 'employer' ? 'کارفرما (خریدار)' : 'مجری (پیمانکار)'}
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                        <BadgeCheck className="w-3 h-3" />
+                        احراز هویت شاهکار تایید شده
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1 flex items-center gap-3 font-mono">
+                      <span>📱 شماره تماس: <strong className="text-white">{securityStatus?.user?.phone_number || '09121112233'}</strong></span>
+                      <span>🪪 کد ملی: <strong className="text-slate-300">{securityStatus?.user?.national_id || '0012345678'}</strong></span>
+                      <span>🆔 تلگرام: <strong className="text-slate-400">{securityStatus?.user?.telegram_id || '102938475'}</strong></span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Account Switcher to Test Multi-Channel Phone-First Identity */}
+                <div className="flex items-center gap-2 self-stretch md:self-auto bg-slate-950 p-2 rounded-xl border border-slate-800">
+                  <span className="text-[11px] text-slate-400 whitespace-nowrap">سوئیچ اکانت تستی (شماره موبایل):</span>
+                  <button
+                    onClick={() => handleSwitchAccount('09121112233')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition ${
+                      securityStatus?.user?.phone_number === '09121112233'
+                        ? 'bg-blue-600 text-white font-bold'
+                        : 'text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    ۰۹۱۲۱۱۱۲۲۳۳ (علی)
+                  </button>
+                  <button
+                    onClick={() => handleSwitchAccount('09359876543')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition ${
+                      securityStatus?.user?.phone_number === '09359876543'
+                        ? 'bg-blue-600 text-white font-bold'
+                        : 'text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    ۰۹۳۵۹۸۷۶۵۴۳ (سارا)
+                  </button>
+                </div>
+              </div>
+
+              {/* Status Pills */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-4">
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${securityStatus?.user?.has_financial_pin ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                    <Lock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-400">وضعیت پین‌کد مالی:</p>
+                    <p className="text-xs font-bold text-white">
+                      {securityStatus?.user?.has_financial_pin ? 'فعال و محافظت‌شده (هش شده)' : 'تنظیم نشده (توصیه به فعال‌سازی)'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center">
+                    <Smartphone className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-400">احراز خط تلگرام و وب:</p>
+                    <p className="text-xs font-bold text-emerald-400">یکپارچه با Share Contact تلگرام</p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                    <ShieldAlert className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-400">تطابق شبا و کد ملی (قانون طلایی):</p>
+                    <p className="text-xs font-bold text-purple-300">قفل‌شده به نام صاحب حساب</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Architecture Explanations: The 3 Pillars */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
+                <div className="flex items-center gap-2 text-blue-400 font-bold text-xs">
+                  <Smartphone className="w-4 h-4" />
+                  <span>۱. هویت بر پایه شماره تماس (Phone-First)</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  کاربر با دکمه رسمی <code className="text-blue-300 bg-slate-950 px-1 py-0.5 rounded font-mono">Share Contact</code> تلگرام یا اعتبارسنجی پیامکی ورود پیدا می‌کند.
+                </p>
+                <div className="text-[10px] text-slate-400 bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-1">
+                  <p className="text-emerald-400 font-bold">✓ مزیت حیاتی:</p>
+                  <p>هیچ پسورد استاتیکی وجود ندارد تا در نشت‌های اطلاعاتی لو برود یا فراموش شود. ملاک در همه کانال‌ها (وب، تلگرام، مینی‌اپ) همان شماره همراه کاربر است.</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                  <Key className="w-4 h-4" />
+                  <span>۲. پین‌کد مالی امنیتی (Financial PIN)</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  یک کد ۴ الی ۶ رقمی مستقل که فقط برای عملیات حساس (تسویه وجه، آزادسازی اسکرو، ثبت شبا) مطالبه می‌شود.
+                </p>
+                <div className="text-[10px] text-slate-400 bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-1">
+                  <p className="text-emerald-400 font-bold">✓ محافظت Brute-Force:</p>
+                  <p>پس از ۵ بار ورود اشتباه، عملیات مالی حساب به مدت ۳۰ دقیقه قفل می‌شود. بازنشانی فقط با Step-Up SMS OTP ممکن است.</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
+                <div className="flex items-center gap-2 text-purple-400 font-bold text-xs">
+                  <Scale className="w-4 h-4" />
+                  <span>۳. قانون طلایی تطابق شبا و کد ملی</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  وجوه کیف پول تنها به حساب بانکی تسویه می‌شود که شماره شبای آن منحصراً به نام دارنده کد ملی ثبت‌شده خط کاربر باشد.
+                </p>
+                <div className="text-[10px] text-slate-400 bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-1">
+                  <p className="text-purple-400 font-bold">✓ امنیت ۱۰۰٪ ضد سرقت:</p>
+                  <p>حتی اگر تلفن همراه یا اکانت تلگرام به سرقت برود، سارق امکان برداشت پول به هیچ حسابی جز حساب بانکی خود قربانی را نخواهد داشت!</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Notification or Feedback Toast */}
+            {pinActionMsg && (
+              <div className={`p-3.5 rounded-2xl border text-xs flex items-center justify-between ${
+                pinActionMsg.type === 'success' ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-300' :
+                pinActionMsg.type === 'error' ? 'bg-rose-950/40 border-rose-700/60 text-rose-300' :
+                'bg-blue-950/40 border-blue-700/60 text-blue-300'
+              }`}>
+                <span>{pinActionMsg.text}</span>
+                <button onClick={() => setPinActionMsg(null)} className="text-slate-400 hover:text-white text-xs font-bold px-2">✕</button>
+              </div>
+            )}
+
+            {/* Interactive Control Panels */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              
+              {/* Card 1: Live PIN Verification Simulator */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                      <Fingerprint className="w-4 h-4 text-emerald-400" />
+                      تست زنده اعتبارسنجی پین مالی و شمارنده قفل
+                    </h4>
+                    <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-mono">
+                      خطاهای ثبت‌شده: {securityStatus?.user?.pin_failed_attempts || 0} از ۵
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    عملکرد سیستم در مواجهه با ورود پین صحیح یا تلاش‌های اشتباه را تست کنید. پس از ۵ بار تلاش اشتباه حساب مالی قفل موقت ۳۰ دقیقه‌ای می‌شود.
+                  </p>
+
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      type="password"
+                      maxLength={6}
+                      value={pinVerifyInput}
+                      onChange={e => setPinVerifyInput(e.target.value)}
+                      placeholder="پین مالی را وارد کنید (مثلاً 1234)..."
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                    <button
+                      onClick={handleVerifyPin}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                    >
+                      <CheckCheck className="w-3.5 h-3.5" />
+                      اعتبارسنجی پین
+                    </button>
+                  </div>
+
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500">تست سریع با مقادیر نمونه:</span>
+                    <button
+                      onClick={() => { setPinVerifyInput('1234'); }}
+                      className="text-[10px] bg-slate-800 hover:bg-slate-700 text-emerald-300 px-2 py-0.5 rounded font-mono border border-slate-700"
+                    >
+                      1234 (پین صحیح تستی)
+                    </button>
+                    <button
+                      onClick={() => { setPinVerifyInput('9999'); }}
+                      className="text-[10px] bg-slate-800 hover:bg-slate-700 text-rose-300 px-2 py-0.5 rounded font-mono border border-slate-700"
+                    >
+                      9999 (تست خطا و کسر تلاش)
+                    </button>
+                  </div>
+                </div>
+
+                {securityStatus?.user?.pin_locked_until && (
+                  <div className="bg-rose-950/30 border border-rose-800/60 rounded-xl p-3 text-rose-300 text-xs flex items-center gap-2">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
+                    <span>⚠️ حساب مالی به دلیل ۵ بار اشتباه متوالی تا {new Date(securityStatus.user.pin_locked_until).toLocaleTimeString('fa-IR')} قفل است.</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Card 2: Set or Change PIN */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-blue-400" />
+                    تنظیم یا تغییر پین‌کد مالی
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    پین مالی با الگوریتم امنیتی رمزنگاری سالت‌دار و هش SHA-256 ذخیره می‌گردد و هرگز به صورت متن خام نگهداری نمی‌شود.
+                  </p>
+
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      type="password"
+                      maxLength={6}
+                      value={pinInput}
+                      onChange={e => setPinInput(e.target.value)}
+                      placeholder="پین جدید ۴ تا ۶ رقمی (مثلاً 5821)..."
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={handleSetPin}
+                      className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      ثبت و ذخیره پین
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-slate-500 flex items-center gap-2">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>پین مالی فقط هنگام تسویه یا تغییر شبا از کاربر پرسیده می‌شود.</span>
+                </div>
+              </div>
+
+              {/* Card 3: Emergency SMS OTP Reset */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-3">
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-amber-400" />
+                    بازنشانی اضطراری پین مالی با پیامک یکبار مصرف (SMS OTP)
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    در صورت فراموشی پین یا قفل شدن حساب، کد تایید یکبار مصرف به شماره همراه تاییدشده ارسال می‌گردد.
+                  </p>
+
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      onClick={handleRequestOtp}
+                      className="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-600/40 px-3 py-1.5 rounded-xl text-xs font-medium transition"
+                    >
+                      📩 درخواست ارسال کد پیامکی (SMS OTP)
+                    </button>
+                    {otpSentMsg && <span className="text-[11px] text-emerald-400">{otpSentMsg}</span>}
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      maxLength={6}
+                      value={otpCodeInput}
+                      onChange={e => setOtpCodeInput(e.target.value)}
+                      placeholder="کد ۶ رقمی دریافتی..."
+                      className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                    />
+                    <input
+                      type="password"
+                      maxLength={6}
+                      value={newPinAfterOtp}
+                      onChange={e => setNewPinAfterOtp(e.target.value)}
+                      placeholder="پین مالی جدید (۴ تا ۶ رقم)..."
+                      className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleConfirmOtpAndResetPin}
+                  className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  تایید کد و بازنشانی پین مالی
+                </button>
+              </div>
+
+              {/* Card 4: Sheba IBAN Binding & Verification */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-3">
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                    <Scale className="w-4 h-4 text-purple-400" />
+                    مدیریت و قفل شماره شبا به کد ملی (Golden Rule)
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    شماره شبای ثبت‌شده کنونی:
+                  </p>
+                  <div className="mt-1 bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-mono text-purple-300 font-bold">{securityStatus?.user?.sheba || 'IR520120000000001234567890'}</p>
+                      <p className="text-[10px] text-slate-400">صاحب حساب: {securityStatus?.user?.sheba_owner_name || securityStatus?.user?.full_name}</p>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                      قفل‌شده با کد ملی
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={newShebaInput}
+                      onChange={e => setNewShebaInput(e.target.value)}
+                      placeholder="شماره شبای جدید (IR...)"
+                      className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                    />
+                    <input
+                      type="text"
+                      value={newShebaOwner}
+                      onChange={e => setNewShebaOwner(e.target.value)}
+                      placeholder="نام صاحب حساب..."
+                      className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  {shebaMsg && <span className="text-[11px] text-purple-300">{shebaMsg}</span>}
+                  <button
+                    onClick={handleBindSheba}
+                    className="mr-auto bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    استعلام و اتصال شبا
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Real-Time Security Audit Logs */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  دفتر ثبت رویدادهای امنیتی (Security Audit Trail)
+                </h4>
+                <span className="text-[10px] text-slate-500">ثبت ضد دستکاری (Immutable Audit Trail)</span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[11px] text-slate-400">
+                      <th className="pb-2.5 font-medium">نوع رویداد امنیتی</th>
+                      <th className="pb-2.5 font-medium">وضعیت</th>
+                      <th className="pb-2.5 font-medium">جزئیات و توضیحات</th>
+                      <th className="pb-2.5 font-medium">IP و دستگاه</th>
+                      <th className="pb-2.5 font-medium">زمان</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {(securityStatus?.auditLogs || []).map((log: any, idx: number) => (
+                      <tr key={idx} className="hover:bg-slate-800/40 transition">
+                        <td className="py-2.5 font-medium text-white flex items-center gap-1.5">
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            log.status === 'success' ? 'bg-emerald-400' :
+                            log.status === 'blocked' || log.status === 'failed' ? 'bg-rose-400' : 'bg-amber-400'
+                          }`} />
+                          {log.event_type}
+                        </td>
+                        <td className="py-2.5">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
+                            log.status === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
+                            log.status === 'blocked' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
+                            'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                          }`}>
+                            {log.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-slate-300 text-[11px]">{log.details}</td>
+                        <td className="py-2.5 text-slate-500 font-mono text-[10px]">{log.ip_address}</td>
+                        <td className="py-2.5 text-slate-400 font-mono text-[10px]">
+                          {new Date(log.created_at).toLocaleTimeString('fa-IR')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

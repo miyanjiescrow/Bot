@@ -46,6 +46,16 @@ import {
   generateContractId,
   formatCurrency,
   getSignatures,
+  getUserByPhone,
+  getOrCreateUserByPhone,
+  setFinancialPin,
+  verifyFinancialPin,
+  resetFinancialPinWithOtp,
+  bindAndVerifySheba,
+  sendPhoneOtp,
+  verifyPhoneOtp,
+  getSecurityAuditLogs,
+  normalizeIranianPhone,
 } from './src/db';
 import { isSupabaseConfigured } from './src/lib/supabase';
 import { startBot } from './src/bot';
@@ -230,6 +240,8 @@ let simulatorState: {
   state: string;
   depositAmount: number;
   txId: number;
+  withdrawAmount?: number;
+  pendingPin?: string;
   dealDraft?: DealDraftState;
   activeDealToken?: string;
   signingFullName?: string;
@@ -1290,16 +1302,192 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
+  // دریافت مبلغ تسویه (WAITING_WITHDRAW_AMOUNT)
+  if (simulatorState.state === 'WAITING_WITHDRAW_AMOUNT') {
+    const user = getCurrentUser();
+    let parsed: number | null = null;
+    if (input.includes('کل موجودی')) {
+      parsed = user.wallet_balance;
+    } else {
+      parsed = parseFlexibleAmount(input);
+    }
+
+    if (!parsed || parsed < 50000) {
+      return res.json({
+        reply: '⚠️ **مبلغ نامعتبر است.** حداقل مبلغ تسویه ۵۰,۰۰۰ تومان می‌باشد. لطفاً مجدداً وارد فرمایید:',
+        keyboard: [
+          ['1,000,000 تومان', '5,000,000 تومان'],
+          ['کل موجودی قابل برداشت'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    if (parsed > user.wallet_balance) {
+      return res.json({
+        reply: `⚠️ **موجودی ناکافی:** موجودی قابل برداشت شما (${formatCurrency(user.wallet_balance)}) کمتر از مبلغ درخواستی است.`,
+        keyboard: [
+          ['کل موجودی قابل برداشت'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState.withdrawAmount = parsed;
+    simulatorState.state = 'WAITING_WITHDRAW_PIN';
+
+    return res.json({
+      reply: `🔐 **تایید برداشت با پین‌کد مالی امنیتی (Financial PIN)**\n──────────────────\n` +
+             `💵 مبلغ تسویه: **${formatCurrency(parsed)}**\n` +
+             `🏦 شماره شبای مقصد: \`${user.sheba || 'IR520120000000001234567890'}\` (${user.sheba_owner_name || user.full_name})\n\n` +
+             `> 🛡 **قانون طلایی امنیت اسکرو:** جهت جلوگیری از سرقت و فیشینگ، تسویه منحصراً به حساب ثبت‌شده صاحب خط انجام می‌شود.\n\n` +
+             `لطفاً **پین‌کد ۴ رقمی مالی** خود را وارد فرمایید:\n*(پین تستی پیش‌فرض: \`1234\`)*`,
+      keyboard: [
+        ['1234'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // تایید پین مالی و تسویه (WAITING_WITHDRAW_PIN)
+  if (simulatorState.state === 'WAITING_WITHDRAW_PIN') {
+    const user = getCurrentUser();
+    const pin = input.trim();
+    const amount = simulatorState.withdrawAmount || 1000000;
+
+    const result = await withdrawWallet(user.id, amount, user.sheba, pin);
+    if (!result.success) {
+      return res.json({
+        reply: `❌ **خطای اعتبارسنجی پین مالی:**\n${result.message}`,
+        keyboard: [
+          ['1234'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
+    return res.json({
+      reply: `🎉 **دستور تسویه حساب با تایید موفق پین‌کد مالی صادر گردید!**\n──────────────────\n` +
+             `💵 مبلغ برداشت: **${formatCurrency(amount)}**\n` +
+             `🏦 شماره شبای مقصد: \`${result.transaction?.sheba}\` (${user.sheba_owner_name || user.full_name})\n` +
+             `🔢 کد رهگیری پایا: \`${result.transaction?.ref_id}\`\n` +
+             `💰 موجودی جدید کیف پول: **${formatCurrency(result.newBalance || user.wallet_balance)}**\n\n` +
+             `وجه در اولین سیکل پایا بانک مرکزی به حساب بانکی شما واریز خواهد شد.`,
+      keyboard: [
+        ['💳 کیف پول و اعتبار', '📜 لیست معاملات من'],
+        ['🛡 مرکز امنیت و هویت', '🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  // تنظیم پین مالی جدید (WAITING_SET_PIN)
+  if (simulatorState.state === 'WAITING_SET_PIN') {
+    const pin = input.trim();
+    const result = setFinancialPin(getCurrentUserId(), pin);
+    if (!result.success) {
+      return res.json({
+        reply: `⚠️ ${result.message}\nلطفاً یک پین‌کد ۴ تا ۶ رقمی دیگر انتخاب نمایید:`,
+        keyboard: [
+          ['5821', '8392'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState = { state: 'IDLE', depositAmount: 0, txId: 0 };
+    return res.json({
+      reply: `✅ **پین‌کد مالی امنیتی (Financial PIN) با موفقیت فعال شد!**\n──────────────────\n` +
+             `رمز دوم مالی برای شماره تماس \`${getCurrentUser().phone_number}\` ثبت گردید.\n` +
+             `از این پس برای هرگونه تسویه حساب، برداشت وجه و تغییر شبا این پین‌کد الزامی است.`,
+      keyboard: [
+        ['💸 درخواست تسویه و برداشت', '💳 کیف پول و اعتبار'],
+        ['🛡 مرکز امنیت و هویت', '🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  // درخواست تسویه حساب
+  if (input.includes('درخواست تسویه') || input.includes('تسویه و برداشت') || input === 'تسویه') {
+    const user = getCurrentUser();
+    if (!user.has_financial_pin) {
+      simulatorState.state = 'WAITING_SET_PIN';
+      return res.json({
+        reply: `🔒 **فعال‌سازی الزامی پین‌کد مالی (Financial PIN)**\n──────────────────\n` +
+               `جهت محافظت از سرمایه شما در برابر سرقت یا نفوذ به اکانت، برای انجام اولین برداشت لازم است یک **پین‌کد ۴ تا ۶ رقمی اختصاصی مالی** تعیین فرمایید.\n\n` +
+               `لطفاً پین‌کد مورد نظر خود را وارد کرده یا از پیشنهادها انتخاب کنید:`,
+        keyboard: [
+          ['5821', '8392'],
+          ['🔙 انصراف و بازگشت']
+        ]
+      });
+    }
+
+    simulatorState.state = 'WAITING_WITHDRAW_AMOUNT';
+    return res.json({
+      reply: `💸 **درخواست تسویه و برداشت وجه از کیف پول**\n──────────────────\n` +
+             `💰 موجودی قابل برداشت: **${formatCurrency(user.wallet_balance)}**\n` +
+             `🏦 شماره شبای مقصد: \`${user.sheba || 'ثبت نشده'}\` (${user.sheba_owner_name || user.full_name})\n` +
+             `🛡 وضعیت امنیت: دارای پین مالی فعال ✅ | قفل به کد ملی ✅\n\n` +
+             `مبلغ مورد نظر جهت واریز به شبای خود را وارد فرمایید:`,
+      keyboard: [
+        ['1,000,000 تومان', '5,000,000 تومان'],
+        ['کل موجودی قابل برداشت'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // تنظیم یا تغییر پین مالی
+  if ((input.includes('تنظیم') && input.includes('پین')) || input.includes('تغییر پین') || input.includes('پین مالی')) {
+    simulatorState.state = 'WAITING_SET_PIN';
+    return res.json({
+      reply: `🔐 **تنظیم پین‌کد مالی امنیتی (Financial PIN)**\n──────────────────\n` +
+             `رمز دوم مالی، سد دفاعی وجوه شما در صورت هک شدن تلگرام یا دسترسی به گوشی است.\n\n` +
+             `لطفاً یک پین‌کد ۴ تا ۶ رقمی عددی ارسال فرمایید (مثلاً \`5821\`):`,
+      keyboard: [
+        ['5821', '8392'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
+  // مرکز امنیت و هویت
+  if (input.includes('امنیت') || input.includes('هویت کاربری') || input === '/security') {
+    const user = getCurrentUser();
+    const pinText = user.has_financial_pin ? 'فعال (رمز دوم ۴ رقمی) ✅' : 'تنظیم‌نشده ⚠️';
+    const shebaText = user.sheba_locked_to_national_id ? `تاییدشده به نام ${user.sheba_owner_name || user.full_name} (قفل انحصاری) 🔒` : 'قفل نشده';
+
+    return res.json({
+      reply: `🛡️ **مرکز امنیت و هویت کاربری میانجی**\n──────────────────\n` +
+             `📱 **ملاک اصلی حساب:** شماره همراه \`${user.phone_number}\` (مشترک در وب، اپ و بات)\n` +
+             `🪪 **کد ملی و استعلام شاهکار:** \`${user.national_id || 'ثبت نشده'}\` (${user.kyc_level === 'gold' ? 'تایید شاهکار 🌟' : 'پایه'})\n` +
+             `🏦 **شماره شبا:** \`${user.sheba || 'ثبت نشده'}\`\n` +
+             `🔐 **قانون طلایی شبا:** ${shebaText}\n` +
+             `🔑 **پین‌کد مالی تراکنش:** ${pinText}\n` +
+             `🛡️ **ضریب امنیت حساب:** **${user.security_score || 95} از ۱۰۰ ⭐️**\n\n` +
+             `با فعال بودن این لایه‌ها، حتی در صورت دسترسی غیرمجاز به تلگرام، هیچ فردی امکان خروج وجوه شما را نخواهد داشت.`,
+      keyboard: [
+        ['🔐 تنظیم/تغییر پین مالی', '💸 درخواست تسویه و برداشت'],
+        ['💳 کیف پول و اعتبار', '🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
   if (input.includes('کیف پول')) {
     const user = getCurrentUser();
+    const pinBadge = user.has_financial_pin ? 'فعال (رمز دوم تراکنش ۴ رقمی) ✅' : 'تنظیم‌نشده ⚠️';
     return res.json({
-      reply: `💳 **کیف پول و اعتبار شما**\n\n` +
-             `💰 موجودی در دسترس: ${formatCurrency(user.wallet_balance)}\n` +
-             `🔒 موجودی در امانت اسکرو: ${formatCurrency(user.escrow_locked_balance)}\n` +
-             `💳 شماره شبا: ${user.sheba || 'ثبت نشده'}\n` +
-             `سطح کاربری: ${user.kyc_level === 'gold' ? 'طلایی 🌟' : 'نقره‌ای 🥈'}`,
+      reply: `💳 **کیف پول و وضعیت حساب مالی شما**\n──────────────────\n` +
+             `📱 شماره حساب (تلفن همراه): \`${user.phone_number}\`\n` +
+             `💰 موجودی در دسترس: **${formatCurrency(user.wallet_balance)}**\n` +
+             `🔒 موجودی در امانت اسکرو: **${formatCurrency(user.escrow_locked_balance)}**\n` +
+             `🏦 شماره شبا: \`${user.sheba || 'ثبت نشده'}\` (${user.sheba_owner_name || user.full_name})\n` +
+             `🔐 وضعیت پین مالی: ${pinBadge}\n` +
+             `سطح کاربری: ${user.kyc_level === 'gold' ? 'طلایی 🌟 (شاهکار تایید شده)' : 'نقره‌ای 🥈'}`,
       keyboard: [
         ['➕ شارژ کیف پول', '💸 درخواست تسویه و برداشت'],
+        ['🔐 تنظیم/تغییر پین مالی', '🛡 مرکز امنیت و هویت'],
         ['📋 گزارش تراکنش‌ها', '🔙 بازگشت به منوی اصلی']
       ]
     });
@@ -1539,9 +1727,9 @@ app.post('/api/wallet/deposit', async (req: Request, res: Response) => {
   res.json(result);
 });
 
-// Withdraw from Wallet to Sheba IBAN
+// Withdraw from Wallet to Sheba IBAN (with Financial PIN & Golden Rule Enforcement)
 app.post('/api/wallet/withdraw', async (req: Request, res: Response) => {
-  const { amount, sheba } = req.body;
+  const { amount, sheba, pin } = req.body;
   const numAmount = Number(amount);
   const user = getCurrentUser();
 
@@ -1550,11 +1738,155 @@ app.post('/api/wallet/withdraw', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'لطفاً شماره شبای معتبر بانکی خود را وارد کنید.' });
   }
 
-  const result = await withdrawWallet(getCurrentUserId(), numAmount, targetSheba);
+  const result = await withdrawWallet(getCurrentUserId(), numAmount, targetSheba, pin);
   if (!result.success) {
     return res.status(400).json({ error: result.message });
   }
   res.json(result);
+});
+
+// ====================================================
+// ۶. سامانه امنیت حساب کاربری و هویت بر پایه شماره تماس (Security Hub API)
+// ====================================================
+
+// Get Comprehensive Security Posture & Account Info
+app.get('/api/security/status', (req: Request, res: Response) => {
+  const user = getCurrentUser();
+  const allUsers = getUsers().map(u => ({
+    id: u.id,
+    phone_number: u.phone_number,
+    full_name: u.full_name,
+    role: u.role,
+    kyc_level: u.kyc_level,
+    has_financial_pin: Boolean(u.has_financial_pin),
+    sheba_verified: Boolean(u.sheba_verified),
+    sheba: u.sheba
+  }));
+
+  const logs = getSecurityAuditLogs(user.phone_number);
+
+  res.json({
+    user_id: user.id,
+    full_name: user.full_name,
+    phone_number: user.phone_number,
+    is_phone_verified: Boolean(user.is_verified),
+    has_financial_pin: Boolean(user.has_financial_pin),
+    pin_failed_attempts: user.pin_failed_attempts || 0,
+    is_pin_locked: Boolean(user.pin_locked_until && new Date(user.pin_locked_until).getTime() > Date.now()),
+    pin_locked_until: user.pin_locked_until,
+    sheba: user.sheba || null,
+    sheba_owner_name: user.sheba_owner_name || null,
+    sheba_verified: Boolean(user.sheba_verified),
+    sheba_locked_to_national_id: Boolean(user.sheba_locked_to_national_id),
+    national_id: user.national_id ? `${user.national_id.slice(0, 3)}***${user.national_id.slice(-3)}` : null,
+    full_national_id: user.national_id || null,
+    kyc_level: user.kyc_level,
+    kyc_status: user.kyc_status,
+    security_score: user.security_score || (user.has_financial_pin ? 90 : 65),
+    wallet_balance: user.wallet_balance,
+    audit_logs: logs.slice(0, 15),
+    all_registered_accounts: allUsers
+  });
+});
+
+// Set or Change Financial Security PIN
+app.post('/api/security/pin/set', (req: Request, res: Response) => {
+  const { pin, phone } = req.body;
+  if (!pin) {
+    return res.status(400).json({ error: 'لطفاً پین‌کد ۴ تا ۶ رقمی را ارسال فرمایید.' });
+  }
+
+  const target = phone || getCurrentUserId();
+  const result = setFinancialPin(target, pin);
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
+  }
+  res.json(result);
+});
+
+// Verify Financial Security PIN
+app.post('/api/security/pin/verify', (req: Request, res: Response) => {
+  const { pin, phone } = req.body;
+  if (!pin) {
+    return res.status(400).json({ error: 'لطفاً پین‌کد مالی را وارد نمایید.' });
+  }
+
+  const target = phone || getCurrentUserId();
+  const result = verifyFinancialPin(target, pin);
+  if (!result.valid) {
+    return res.status(400).json({ error: result.message, remainingAttempts: result.remainingAttempts, locked: result.locked });
+  }
+  res.json(result);
+});
+
+// Request SMS OTP for Financial PIN Reset
+app.post('/api/security/pin/reset-request', (req: Request, res: Response) => {
+  const user = getCurrentUser();
+  const phone = req.body.phone || user.phone_number;
+  const result = sendPhoneOtp(phone, 'pin_reset');
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
+  }
+  res.json(result);
+});
+
+// Confirm SMS OTP and Reset Financial PIN
+app.post('/api/security/pin/reset-confirm', (req: Request, res: Response) => {
+  const user = getCurrentUser();
+  const phone = req.body.phone || user.phone_number;
+  const { otp, new_pin } = req.body;
+
+  if (!otp || !new_pin) {
+    return res.status(400).json({ error: 'کد تایید پیامکی و پین‌کد جدید الزامی هستند.' });
+  }
+
+  const result = resetFinancialPinWithOtp(phone, otp, new_pin);
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
+  }
+  res.json(result);
+});
+
+// Bind and Lock IBAN Sheba to Verified National ID (Golden Rule)
+app.post('/api/security/sheba/bind', (req: Request, res: Response) => {
+  const { sheba, owner_name, phone } = req.body;
+  if (!sheba) {
+    return res.status(400).json({ error: 'شماره شبا الزامی است.' });
+  }
+
+  const target = phone || getCurrentUserId();
+  const result = bindAndVerifySheba(target, sheba, owner_name);
+  if (!result.success) {
+    return res.status(400).json({ error: result.message });
+  }
+  res.json(result);
+});
+
+// Switch Active Test Account by Phone Number or ID (for testing multi-device flow)
+app.post('/api/security/switch-account', (req: Request, res: Response) => {
+  const { phone, user_id } = req.body;
+  let targetUser = phone ? getUserByPhone(phone) : getUser(Number(user_id));
+  if (!targetUser && phone) {
+    targetUser = getOrCreateUserByPhone(phone);
+  }
+
+  if (!targetUser) {
+    return res.status(404).json({ error: 'کاربری با این مشخصات یافت نشد.' });
+  }
+
+  setCurrentUserId(targetUser.id);
+  res.json({
+    success: true,
+    message: `حساب کاربری فعال به «${targetUser.full_name}» (${targetUser.phone_number}) تغییر یافت.`,
+    user: targetUser
+  });
+});
+
+// Get Security Audit Logs
+app.get('/api/security/audit-logs', (req: Request, res: Response) => {
+  const user = getCurrentUser();
+  const logs = getSecurityAuditLogs(user.phone_number);
+  res.json(logs);
 });
 
 // ====================================================

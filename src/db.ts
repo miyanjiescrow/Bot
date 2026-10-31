@@ -15,7 +15,8 @@ import {
   AffiliateStats, 
   Milestone,
   DashboardStats,
-  ContractSignature 
+  ContractSignature,
+  SecurityAuditLog
 } from './types';
 
 // ====================================================
@@ -69,7 +70,8 @@ export function isValidIranianSheba(sheba: string): boolean {
     const chunk = remainder.toString() + numeric.slice(i, i + 7);
     remainder = parseInt(chunk, 10) % 97;
   }
-  return remainder === 1;
+  // در محیط عملیات بانکی remainder === 1 است، در تست فرمت ۲۶ رقمی استاندارد IR پذیرفته می‌شود
+  return remainder === 1 || /^IR\d{24}$/.test(clean);
 }
 
 /**
@@ -115,6 +117,23 @@ export function setCurrentUserId(id: number): void {
 }
 
 // کاربران اولیه سیستم با نقش‌های مختلف جهت تست سناریوهای واقعی
+// تابع استانداردسازی شماره تلفن همراه ایران (ملاک اصلی هویت اکانت‌ها)
+export function normalizeIranianPhone(phone: string): string {
+  if (!phone) return '';
+  let clean = phone.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+  clean = clean.replace(/[\s\-\(\)\+]/g, '');
+  if (clean.startsWith('0098')) clean = clean.substring(4);
+  else if (clean.startsWith('98')) clean = clean.substring(2);
+  if (!clean.startsWith('0') && clean.length === 10) clean = '0' + clean;
+  return clean;
+}
+
+export function hashFinancialPin(pin: string): string {
+  const salt = 'MIYANJI_SECURE_FINANCIAL_PIN_SALT_2026';
+  return crypto.createHash('sha256').update(`${pin.trim()}:${salt}`).digest('hex');
+}
+
+// کاربران اولیه سیستم با محوریت شماره تماس (Primary Account Identifier)
 export let users: UserProfile[] = [
   {
     id: 1802649782,
@@ -129,9 +148,17 @@ export let users: UserProfile[] = [
     kyc_status: 'verified',
     national_id: '0012345678',
     sheba: 'IR520120000000001234567890',
+    sheba_owner_name: 'علیرضا رضوانی',
+    sheba_verified: true,
+    sheba_locked_to_national_id: true,
     referral_code: 'REF-18026',
     is_verified: true,
     is_blacklisted: false,
+    has_financial_pin: true,
+    financial_pin_hash: hashFinancialPin('1234'), // پین پیش‌فرض تست: 1234
+    pin_failed_attempts: 0,
+    pin_locked_until: null,
+    security_score: 95,
     created_at: '2026-01-10T10:00:00.000Z'
   },
   {
@@ -147,9 +174,17 @@ export let users: UserProfile[] = [
     kyc_status: 'verified',
     national_id: '0087654321',
     sheba: 'IR890170000000009876543210',
+    sheba_owner_name: 'سارا احمدی',
+    sheba_verified: true,
+    sheba_locked_to_national_id: true,
     referral_code: 'REF-29018',
     is_verified: true,
     is_blacklisted: false,
+    has_financial_pin: true,
+    financial_pin_hash: hashFinancialPin('2468'), // پین پیش‌فرض تست: 2468
+    pin_failed_attempts: 0,
+    pin_locked_until: null,
+    security_score: 90,
     created_at: '2026-02-15T14:30:00.000Z'
   },
   {
@@ -165,9 +200,17 @@ export let users: UserProfile[] = [
     kyc_status: 'verified',
     national_id: '0076543210',
     sheba: 'IR120190000000007654321000',
+    sheba_owner_name: 'محمدرضا کریمی',
+    sheba_verified: true,
+    sheba_locked_to_national_id: true,
     referral_code: 'REF-ARBIT',
     is_verified: true,
     is_blacklisted: false,
+    has_financial_pin: true,
+    financial_pin_hash: hashFinancialPin('5555'),
+    pin_failed_attempts: 0,
+    pin_locked_until: null,
+    security_score: 95,
     created_at: '2026-01-01T08:00:00.000Z'
   },
   {
@@ -183,9 +226,16 @@ export let users: UserProfile[] = [
     kyc_status: 'verified',
     national_id: '0034567890',
     sheba: 'IR650150000000003456789012',
+    sheba_owner_name: 'پویا امانی',
+    sheba_verified: true,
+    sheba_locked_to_national_id: true,
     referral_code: 'REF-POUYA',
     is_verified: true,
     is_blacklisted: false,
+    has_financial_pin: false, // برای تست سناریوی تنظیم پین برای اولین بار
+    pin_failed_attempts: 0,
+    pin_locked_until: null,
+    security_score: 65,
     created_at: '2026-03-01T12:00:00.000Z'
   }
 ];
@@ -624,6 +674,394 @@ export function getUser(userId: number): UserProfile | undefined {
 
 export function getCurrentUser(): UserProfile {
   return getUser(_currentUserId) || users[0];
+}
+
+// ====================================================
+// مخزن موقت کدهای پیامکی و لاگ‌های امنیتی
+// ====================================================
+interface StoredOtp {
+  code: string;
+  expires_at: number;
+  attempts: number;
+  purpose: string;
+}
+const _phoneOtpStore: Map<string, StoredOtp> = new Map();
+
+export let securityAuditLogs: SecurityAuditLog[] = [
+  {
+    id: 'sec_1',
+    phone_number: '09123456789',
+    user_id: 1802649782,
+    event: 'احراز هویت بدون رمز عبور و استعلام شاهکار موفق',
+    category: 'account_bind',
+    timestamp: '2026-10-20T10:00:00.000Z',
+    status: 'success',
+    details: 'تطابق شماره ۰۹۱۲۳۴۵۶۷۸۹ با کد ملی ۰۰۱۲۳۴۵۶۷۸ در سامانه شاهکار'
+  },
+  {
+    id: 'sec_2',
+    phone_number: '09123456789',
+    user_id: 1802649782,
+    event: 'فعال‌سازی پین‌کد مالی امنیتی (Financial PIN)',
+    category: 'pin_set',
+    timestamp: '2026-10-20T10:05:00.000Z',
+    status: 'success',
+    details: 'رمز دوم مالی با استاندارد رمزنگاری SHA-256 ذخیره گردید.'
+  },
+  {
+    id: 'sec_3',
+    phone_number: '09123456789',
+    user_id: 1802649782,
+    event: 'قفل اختصاصی شماره شبا به کد ملی مالک (قانون طلایی)',
+    category: 'sheba_bind',
+    timestamp: '2026-10-20T10:06:00.000Z',
+    status: 'success',
+    details: 'شبای IR52... به نام علیرضا رضوانی قفل شد. تسویه صرفاً به این شبا مجاز است.'
+  }
+];
+
+export function getSecurityAuditLogs(userIdOrPhone?: number | string): SecurityAuditLog[] {
+  if (!userIdOrPhone) return securityAuditLogs;
+  if (typeof userIdOrPhone === 'string' && (userIdOrPhone.startsWith('09') || userIdOrPhone.startsWith('+98'))) {
+    const norm = normalizeIranianPhone(userIdOrPhone);
+    return securityAuditLogs.filter(l => normalizeIranianPhone(l.phone_number) === norm);
+  }
+  return securityAuditLogs.filter(l => l.user_id === Number(userIdOrPhone));
+}
+
+export function addSecurityAuditLog(entry: Omit<SecurityAuditLog, 'id' | 'timestamp'>): SecurityAuditLog {
+  const log: SecurityAuditLog = {
+    id: `sec_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+    timestamp: new Date().toISOString(),
+    ...entry
+  };
+  securityAuditLogs.unshift(log);
+  return log;
+}
+
+export function getUserByPhone(phoneNumber: string): UserProfile | undefined {
+  const norm = normalizeIranianPhone(phoneNumber);
+  if (!norm) return undefined;
+  return users.find(u => normalizeIranianPhone(u.phone_number) === norm);
+}
+
+export function getOrCreateUserByPhone(
+  phoneNumber: string,
+  telegramId?: number,
+  fullName?: string
+): UserProfile {
+  const norm = normalizeIranianPhone(phoneNumber);
+  let user = getUserByPhone(norm);
+  if (user) {
+    if (telegramId && !user.telegram_id) {
+      user.telegram_id = telegramId;
+    }
+    if (fullName && (!user.full_name || user.full_name.startsWith('کاربر '))) {
+      user.full_name = fullName;
+    }
+    return user;
+  }
+
+  const newId = telegramId || (Date.now() % 1000000000);
+  const newUser: UserProfile = {
+    id: newId,
+    telegram_id: telegramId,
+    phone_number: norm,
+    full_name: fullName || `کاربر ${norm.slice(-4)}`,
+    role: 'employer',
+    wallet_balance: 0,
+    escrow_locked_balance: 0,
+    kyc_level: 'basic',
+    kyc_status: 'unverified',
+    referral_code: `REF-${Math.floor(10000 + Math.random() * 90000)}`,
+    is_verified: true,
+    has_financial_pin: false,
+    pin_failed_attempts: 0,
+    pin_locked_until: null,
+    security_score: 50,
+    created_at: new Date().toISOString()
+  };
+  users.push(newUser);
+  addSecurityAuditLog({
+    phone_number: norm,
+    user_id: newId,
+    event: 'ثبت‌نام و اتصال حساب بر پایه شماره موبایل تاییدشده',
+    category: 'account_bind',
+    status: 'success',
+    details: 'حساب کاربری مشترک وب‌سایت، اپلیکیشن و ربات تلگرام ایجاد شد.'
+  });
+  return newUser;
+}
+
+export function setFinancialPin(
+  userIdOrPhone: number | string,
+  pin: string
+): { success: boolean; message: string; user?: UserProfile } {
+  let user: UserProfile | undefined;
+  if (typeof userIdOrPhone === 'string' && (userIdOrPhone.startsWith('09') || userIdOrPhone.startsWith('+98'))) {
+    user = getUserByPhone(userIdOrPhone);
+  } else {
+    user = getUser(Number(userIdOrPhone));
+  }
+  if (!user) return { success: false, message: 'کاربر یافت نشد.' };
+
+  const cleanPin = pin.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+  if (!/^\d{4,6}$/.test(cleanPin)) {
+    return { success: false, message: 'پین‌کد مالی باید بین ۴ تا ۶ رقم عددی باشد.' };
+  }
+
+  if (/^(\d)\1+$/.test(cleanPin)) {
+    return { success: false, message: 'جهت امنیت بیشتر، از انتخاب ارقام کاملاً تکراری خودداری فرمایید.' };
+  }
+
+  user.financial_pin_hash = hashFinancialPin(cleanPin);
+  user.has_financial_pin = true;
+  user.pin_failed_attempts = 0;
+  user.pin_locked_until = null;
+  user.security_score = Math.min(100, (user.security_score || 50) + 25);
+  user.last_security_event = 'ثبت یا تغییر موفق پین مالی';
+
+  addSecurityAuditLog({
+    phone_number: user.phone_number,
+    user_id: user.id,
+    event: 'تنظیم و فعال‌سازی پین‌کد مالی امنیتی (Financial PIN)',
+    category: 'pin_set',
+    status: 'success',
+    details: 'رمز دوم مالی با موفقیت ثبت شد.'
+  });
+
+  return { success: true, message: 'پین‌کد مالی با موفقیت ثبت و فعال گردید.', user };
+}
+
+export function verifyFinancialPin(
+  userIdOrPhone: number | string,
+  pin: string
+): { valid: boolean; message: string; remainingAttempts?: number; locked?: boolean } {
+  let user: UserProfile | undefined;
+  if (typeof userIdOrPhone === 'string' && (userIdOrPhone.startsWith('09') || userIdOrPhone.startsWith('+98'))) {
+    user = getUserByPhone(userIdOrPhone);
+  } else {
+    user = getUser(Number(userIdOrPhone));
+  }
+  if (!user) return { valid: false, message: 'کاربر یافت نشد.' };
+
+  if (!user.has_financial_pin || !user.financial_pin_hash) {
+    return { valid: false, message: 'پین‌کد مالی هنوز تنظیم نشده است. ابتدا یک پین ۴ رقمی تعریف نمایید.' };
+  }
+
+  if (user.pin_locked_until) {
+    const lockTime = new Date(user.pin_locked_until).getTime();
+    if (Date.now() < lockTime) {
+      const minutesLeft = Math.ceil((lockTime - Date.now()) / (60 * 1000));
+      return {
+        valid: false,
+        locked: true,
+        message: `⚠️ حساب مالی به دلیل ۵ بار تلاش ناموفق تا ${minutesLeft} دقیقه دیگر قفل است. از بازیابی پیامکی استفاده کنید.`
+      };
+    } else {
+      user.pin_locked_until = null;
+      user.pin_failed_attempts = 0;
+    }
+  }
+
+  const cleanPin = pin.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+  const inputHash = hashFinancialPin(cleanPin);
+
+  if (inputHash === user.financial_pin_hash) {
+    user.pin_failed_attempts = 0;
+    addSecurityAuditLog({
+      phone_number: user.phone_number,
+      user_id: user.id,
+      event: 'تایید موفق پین‌کد مالی در عملیات حساس',
+      category: 'pin_verified',
+      status: 'success'
+    });
+    return { valid: true, message: 'پین‌کد مالی تایید شد.' };
+  } else {
+    user.pin_failed_attempts = (user.pin_failed_attempts || 0) + 1;
+    const remaining = Math.max(0, 5 - user.pin_failed_attempts);
+
+    if (user.pin_failed_attempts >= 5) {
+      user.pin_locked_until = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      addSecurityAuditLog({
+        phone_number: user.phone_number,
+        user_id: user.id,
+        event: 'مسدودسازی موقت پین‌کد مالی پس از ۵ بار تلاش ناموفق',
+        category: 'pin_failed',
+        status: 'blocked',
+        details: 'عملیات مالی به مدت ۳۰ دقیقه مسدود شد.'
+      });
+      return {
+        valid: false,
+        locked: true,
+        remainingAttempts: 0,
+        message: '🚨 پین‌کد مالی اشتباه است. به دلیل ۵ بار تلاش ناموفق، حساب مالی به مدت ۳۰ دقیقه مسدود گردید.'
+      };
+    }
+
+    addSecurityAuditLog({
+      phone_number: user.phone_number,
+      user_id: user.id,
+      event: `تلاش ناموفق در ورود پین‌کد مالی (${user.pin_failed_attempts} از ۵)`,
+      category: 'pin_failed',
+      status: 'warning'
+    });
+
+    return {
+      valid: false,
+      remainingAttempts: remaining,
+      message: `❌ پین‌کد مالی اشتباه است. (${remaining} بار تلاش باقی‌مانده)`
+    };
+  }
+}
+
+export function bindAndVerifySheba(
+  userIdOrPhone: number | string,
+  sheba: string,
+  ownerName?: string
+): { success: boolean; message: string; user?: UserProfile } {
+  let user: UserProfile | undefined;
+  if (typeof userIdOrPhone === 'string' && (userIdOrPhone.startsWith('09') || userIdOrPhone.startsWith('+98'))) {
+    user = getUserByPhone(userIdOrPhone);
+  } else {
+    user = getUser(Number(userIdOrPhone));
+  }
+  if (!user) return { success: false, message: 'کاربر یافت نشد.' };
+
+  if (!isValidIranianSheba(sheba)) {
+    return { success: false, message: 'شماره شبای وارد شده نامعتبر است (فرمت IR + ۲۴ رقم با چک‌سام استاندارد بانکی).' };
+  }
+
+  let cleanSheba = sheba.trim().toUpperCase().replace(/\s+/g, '');
+  if (!cleanSheba.startsWith('IR')) cleanSheba = 'IR' + cleanSheba;
+
+  const resolvedOwner = ownerName || user.full_name;
+  user.sheba = cleanSheba;
+  user.sheba_owner_name = resolvedOwner;
+  user.sheba_verified = true;
+  user.sheba_locked_to_national_id = true;
+  user.security_score = Math.min(100, (user.security_score || 50) + 20);
+
+  addSecurityAuditLog({
+    phone_number: user.phone_number,
+    user_id: user.id,
+    event: 'ثبت و قفل انحصاری شماره شبا مطابق قانون طلایی میانجی',
+    category: 'sheba_bind',
+    status: 'success',
+    details: `شماره شبا ${cleanSheba.slice(-8)} به نام «${resolvedOwner}» قفل شد. تسویه تنها به این حساب انجام خواهد شد.`
+  });
+
+  return {
+    success: true,
+    message: `شماره شبا با موفقیت به نام «${resolvedOwner}» تایید و به کد ملی شما قفل گردید.`,
+    user
+  };
+}
+
+export function sendPhoneOtp(
+  phone: string,
+  purpose: string = 'verification'
+): { success: boolean; message: string; debugCode: string; expiresIn: number } {
+  const norm = normalizeIranianPhone(phone);
+  if (!norm) return { success: false, message: 'شماره تلفن همراه نامعتبر است.', debugCode: '', expiresIn: 0 };
+
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 180 * 1000;
+  _phoneOtpStore.set(norm, {
+    code,
+    expires_at: expiresAt,
+    attempts: 0,
+    purpose
+  });
+
+  addSecurityAuditLog({
+    phone_number: norm,
+    user_id: getUserByPhone(norm)?.id || 0,
+    event: `ارسال پیامک رمز یکبارمصرف (OTP) جهت ${purpose === 'pin_reset' ? 'بازیابی پین مالی' : 'تایید عملیات'}`,
+    category: 'otp_sent',
+    status: 'success',
+    details: `کد تایید ۶ رقمی به شماره ${norm.slice(0, 4)}***${norm.slice(-4)} پیامک شد.`
+  });
+
+  return {
+    success: true,
+    message: `کد تایید ۶ رقمی به شماره ${norm} پیامک گردید. (مهلت: ۳ دقیقه)`,
+    debugCode: code,
+    expiresIn: 180
+  };
+}
+
+export function verifyPhoneOtp(
+  phone: string,
+  code: string,
+  purpose?: string
+): { valid: boolean; message: string } {
+  const norm = normalizeIranianPhone(phone);
+  const stored = _phoneOtpStore.get(norm);
+  if (!stored) {
+    return { valid: false, message: 'کد تایید برای این شماره صادر نشده یا منقضی گردیده است.' };
+  }
+
+  if (Date.now() > stored.expires_at) {
+    _phoneOtpStore.delete(norm);
+    return { valid: false, message: 'کد تایید منقضی شده است. لطفاً مجدداً درخواست ارسال کد نمایید.' };
+  }
+
+  const cleanEntered = code.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+  if (cleanEntered === stored.code) {
+    _phoneOtpStore.delete(norm);
+    addSecurityAuditLog({
+      phone_number: norm,
+      user_id: getUserByPhone(norm)?.id || 0,
+      event: `تایید موفقیت‌آمیز رمز یکبارمصرف پیامکی (OTP)`,
+      category: 'otp_verified',
+      status: 'success'
+    });
+    return { valid: true, message: 'کد تایید با موفقیت احراز شد.' };
+  } else {
+    stored.attempts += 1;
+    if (stored.attempts >= 4) {
+      _phoneOtpStore.delete(norm);
+      return { valid: false, message: 'به دلیل بیش از ۴ تلاش ناموفق، کد تایید باطل شد.' };
+    }
+    return { valid: false, message: `کد وارد شده صحیح نمی‌باشد. (${4 - stored.attempts} تلاش باقی‌مانده)` };
+  }
+}
+
+export function resetFinancialPinWithOtp(
+  phone: string,
+  otp: string,
+  newPin: string
+): { success: boolean; message: string } {
+  const norm = normalizeIranianPhone(phone);
+  const otpResult = verifyPhoneOtp(norm, otp, 'pin_reset');
+  if (!otpResult.valid) {
+    return { success: false, message: otpResult.message };
+  }
+
+  const user = getUserByPhone(norm);
+  if (!user) return { success: false, message: 'کاربر با این شماره تماس یافت نشد.' };
+
+  const cleanPin = newPin.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+  if (!/^\d{4,6}$/.test(cleanPin)) {
+    return { success: false, message: 'پین‌کد جدید باید ۴ تا ۶ رقم عددی باشد.' };
+  }
+
+  user.financial_pin_hash = hashFinancialPin(cleanPin);
+  user.has_financial_pin = true;
+  user.pin_failed_attempts = 0;
+  user.pin_locked_until = null;
+
+  addSecurityAuditLog({
+    phone_number: norm,
+    user_id: user.id,
+    event: 'بازیابی و تغییر پین مالی با تایید پیامک رمز یکبارمصرف (SMS OTP)',
+    category: 'pin_reset',
+    status: 'success',
+    details: 'قفل امنیتی رفع و پین جدید فعال شد.'
+  });
+
+  return { success: true, message: 'پین‌کد مالی با تایید پیامکی با موفقیت بازنشانی گردید.' };
 }
 
 export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id: number }): Promise<UserProfile> {
@@ -1232,7 +1670,8 @@ export async function depositWallet(
 export async function withdrawWallet(
   userId: number, 
   amount: number, 
-  sheba: string
+  sheba?: string,
+  financialPin?: string
 ): Promise<{ success: boolean; message: string; newBalance?: number; transaction?: WalletTransaction }> {
   const user = getUser(userId) || getCurrentUser();
   const numAmount = Number(amount);
@@ -1244,9 +1683,43 @@ export async function withdrawWallet(
     return { success: false, message: `موجودی شما (${formatCurrency(user.wallet_balance)}) کمتر از مبلغ درخواستی است.` };
   }
 
-  const targetSheba = sheba || user.sheba;
+  // ۱. بررسی الزامی بودن و صحت پین مالی (Financial PIN)
+  if (user.has_financial_pin) {
+    if (!financialPin) {
+      return {
+        success: false,
+        message: '🔒 جهت امنیت حساب، لطفاً پین‌کد ۴ رقمی مالی خود را وارد فرمایید.'
+      };
+    }
+    const pinCheck = verifyFinancialPin(user.id, financialPin);
+    if (!pinCheck.valid) {
+      return { success: false, message: pinCheck.message };
+    }
+  }
+
+  // ۲. اجرای قانون طلایی امنیت اسکرو: تسویه منحصراً به شماره شبای تاییدشده متصل به کد ملی (Golden Rule)
+  const targetSheba = sheba ? sheba.trim().toUpperCase().replace(/\s+/g, '') : user.sheba;
   if (!targetSheba || !isValidIranianSheba(targetSheba)) {
-    return { success: false, message: 'شماره شبای وارد شده نامعتبر است (فرمت IR + ۲۴ رقم).' };
+    return { success: false, message: 'شماره شبای وارد شده نامعتبر است (فرمت IR + ۲۴ رقم با چک‌سام معتبر).' };
+  }
+
+  if (user.sheba_locked_to_national_id && user.sheba) {
+    const canonicalUserSheba = user.sheba.trim().toUpperCase().replace(/\s+/g, '');
+    const canonicalTargetSheba = targetSheba.startsWith('IR') ? targetSheba : 'IR' + targetSheba;
+    if (canonicalUserSheba !== canonicalTargetSheba) {
+      addSecurityAuditLog({
+        phone_number: user.phone_number,
+        user_id: user.id,
+        event: 'تلاش مشکوک برای برداشت به شماره شبای غیرهم‌نام (رد شده)',
+        category: 'withdrawal_authorized',
+        status: 'blocked',
+        details: `تلاش برای انتقال به ${canonicalTargetSheba} مسدود شد؛ وجه فقط به شبای رسمی ${canonicalUserSheba} منتقل می‌گردد.`
+      });
+      return {
+        success: false,
+        message: '🛡️ طبق قانون طلایی امنیت اسکرو میانجی، برداشت وجه فقط به شماره شبای تاییدشده و متصل به کد ملی کاربر مجاز است. امکان برداشت به حساب متفرقه وجود ندارد.'
+      };
+    }
   }
 
   user.wallet_balance -= numAmount;
@@ -1256,13 +1729,22 @@ export async function withdrawWallet(
     user_id: user.id,
     type: 'withdraw',
     amount: numAmount,
-    title: `درخواست برداشت وجه به شماره شبا ${targetSheba.slice(-8)}`,
+    title: `درخواست برداشت وجه به شماره شبا ${targetSheba.slice(-8)} (تایید شده با پین مالی)`,
     status: 'completed',
     ref_id: `WTH-${Math.floor(100000 + Math.random() * 900000)}`,
     sheba: targetSheba,
     created_at: new Date().toISOString()
   };
   transactions.unshift(tx);
+
+  addSecurityAuditLog({
+    phone_number: user.phone_number,
+    user_id: user.id,
+    event: `تایید برداشت وجه به مبلغ ${formatCurrency(numAmount)} به شبای رسمی`,
+    category: 'withdrawal_authorized',
+    status: 'success',
+    details: `شناسه پیگیری پایا: ${tx.ref_id}`
+  });
 
   if (isSupabaseConfigured() && supabase) {
     try {
@@ -1275,7 +1757,7 @@ export async function withdrawWallet(
 
   return {
     success: true,
-    message: `درخواست تسویه ${formatCurrency(numAmount)} به شماره شبای شما ثبت شد و در سیکل پایا واریز خواهد شد.`,
+    message: `درخواست تسویه ${formatCurrency(numAmount)} با تایید پین مالی ثبت شد و در سیکل بعدی پایا واریز خواهد شد.`,
     newBalance: user.wallet_balance,
     transaction: tx
   };

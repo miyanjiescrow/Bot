@@ -58,12 +58,33 @@ export interface UserProfile {
   referral_code: string;
   created_at: string;
   sheba?: string;
+  sheba_owner_name?: string;
+  sheba_verified?: boolean;
+  sheba_locked_to_national_id?: boolean;
   national_id?: string;
   is_verified?: boolean;
   is_blacklisted?: boolean;
   kyc_card_image?: string;
   kyc_submitted_at?: string;
   invited_by?: number;
+  has_financial_pin?: boolean;
+  financial_pin_hash?: string;
+  pin_failed_attempts?: number;
+  pin_locked_until?: string | null;
+  security_score?: number;
+  last_security_event?: string;
+}
+
+export interface SecurityAuditLog {
+  id: string;
+  phone_number: string;
+  user_id: number;
+  event: string;
+  category: 'pin_set' | 'pin_verified' | 'pin_failed' | 'pin_reset' | 'sheba_bind' | 'otp_sent' | 'otp_verified' | 'withdrawal_authorized' | 'account_bind';
+  timestamp: string;
+  ip_address?: string;
+  status: 'success' | 'warning' | 'blocked';
+  details?: string;
 }
 
 export interface Contract {
