@@ -1,6 +1,7 @@
 import io
 import re
 import time
+import html
 import logging
 from datetime import datetime, timezone, timedelta
 from telebot import TeleBot
@@ -2420,12 +2421,27 @@ def register_user_handlers(bot: TeleBot):
             f"└ خالص سهم مجری: **{net:,.0f} تومان**"
         )
         
-        bot.send_message(
-            message.chat.id, 
-            final_msg, 
-            parse_mode="Markdown", 
-            reply_markup=kb.get_contract_created_inline(cid, share_link)
-        )
+        try:
+            bot.send_message(
+                message.chat.id, 
+                final_msg, 
+                parse_mode="Markdown", 
+                reply_markup=kb.get_contract_created_inline(cid, share_link)
+            )
+        except Exception:
+            try:
+                bot.send_message(
+                    message.chat.id, 
+                    final_msg, 
+                    parse_mode="HTML", 
+                    reply_markup=kb.get_contract_created_inline(cid, share_link)
+                )
+            except Exception:
+                bot.send_message(
+                    message.chat.id, 
+                    final_msg, 
+                    reply_markup=kb.get_contract_created_inline(cid, share_link)
+                )
         bot.send_message(
             message.chat.id,
             "🏠 از منوی زیر می‌توانید بخش‌های دیگر را مدیریت کنید:",
@@ -4293,20 +4309,56 @@ def register_user_handlers(bot: TeleBot):
             share_link = f"https://t.me/{bot_username}?start=c_{cid}"
             is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
             
+            # واکشی آخرین اطلاعات معامله برای نمایش پیش‌نویس کامل
+            c_info = contract or updates or draft or {}
+            c_title = c_info.get("title") or "معامله رسمی واسطه‌گری امن میانجی"
+            c_amount = utils.safe_float(c_info.get("amount", 0))
+            c_role_str = "کارفرما (خریدار)" if role == "employer" else "مجری (فروشنده)"
+            c_deadline = c_info.get("deadline", 1)
+            c_desc = c_info.get("description", "بدون توضیحات تکمیلی")
+            
+            payer = c_info.get("commission_payer", "freelancer")
+            comm, net, employer_pays = utils.calculate_commission(c_amount, payer=payer)
+            comm_payer_map = {
+                "freelancer": "مجری (کسر از دریافتی)",
+                "employer": "کارفرما (اضافه به واریزی)",
+                "shared": "مشترک (۵۰٪ کارفرما / ۵۰٪ مجری)"
+            }
+            comm_str = comm_payer_map.get(payer, "مجری")
+
+            # متن کامل پیش‌نویس و مشخصات معامله به همراه لینک امضای طرف دوم و دکمه ارسال
+            draft_and_invite_html = (
+                f"🎉 <b>امضای رسمی و قانونی شما با موفقیت ثبت شد</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 <b>پیش‌نویس و مشخصات معامله:</b>\n"
+                f"▫️ <b>شناسه اختصاصی معامله:</b> <code>{cid}</code>\n"
+                f"▫️ <b>عنوان:</b> {html.escape(str(c_title))}\n"
+                f"▫️ <b>ارزش معامله:</b> {c_amount:,.0f} تومان\n"
+                f"▫️ <b>نقش شما:</b> {c_role_str}\n"
+                f"▫️ <b>مهلت انجام:</b> {c_deadline} روز کاری\n"
+                f"▫️ <b>کارمزد امن میانجی:</b> {comm_str}\n"
+                f"▫️ <b>شرح تعهدات:</b> {html.escape(str(c_desc)[:250])}\n"
+                f"────────────────────\n"
+                f"💰 <b>خلاصه مالی اسکرو:</b>\n"
+                f"├ مبلغ پرداختی کارفرما: <b>{employer_pays:,.0f} تومان</b>\n"
+                f"└ خالص دریافتی مجری: <b>{net:,.0f} تومان</b>\n"
+                f"────────────────────\n"
+                f"🔒 <b>کد رهگیری شواهد امضا:</b> <code>{sig_hash[:20]}...</code>\n\n"
+                f"🔗 <b>لینک اختصاصی دعوت و امضای طرف دوم:</b>\n"
+                f"<code>{share_link}</code>\n\n"
+                f"💡 <i>با زدن دکمه «📤 ارسال دعوت‌نامه به طرف دوم» در زیر، این پیش‌نویس را مستقیماً برای طرف دوم بفرستید تا سند را امضا کند.</i>"
+            )
+
             utils.send_celebration(
                 bot,
                 chat_id,
-                f"✨ **امضای رسمی شما با موفقیت ثبت شد** ✨\n\n"
-                f"📄 قرارداد شماره `{cid}` ثبت گردید و در وضعیت **«در انتظار امضای طرف دوم»** قرار گرفت.\n\n"
-                f"🔒 **شواهد قانونی امضا:** `{sig_hash}`\n\n"
-                f"🔗 **لینک دعوت و امضای طرف دوم:**\n`{share_link}`\n\n"
-                f"💡 لطفاً این لینک را برای طرف دوم ارسال کنید تا بدون نیاز به رمز عبور وارد شده و قرارداد را امضا کند.",
+                draft_and_invite_html,
                 reply_markup=kb.get_contract_created_inline(cid, share_link)
             )
             bot.send_message(
                 chat_id,
                 "🏠 از منوی زیر می‌توانید بخش‌های دیگر را مدیریت کنید:",
-                reply_markup=kb.get_main_menu(is_admin, is_verified=True)
+                reply_markup=_get_main_menu_for_user(user_id, is_admin)
             )
             return
 

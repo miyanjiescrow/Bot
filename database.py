@@ -17,12 +17,21 @@ from phone_utils import normalize_phone_number
 
 logger = logging.getLogger("Miyanji_Database")
 
-# Local SQLite Database for persistent FSM State Management
+# Local SQLite Database for persistent storage (FSM States, Users, Contracts, Transactions, Signatures)
 _FSM_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miyanji_fsm.db")
 _fsm_lock = threading.RLock()
-_user_states: Dict[int, Dict[str, Any]] = {}
+db_lock = threading.RLock()
+from concurrent.futures import ThreadPoolExecutor
+db_pool = ThreadPoolExecutor(max_workers=30)
 
-def _init_local_fsm_db():
+_user_states: Dict[int, Dict[str, Any]] = {}
+_in_memory_contracts: Dict[str, Dict[str, Any]] = {}
+_in_memory_users: Dict[int, Dict[str, Any]] = {}
+_in_memory_transactions: Dict[int, Dict[str, Any]] = {}
+_in_memory_receipts: Dict[str, Dict[str, Any]] = {}
+_in_memory_signatures: Dict[str, List[Dict[str, Any]]] = {}
+
+def _init_local_persistent_db():
     try:
         conn = sqlite3.connect(_FSM_DB_PATH, timeout=10.0)
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -37,25 +46,186 @@ def _init_local_fsm_db():
                 updated_at REAL NOT NULL
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS local_users (
+                id INTEGER PRIMARY KEY,
+                data_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS local_contracts (
+                contract_id TEXT PRIMARY KEY,
+                data_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS local_transactions (
+                id INTEGER PRIMARY KEY,
+                data_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS local_signatures (
+                id TEXT PRIMARY KEY,
+                contract_id TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
         conn.commit()
 
-        # پیش‌بارگذاری تمام وضعیت‌های ذخیره‌شده قبلی در حافظه رم جهت عملکرد آنی
+        # ۱. پیش‌بارگذاری تمام وضعیت‌های ذخیره‌شده قبلی FSM
         c.execute("SELECT user_id, state, data FROM user_states")
-        loaded_count = 0
+        loaded_states = 0
         for uid, st, dt_str in c.fetchall():
             try:
                 dt = json.loads(dt_str) if dt_str else {}
             except Exception:
                 dt = {}
-            with _fsm_lock:
-                _user_states[int(uid)] = {"current_state": st, "state_data": dt, "last_updated": time.time()}
-            loaded_count += 1
-        conn.close()
-        logger.info(f"⚡ FSM Local Database initialized in WAL mode. Loaded {loaded_count} active states to RAM.")
-    except Exception as e:
-        logger.warning(f"Notice init local fsm sqlite: {e}")
+            _user_states[int(uid)] = {"current_state": st, "state_data": dt, "last_updated": time.time()}
+            loaded_states += 1
 
-_init_local_fsm_db()
+        # ۲. پیش‌بارگذاری کاربران ذخیره شده در دیسک جهت پایداری موجودی‌ها بعد از دیپلوی رندر
+        c.execute("SELECT id, data_json FROM local_users")
+        loaded_users = 0
+        for uid, dt_str in c.fetchall():
+            try:
+                u_obj = json.loads(dt_str) if dt_str else {}
+                _in_memory_users[int(uid)] = u_obj
+                loaded_users += 1
+            except Exception:
+                pass
+
+        # ۳. پیش‌بارگذاری قراردادها
+        c.execute("SELECT contract_id, data_json FROM local_contracts")
+        loaded_contracts = 0
+        for cid, dt_str in c.fetchall():
+            try:
+                c_obj = json.loads(dt_str) if dt_str else {}
+                _in_memory_contracts[str(cid)] = c_obj
+                loaded_contracts += 1
+            except Exception:
+                pass
+
+        # ۴. پیش‌بارگذاری تراکنش‌ها
+        c.execute("SELECT id, data_json FROM local_transactions")
+        loaded_txs = 0
+        for txid, dt_str in c.fetchall():
+            try:
+                t_obj = json.loads(dt_str) if dt_str else {}
+                _in_memory_transactions[int(txid)] = t_obj
+                _in_memory_transactions[str(txid)] = t_obj
+                loaded_txs += 1
+            except Exception:
+                pass
+
+        # ۵. پیش‌بارگذاری امضاها
+        c.execute("SELECT contract_id, data_json FROM local_signatures")
+        for cid, dt_str in c.fetchall():
+            try:
+                s_obj = json.loads(dt_str) if dt_str else {}
+                if cid not in _in_memory_signatures:
+                    _in_memory_signatures[cid] = []
+                _in_memory_signatures[cid].append(s_obj)
+            except Exception:
+                pass
+
+        conn.close()
+        logger.info(f"⚡ Local Database initialized in WAL mode. Loaded: {loaded_states} states, {loaded_users} users, {loaded_contracts} contracts, {loaded_txs} transactions.")
+    except Exception as e:
+        logger.warning(f"Notice init local persistent sqlite: {e}")
+
+_init_local_persistent_db()
+
+def _save_user_to_sqlite(user_dict: Dict[str, Any]):
+    if not user_dict or not user_dict.get("id"):
+        return
+    try:
+        uid = int(user_dict["id"])
+    except Exception:
+        return
+    now_ts = time.time()
+    def _task():
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO local_users (id, data_json, updated_at) VALUES (?, ?, ?)",
+                      (uid, json.dumps(user_dict, ensure_ascii=False), now_ts))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Error saving user {uid} to local sqlite: {e}")
+    try:
+        db_pool.submit(_task)
+    except Exception:
+        pass
+
+def _save_contract_to_sqlite(contract_dict: Dict[str, Any]):
+    if not contract_dict or not contract_dict.get("contract_id"):
+        return
+    cid = str(contract_dict["contract_id"])
+    now_ts = time.time()
+    def _task():
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO local_contracts (contract_id, data_json, updated_at) VALUES (?, ?, ?)",
+                      (cid, json.dumps(contract_dict, ensure_ascii=False), now_ts))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Error saving contract {cid} to local sqlite: {e}")
+    try:
+        db_pool.submit(_task)
+    except Exception:
+        pass
+
+def _save_transaction_to_sqlite(tx_dict: Dict[str, Any]):
+    if not tx_dict or not tx_dict.get("id"):
+        return
+    try:
+        txid = int(tx_dict["id"])
+    except Exception:
+        txid = int(time.time() * 1000) % 10000000
+    now_ts = time.time()
+    def _task():
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO local_transactions (id, data_json, updated_at) VALUES (?, ?, ?)",
+                      (txid, json.dumps(tx_dict, ensure_ascii=False), now_ts))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Error saving tx {txid} to local sqlite: {e}")
+    try:
+        db_pool.submit(_task)
+    except Exception:
+        pass
+
+def _save_signature_to_sqlite(sig_dict: Dict[str, Any]):
+    if not sig_dict or not sig_dict.get("contract_id"):
+        return
+    cid = str(sig_dict["contract_id"])
+    sig_id = str(sig_dict.get("signature_hash") or f"{cid}_{sig_dict.get('telegram_id')}_{time.time()}")
+    now_ts = time.time()
+    def _task():
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO local_signatures (id, contract_id, data_json, updated_at) VALUES (?, ?, ?, ?)",
+                      (sig_id, cid, json.dumps(sig_dict, ensure_ascii=False), now_ts))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Error saving signature {sig_id} to local sqlite: {e}")
+    try:
+        db_pool.submit(_task)
+    except Exception:
+        pass
 
 
 # ====================================================
@@ -79,14 +249,6 @@ def validate_iranian_sheba(sheba: str) -> bool:
     )
     return int(numeric_str) % 97 == 1
 
-# قفل Reentrant Thread جهت جلوگیری از Race Condition و Deadlock
-db_lock = threading.RLock()
-
-# Thread pool for non-blocking DB operations (like persisting state)
-db_executor = threading.Thread(target=lambda: None) # placeholder to keep imports clean if needed
-from concurrent.futures import ThreadPoolExecutor
-db_pool = ThreadPoolExecutor(max_workers=30)
-
 # ایجاد کلاینت اتصال به Supabase
 supabase: Optional[Client] = None
 try:
@@ -98,12 +260,6 @@ try:
 except Exception as e:
     logger.error(f"خطا در اتصال به Supabase: {e}")
     supabase = None
-
-_in_memory_contracts: Dict[str, Dict[str, Any]] = {}
-_in_memory_users: Dict[int, Dict[str, Any]] = {}
-_in_memory_transactions: Dict[int, Dict[str, Any]] = {}
-_in_memory_receipts: Dict[str, Dict[str, Any]] = {}
-_in_memory_signatures: Dict[str, List[Dict[str, Any]]] = {}
 
 
 @lru_cache(maxsize=1024)
@@ -309,7 +465,7 @@ def register_or_update_user(
 ) -> Dict[str, Any]:
     with db_lock:
         if not supabase:
-            logger.warning("Supabase client is not initialized; saving to local memory store.")
+            logger.warning("Supabase client is not initialized; saving to local memory and sqlite store.")
             user_rec = _in_memory_users.get(user_id, {
                 "id": user_id,
                 "username": username or "",
@@ -326,6 +482,7 @@ def register_or_update_user(
             for k, v in kwargs.items(): user_rec[k] = v
             _in_memory_users[user_id] = user_rec
             _user_info_cache[user_id] = user_rec
+            _save_user_to_sqlite(user_rec)
             return user_rec
 
         try:
@@ -350,19 +507,22 @@ def register_or_update_user(
                 
                 if update_data:
                     # بروزرسانی آنی کش جهت جلوگیری از Race Condition
-                    if user_id in _user_info_cache:
-                        _user_info_cache[user_id].update(update_data)
-                        _user_info_last_update[user_id] = datetime.now()
-                    else:
-                        full_obj = dict(existing_user)
-                        full_obj.update(update_data)
-                        _user_info_cache[user_id] = full_obj
-                        _user_info_last_update[user_id] = datetime.now()
+                    full_obj = dict(existing_user)
+                    full_obj.update(update_data)
+                    _user_info_cache[user_id] = full_obj
+                    _user_info_last_update[user_id] = datetime.now()
+                    _in_memory_users[user_id] = full_obj
+                    _save_user_to_sqlite(full_obj)
 
-                    # اجرای آپدیت واقعی
-                    supabase.table("users").update(update_data).eq("id", existing_user.get("id", user_id)).execute()
+                    # اجرای آپدیت واقعی در دیتابیس
+                    try:
+                        supabase.table("users").update(update_data).eq("id", existing_user.get("id", user_id)).execute()
+                    except Exception as up_err:
+                        logger.warning(f"Notice updating user in Supabase: {up_err}")
                     existing_user.update(update_data)
                 
+                _in_memory_users[user_id] = existing_user
+                _save_user_to_sqlite(existing_user)
                 return existing_user
             else:
                 new_user = {
@@ -380,22 +540,48 @@ def register_or_update_user(
                     "is_blacklisted": kwargs.get("is_blacklisted", False),
                     "payment_cards": kwargs.get("payment_cards", "[]")
                 }
-                res_insert = supabase.table("users").insert(new_user).execute()
                 
-                if res_insert.data:
-                    user_data = res_insert.data[0]
-                    _user_info_cache[user_id] = user_data
-                    _user_info_last_update[user_id] = datetime.now()
-                    
-                    if invited_by:
-                        update_ambassador_stats(invited_by, referrals_delta=1)
-                    
-                    return user_data
+                _in_memory_users[user_id] = new_user
+                _user_info_cache[user_id] = new_user
+                _save_user_to_sqlite(new_user)
+                
+                try:
+                    res_insert = supabase.table("users").insert(new_user).execute()
+                    if res_insert.data:
+                        user_data = res_insert.data[0]
+                        _user_info_cache[user_id] = user_data
+                        _user_info_last_update[user_id] = datetime.now()
+                        _in_memory_users[user_id] = user_data
+                        _save_user_to_sqlite(user_data)
+                        
+                        if invited_by:
+                            update_ambassador_stats(invited_by, referrals_delta=1)
+                        
+                        return user_data
+                except Exception as ins_err:
+                    logger.warning(f"Notice inserting user in Supabase: {ins_err}")
                 
                 return new_user
         except Exception as e:
             logger.error(f"خطا در ثبت یا بروزرسانی کاربر {user_id}: {e}", exc_info=True)
-            return {}
+            user_rec = _in_memory_users.get(user_id, {
+                "id": user_id,
+                "username": username or "",
+                "full_name": full_name or first_name or f"کاربر {user_id}",
+                "phone_number": phone_number,
+                "role": role or "user",
+                "wallet_balance": 0.0,
+                "is_verified": False,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            })
+            if full_name: user_rec["full_name"] = full_name
+            if phone_number: user_rec["phone_number"] = phone_number
+            if username: user_rec["username"] = username
+            for k, v in kwargs.items(): user_rec[k] = v
+            _in_memory_users[user_id] = user_rec
+            _user_info_cache[user_id] = user_rec
+            _save_user_to_sqlite(user_rec)
+            return user_rec
 
 # ====================================================
 #  Settings Management
@@ -781,6 +967,7 @@ def approve_user_kyc(user_id: int, national_id: str = None) -> bool:
             user["national_id"] = utils.fa_to_en_digits(str(national_id)).strip()
         
         _in_memory_users[user_id] = user
+        _save_user_to_sqlite(user)
         if user_id in _user_info_cache:
             _user_info_cache[user_id].update(user)
         else:
@@ -826,6 +1013,7 @@ def reject_user_kyc(user_id: int, reason: str = None) -> bool:
         user["kyc_rejected_at"] = now_iso
         
         _in_memory_users[user_id] = user
+        _save_user_to_sqlite(user)
         if user_id in _user_info_cache:
             _user_info_cache[user_id].update(user)
         else:
@@ -852,21 +1040,64 @@ def reject_user_kyc(user_id: int, reason: str = None) -> bool:
         return True
 
 
+def request_user_kyc_correction(user_id: int, reason: str = None) -> bool:
+    """
+    اعلام نیاز به اصلاح کد ملی کاربر توسط ادمین (وضعیت: needs_correction، is_verified: False)
+    """
+    with db_lock:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        user = _in_memory_users.get(user_id) or get_user(user_id) or {}
+        user["id"] = user_id
+        user["is_verified"] = False
+        user["kyc_status"] = "needs_correction"
+        user["kyc_reject_reason"] = reason or "کد ملی با اطلاعات سجلی یا سیم‌کارت مطابقت ندارد و نیاز به اصلاح دارد"
+        user["kyc_reviewed_at"] = now_iso
+        
+        _in_memory_users[user_id] = user
+        _save_user_to_sqlite(user)
+        if user_id in _user_info_cache:
+            _user_info_cache[user_id].update(user)
+        else:
+            _user_info_cache[user_id] = dict(user)
+        _user_info_last_update[user_id] = datetime.now()
+
+        if supabase:
+            try:
+                update_payload = {
+                    "is_verified": False,
+                    "kyc_status": "needs_correction",
+                    "kyc_reject_reason": reason or "کد ملی با اطلاعات سجلی یا سیم‌کارت مطابقت ندارد و نیاز به اصلاح دارد"
+                }
+                try:
+                    supabase.table("users").update(update_payload).eq("id", user_id).execute()
+                except Exception as col_err:
+                    logger.warning(f"Fallback kyc correction in Supabase: {col_err}")
+                    supabase.table("users").update({"is_verified": False, "kyc_status": "needs_correction"}).eq("id", user_id).execute()
+            except Exception as e:
+                logger.error(f"Error updating KYC correction in Supabase: {e}")
+
+        _clear_user_cache(user_id)
+        return True
+
+
 def get_pending_kyc_requests() -> List[Dict[str, Any]]:
     """
-    دریافت لیست تمام کاربران در انتظار بررسی احراز هویت
+    دریافت لیست تمام کاربران در انتظار بررسی احراز هویت یا نیاز به تایید/اصلاح کد ملی
     """
     pending = []
     with db_lock:
         for u in _in_memory_users.values():
-            if u.get("kyc_status") == "pending" and not u.get("is_verified"):
+            has_nid = bool(u.get("national_id"))
+            is_ver = bool(u.get("is_verified"))
+            st = u.get("kyc_status", "unverified")
+            if (st in ["pending", "needs_correction"] or (has_nid and not is_ver)):
                 pending.append(dict(u))
     
     if supabase:
         try:
-            res = supabase.table("users").select("*").eq("kyc_status", "pending").eq("is_verified", False).order("created_at", desc=True).execute()
+            res = supabase.table("users").select("*").eq("is_verified", False).order("created_at", desc=True).execute()
             for row in (res.data or []):
-                if not any(p["id"] == row["id"] for p in pending):
+                if row.get("national_id") and not any(p["id"] == row["id"] for p in pending):
                     pending.append(row)
         except Exception as e:
             logger.warning(f"Error querying pending kyc from Supabase: {e}")
@@ -1104,6 +1335,8 @@ def update_wallet_balance(
             }
             _in_memory_transactions[tx_id_mem] = mem_tx
             _in_memory_transactions[str(tx_id_mem)] = mem_tx
+            _save_user_to_sqlite(user_in_mem)
+            _save_transaction_to_sqlite(mem_tx)
 
             # ۲. بروزرسانی پایدار در Supabase
             if supabase:
@@ -1671,19 +1904,25 @@ def create_contract(
             "seller_role": contract_data.get("seller_role", "freelancer"),  # ✅ نقش فروشنده
         }
 
+        _in_memory_contracts[cid] = core_payload
+        _save_contract_to_sqlite(core_payload)
+
         if not supabase:
-            _in_memory_contracts[cid] = core_payload
             return _enrich_contract(core_payload)
 
         try:
             res = supabase.table("contracts").upsert(core_payload, on_conflict="contract_id").execute()
             if res.data and len(res.data) > 0:
-                return _enrich_contract(res.data[0])
+                saved = res.data[0]
+                _in_memory_contracts[cid] = saved
+                _save_contract_to_sqlite(saved)
+                return _enrich_contract(saved)
         except Exception as e1:
             logger.warning(f"⚠️ Upsert exception for {cid}: {e1}")
 
         existing = get_contract(cid)
         if existing:
+            _save_contract_to_sqlite(existing)
             return _enrich_contract(existing)
 
         return _enrich_contract(core_payload)
@@ -1852,8 +2091,10 @@ def update_contract(
     with db_lock:
         if clean_cid in _in_memory_contracts:
             _in_memory_contracts[clean_cid].update(payload)
+            _save_contract_to_sqlite(_in_memory_contracts[clean_cid])
         if contract_id in _in_memory_contracts:
             _in_memory_contracts[contract_id].update(payload)
+            _save_contract_to_sqlite(_in_memory_contracts[contract_id])
 
     if not supabase:
         return True
@@ -3085,6 +3326,7 @@ def create_contract_signature(
         if contract_id not in _in_memory_signatures:
             _in_memory_signatures[contract_id] = []
         _in_memory_signatures[contract_id].append(signature_payload)
+        _save_signature_to_sqlite(signature_payload)
 
     # ۲. ذخیره در جدول signatures در Supabase (در صورت وجود جدول)
     if supabase:

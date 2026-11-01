@@ -1052,23 +1052,45 @@ def convert_to_jalali(date_str: str) -> str:
 def send_celebration(bot: TeleBot, chat_id: int, text: str = None, reply_markup=None):
     """
     ارسال بازخورد بصری و جشن برای موفقیت در عملیات.
+    با سیستم چندلایه‌ای ارسال (HTML -> Markdown -> متن ساده) تا دکمه‌ها و لینک‌ها هرگز به علت خطای پارس تلگرام حذف نشوند.
     """
     try:
-        # ارسال استیکر/ایموجی متحرک (📝 یا 🎉)
-        # اگر متن برای امضای نهایی است از 📝 استفاده می‌کنیم
         icon = "📝" if "امضا" in (text or "") else "🎉"
+        try:
+            bot.send_message(chat_id, icon)
+        except Exception:
+            pass
         
-        bot.send_message(chat_id, icon, parse_mode="Markdown")
         if text:
-            # ایجاد یک کادر زیبا با نمادها
             fancy_text = (
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"{text}\n"
                 "━━━━━━━━━━━━━━━━━━━━"
             )
-            bot.send_message(chat_id, fancy_text, parse_mode="Markdown", reply_markup=reply_markup)
+            # تلاش اول: ارسال با HTML
+            try:
+                bot.send_message(chat_id, fancy_text, parse_mode="HTML", reply_markup=reply_markup)
+                return
+            except Exception as e_html:
+                logger.debug(f"HTML send failed in celebration: {e_html}")
+            
+            # تلاش دوم: ارسال با Markdown
+            try:
+                bot.send_message(chat_id, fancy_text, parse_mode="Markdown", reply_markup=reply_markup)
+                return
+            except Exception as e_md:
+                logger.debug(f"Markdown send failed in celebration: {e_md}")
+                
+            # تلاش نهایی تضمینی: ارسال با متن ساده (بدون پارس‌مود، حفظ ۱۰۰٪ دکمه‌ها و لینک)
+            bot.send_message(chat_id, fancy_text, reply_markup=reply_markup)
     except Exception as e:
         logger.warning(f"خطا در ارسال پیام جشن به {chat_id}: {e}")
+        if reply_markup:
+            try:
+                bot.send_message(chat_id, text or "عملیات با موفقیت انجام شد.", reply_markup=reply_markup)
+            except Exception:
+                pass
+
 
 
 def get_tehran_now_jalali_str() -> str:

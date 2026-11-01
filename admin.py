@@ -123,6 +123,35 @@ def register_admin_handlers(bot: TeleBot):
             reply_markup=kb.get_admin_panel_keyboard(qs, is_owner(user_id))
         )
 
+    @bot.message_handler(func=lambda msg: msg.text in ["🪪 بررسی کدهای ملی", "بررسی کدهای ملی", "🪪 تایید کدهای ملی", "تایید کدهای ملی"])
+    def admin_kyc_menu_button(message: Message):
+        user_id = message.from_user.id if message.from_user else message.chat.id
+        if not is_admin(user_id):
+            return
+        try:
+            pending_kyc = db.get_pending_kyc_requests()
+        except Exception as e:
+            logger.error(f"خطا در دریافت درخواست‌های احراز هویت: {e}")
+            pending_kyc = []
+
+        if not pending_kyc:
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🏠 بازگشت به پنل ادمین", callback_data="adm:home"))
+            bot.send_message(
+                message.chat.id,
+                "🆔 **درخواست احراز هویتی در انتظار بررسی وجود ندارد.**\nتمام کدهای ملی ثبت‌شده تعیین وضعیت شده‌اند.",
+                parse_mode="Markdown", reply_markup=markup
+            )
+            return
+
+        bot.send_message(
+            message.chat.id,
+            f"🆔 **بررسی و تعیین وضعیت کدهای ملی کاربران ({len(pending_kyc)})**\n"
+            "برای بررسی اطلاعات و تایید یا ارسال درخواست اصلاح، کاربر موردنظر را انتخاب کنید:",
+            parse_mode="Markdown",
+            reply_markup=kb.get_pending_kyc_list_inline(pending_kyc)
+        )
+
     @bot.callback_query_handler(func=lambda call: call.data == "adm:home")
     def admin_home(call: CallbackQuery):
         bot.answer_callback_query(call.id)
@@ -687,6 +716,54 @@ def register_admin_handlers(bot: TeleBot):
             db.log_admin_action(call.from_user.id, "approve_kyc", f"user={target_uid} nid={national_id}", target_id=target_uid)
         else:
             bot.answer_callback_query(call.id, "❌ خطا در تایید احراز هویت.", show_alert=True)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("adm:kyc:fix:"))
+    def admin_request_kyc_correction(call: CallbackQuery):
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "❌ دسترسی ندارید.", show_alert=True)
+            return
+
+        parts = call.data.split(":")
+        target_uid = int(parts[3])
+        national_id = parts[4] if len(parts) > 4 else ""
+
+        user_info = db.get_user(target_uid) or {}
+        if not national_id:
+            national_id = user_info.get("national_id", "")
+        admin_name = call.from_user.first_name or "مدیریت"
+
+        if db.request_user_kyc_correction(target_uid, reason="کد ملی نیاز به اصلاح دارد"):
+            bot.answer_callback_query(call.id, "⚠️ پیام نیاز به اصلاح کد ملی برای کاربر ارسال شد.", show_alert=True)
+            new_text = (call.message.text or call.message.caption or "") + f"\n\n⚠️ <b>درخواست اصلاح کد ملی ثبت شد توسط {utils.escape_html(admin_name)}</b>"
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("📋 لیست کدهای ملی", callback_data="adm:pending_kyc"))
+            markup.add(InlineKeyboardButton("🏠 بازگشت به پنل", callback_data="adm:home"))
+            try:
+                bot.edit_message_text(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                try:
+                    bot.edit_message_caption(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+                except Exception:
+                    pass
+
+            user_msg = (
+                "⚠️ **پیام مدیریت میانجی: کد ملی شما نیاز به اصلاح دارد**\n"
+                "──────────────────\n"
+                f"کاربر گرامی، کد ملی ثبت‌شده شما (`{national_id}`) توسط مدیریت بررسی گردید و دارای مغایرت می‌باشد.\n\n"
+                "📌 **علت نیاز به اصلاح:**\n"
+                "• عدم انطباق کد ملی با مالک خط سیم‌کارت فعال در تلگرام\n"
+                "• اشتباه در ارقام یا رقم کنترل کد ملی\n\n"
+                "💡 لطفاً جهت تایید رسمی حساب و امکان آزادسازی یا تسویه وجوه، کد ملی صحیح ۱۰ رقمی متعلق به دارنده خط را مجدداً ارسال نمایید."
+            )
+            try:
+                is_adm = is_admin(target_uid)
+                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_main_menu(is_adm))
+            except Exception as e:
+                logger.warning(f"Error notifying user {target_uid} of KYC correction: {e}")
+
+            db.log_admin_action(call.from_user.id, "kyc_needs_correction", f"user={target_uid} nid={national_id}", target_id=target_uid)
+        else:
+            bot.answer_callback_query(call.id, "❌ خطا در ثبت درخواست اصلاح.", show_alert=True)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith(("adm:kyc:rej:", "reject_kyc:")))
     def admin_reject_kyc(call: CallbackQuery):

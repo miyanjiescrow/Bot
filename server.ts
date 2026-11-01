@@ -56,6 +56,8 @@ import {
   verifyPhoneOtp,
   getSecurityAuditLogs,
   normalizeIranianPhone,
+  getPendingKycUsers,
+  updateUserKycStatus,
 } from './src/db';
 import { isSupabaseConfigured } from './src/lib/supabase';
 import { startBot } from './src/bot';
@@ -292,9 +294,8 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       reply: '🔙 **عملیات لغو شد و به منوی اصلی بازگشتید.**',
       keyboard: [
         ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-        ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
-        ['🎧 پشتیبانی و راهنمای استفاده 📖'],
-        ['💎 پنل سفیران']
+        ['💳 کیف پول و اعتبار', '💎 پنل سفیران'],
+        ['🪪 بررسی کدهای ملی', '🎧 پشتیبانی و راهنمای استفاده 📖']
       ]
     });
   }
@@ -305,9 +306,8 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       reply: '🤖 **سلام! به سامانه جامع اسکرو و واسطه‌گری میانجی (Miyanji Escrow) خوش آمدید.**\n\nپلتفرم رسمی پرداخت امن، داوری حقوقی و قراردادهای فریلنسری تحت پوشش قانون تجارت الکترونیک.',
       keyboard: [
         ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-        ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
-        ['🎧 پشتیبانی و راهنمای استفاده 📖'],
-        ['💎 پنل سفیران']
+        ['💳 کیف پول و اعتبار', '💎 پنل سفیران'],
+        ['🪪 بررسی کدهای ملی', '🎧 پشتیبانی و راهنمای استفاده 📖']
       ]
     });
   }
@@ -1582,25 +1582,56 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
-  if (input.includes('پروفایل') || input === '/profile') {
-    const user = getCurrentUser();
-    const hasNid = Boolean(user.national_id && user.national_id.length === 10);
-    const scoreDisplay = (user.is_verified && hasNid) ? '۱۰۰ / ۱۰۰ ⭐️ (عالی)' : '۸۵ / ۱۰۰ (پایه)';
-    const userLevel = (user.is_verified && hasNid) ? 'سطح طلایی 🌟' : 'سطح پایه (شماره تاییدشده) 🥈';
+  if (input.includes('بررسی کدهای ملی') || input.includes('کدهای ملی') || input === '/admin_kyc') {
+    const pendingUsers = getPendingKycUsers();
+    let userListStr = '';
+    if (pendingUsers.length > 0) {
+      userListStr = pendingUsers.map(u => 
+        `👤 **${u.full_name}** (ID: \`${u.id}\`)\n` +
+        `• کد ملی: \`${u.national_id || 'ثبت‌نشده'}\`\n` +
+        `• شماره تماس: \`${u.phone_number}\`\n` +
+        `• وضعیت: ${u.kyc_status === 'needs_correction' ? '⚠️ نیازمند اصلاح مجدد' : '⏳ در انتظار تایید ادمین'}`
+      ).join('\n\n');
+    } else {
+      userListStr = 'هیچ درخواست کد ملی در انتظار بررسی نیست.';
+    }
 
     return res.json({
-      reply: `👤 **پروفایل کاربری | سامانه واسطه‌گری امن میانجی**\n` +
+      reply: `🪪 **پنل مدیریت | بررسی و تعیین وضعیت کدهای ملی**\n` +
              `────────────────────────────\n` +
-             `📱 **شماره تماس:** \`${user.phone_number}\`\n` +
-             `👤 **نام و نام خانوادگی:** ${user.full_name}\n` +
-             `🪪 **کد ملی:** \`${hasNid ? user.national_id : 'ثبت نشده (امضا در اولین معامله)'}\`\n` +
-             `⭐️ **امتیاز اعتبار:** ${scoreDisplay}\n` +
-             `🎖 **سطح کاربری:** ${userLevel}\n` +
-             `🆔 **شناسه تلگرام:** \`${user.id}\`\n` +
-             `────────────────────────────\n` +
-             `جهت ویرایش مشخصات یا ورود به نسخه وب، از گزینه‌های زیر استفاده نمایید:`,
+             `تعداد کاربران در صف بررسی: **${pendingUsers.length}** نفر\n\n` +
+             `${userListStr}\n\n` +
+             `جهت تصمیم‌گیری دکمه‌های زیر را انتخاب کنید:`,
       keyboard: [
-        ['🪪 احراز هویت هوشمند', '💳 کیف پول و اعتبار'],
+        ['✅ تایید کد ملی (کاربر جاری)', '⚠️ نیاز به اصلاح (کاربر جاری)'],
+        ['📜 لیست معاملات من', '💳 کیف پول و اعتبار'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  if (input.includes('تایید کد ملی')) {
+    const user = getCurrentUser();
+    await updateUserKycStatus(user.id, 'verified');
+    return res.json({
+      reply: `✅ **کد ملی کاربر ${user.full_name} با موفقیت تایید شد.**\n` +
+             `وضعیت کاربری به «تایید شده رسمی» ارتقا یافت و دسترسی کامل معامله برای ایشان فعال گردید.`,
+      keyboard: [
+        ['🪪 بررسی کدهای ملی', '💳 کیف پول و اعتبار'],
+        ['🔙 بازگشت به منوی اصلی']
+      ]
+    });
+  }
+
+  if (input.includes('نیاز به اصلاح')) {
+    const user = getCurrentUser();
+    await updateUserKycStatus(user.id, 'needs_correction', 'کد ملی با اطلاعات سجلی همخوانی ندارد.');
+    return res.json({
+      reply: `⚠️ **وضعیت کد ملی کاربر ${user.full_name} به «نیاز به اصلاح» تغییر یافت.**\n\n` +
+             `پیام اخطار برای کاربر صادر شد:\n` +
+             `«کاربر گرامی، کد ملی ثبت‌شده شما رد شده و نیازمند اصلاح مجدد است. لطفاً کد ملی ۱۰ رقمی صحیح متعلق به خود را دوباره ثبت فرمایید.»`,
+      keyboard: [
+        ['🪪 بررسی کدهای ملی', '💳 کیف پول و اعتبار'],
         ['🔙 بازگشت به منوی اصلی']
       ]
     });
@@ -1610,7 +1641,8 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     reply: `پیام دریافت شد: "${input}"\nجهت استفاده از خدمات، یکی از گزینه‌های منو را انتخاب فرمایید.`,
     keyboard: [
       ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-      ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار']
+      ['💳 کیف پول و اعتبار', '💎 پنل سفیران'],
+      ['🪪 بررسی کدهای ملی', '🎧 پشتیبانی و راهنمای استفاده 📖']
     ]
   });
 });
@@ -2036,6 +2068,22 @@ app.get('/api/kyc/status', (req: Request, res: Response) => {
     national_id: user.national_id ? `${user.national_id.slice(0, 3)}***${user.national_id.slice(-3)}` : null,
     sheba: user.sheba || null
   });
+});
+
+// Admin KYC Management APIs
+app.get('/api/admin/kyc/pending', (req: Request, res: Response) => {
+  const pending = getPendingKycUsers();
+  res.json(pending);
+});
+
+app.post('/api/admin/kyc/action', async (req: Request, res: Response) => {
+  const { userId, action, reason } = req.body;
+  if (!userId || !action) {
+    return res.status(400).json({ success: false, message: 'شناسه کاربر و نوع اقدام الزامی است.' });
+  }
+  const status = action === 'approve' ? 'verified' : (action === 'needs_correction' ? 'needs_correction' : 'rejected');
+  const result = await updateUserKycStatus(Number(userId), status, reason);
+  res.json(result);
 });
 
 // ====================================================

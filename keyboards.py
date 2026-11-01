@@ -6,34 +6,30 @@ from config import config
 
 def get_main_menu(is_admin: bool = False, is_verified: bool = False) -> ReplyKeyboardMarkup:
     """
-    منوی اصلی ربات با پوشش کامل تمام قابلیت‌ها.
+    منوی اصلی ربات با طراحی بهینه‌سازی‌شده و حذف بخش‌های غیرضروری.
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
-    # ردیف ۱
+    # ردیف ۱: معاملات
     markup.row(
         KeyboardButton("🤝 ثبت معامله جدید"),
         KeyboardButton("📜 لیست معاملات من")
     )
     
-    # دکمه پروفایل کاربری
-    verify_label = "👤 پروفایل کاربری"
-    
-    # ردیف ۲
+    # ردیف ۲: کیف پول و سفیران
     markup.row(
-        KeyboardButton(verify_label),
-        KeyboardButton("💳 کیف پول و اعتبار")
+        KeyboardButton("💳 کیف پول و اعتبار"),
+        KeyboardButton("💎 پنل سفیران")
     )
     
-
-    # ردیف ۴ - تمام عرض
+    # ردیف ۳: راهنما و پشتیبانی
     markup.row(KeyboardButton("🎧 پشتیبانی و راهنمای استفاده 📖"))
     
-    # ردیف ۴
-    markup.row(KeyboardButton("💎 پنل سفیران"))
-    
     if is_admin:
-        markup.row(KeyboardButton("⚡ پنل مدیریت هوشمند"))
+        markup.row(
+            KeyboardButton("⚡ پنل مدیریت هوشمند"),
+            KeyboardButton("🪪 بررسی کدهای ملی")
+        )
         
     return markup
 
@@ -535,15 +531,18 @@ def get_deposit_action_inline(tx_id: str, user_id: int, amount: float) -> Inline
 
 
 def get_kyc_admin_action_inline(user_id: int, national_id: str = "") -> InlineKeyboardMarkup:
-    """دکمه‌های تصمیم‌گیری تایید یا رد کد ملی برای ادمین (زیرساخت اختصاصی احراز هویت)"""
+    """دکمه‌های تصمیم‌گیری تایید، نیاز به اصلاح یا رد کد ملی برای ادمین"""
     markup = InlineKeyboardMarkup(row_width=2)
     nid_str = str(national_id or "").strip()
     markup.add(
-        InlineKeyboardButton("✅ تایید احراز هویت", callback_data=f"adm:kyc:appr:{user_id}:{nid_str}"),
+        InlineKeyboardButton("✅ تایید کد ملی", callback_data=f"adm:kyc:appr:{user_id}:{nid_str}"),
+        InlineKeyboardButton("⚠️ نیاز به اصلاح", callback_data=f"adm:kyc:fix:{user_id}:{nid_str}")
+    )
+    markup.add(
         InlineKeyboardButton("❌ رد احراز هویت", callback_data=f"adm:kyc:rej:{user_id}:{nid_str}")
     )
     markup.add(
-        InlineKeyboardButton("📋 لیست احراز هویت‌ها", callback_data="adm:pending_kyc"),
+        InlineKeyboardButton("📋 لیست کدهای ملی", callback_data="adm:pending_kyc"),
         InlineKeyboardButton("🏠 بازگشت به پنل", callback_data="adm:home")
     )
     return markup
@@ -1149,7 +1148,7 @@ def get_admin_panel_keyboard(quick_stats: dict = None, is_owner: bool = False) -
     # ردیف ۳: برداشت و احراز هویت کاربران
     markup.add(
         InlineKeyboardButton(f"💸 درخواست‌های برداشت{withdrawals_badge}", callback_data="adm:withdrawals"),
-        InlineKeyboardButton(f"🆔 احراز هویت‌ها{kyc_badge}", callback_data="adm:pending_kyc")
+        InlineKeyboardButton(f"🪪 تایید کدهای ملی{kyc_badge}", callback_data="adm:pending_kyc")
     )
     
     # ردیف ۴: نمودار و لیست سیاه

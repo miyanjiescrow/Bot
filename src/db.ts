@@ -1157,6 +1157,41 @@ export async function submitKyc(
   };
 }
 
+export function getPendingKycUsers(): User[] {
+  return users.filter(u => Boolean(u.national_id) && (!u.is_verified || u.kyc_status === 'pending' || u.kyc_status === 'needs_correction'));
+}
+
+export async function updateUserKycStatus(userId: number, status: 'verified' | 'needs_correction' | 'rejected', reason?: string): Promise<{ success: boolean; message: string; user?: any }> {
+  const user = users.find(u => u.id === userId);
+  if (!user) return { success: false, message: 'کاربر یافت نشد.' };
+
+  user.kyc_status = status;
+  if (status === 'verified') {
+    user.is_verified = true;
+    user.kyc_level = 'gold';
+  } else {
+    user.is_verified = false;
+  }
+
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      await supabase.table('users').update({
+        kyc_status: status,
+        is_verified: user.is_verified,
+        kyc_level: user.kyc_level
+      }).eq('id', user.id);
+    } catch (e: any) {
+      console.warn('Supabase KYC update warning:', e.message);
+    }
+  }
+
+  return {
+    success: true,
+    message: status === 'verified' ? 'کد ملی کاربر با موفقیت تایید شد.' : (status === 'needs_correction' ? 'وضعیت به «نیاز به اصلاح» تغییر یافت و به کاربر اطلاع داده شد.' : 'احراز هویت کاربر رد شد.'),
+    user
+  };
+}
+
 // ====================================================
 // ۴. توابع مدیریت قراردادهای اسکرو (Contracts)
 // ====================================================

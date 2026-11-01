@@ -141,7 +141,7 @@ const FormattedTelegramMessage: React.FC<{ text: string; isUser: boolean }> = ({
 };
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState<'simulator' | 'contracts' | 'wallet' | 'logs' | 'database' | 'python_code' | 'security'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'contracts' | 'admin_kyc' | 'wallet' | 'logs' | 'database' | 'python_code' | 'security'>('simulator');
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [contracts, setContracts] = useState<any[]>([]);
@@ -151,6 +151,10 @@ const App = () => {
   const [copiedLink, setCopiedLink] = useState(false);
   const [contractCategoryFilter, setContractCategoryFilter] = useState<'all' | 'active' | 'pending' | 'completed' | 'drafts' | 'cancelled'>('all');
   const [showDiagnostics, setShowDiagnostics] = useState(true);
+
+  // Admin KYC Review State
+  const [pendingKycList, setPendingKycList] = useState<any[]>([]);
+  const [kycActionMsg, setKycActionMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   // Security Hub States (Phone-First & Financial PIN)
   const [securityStatus, setSecurityStatus] = useState<any>(null);
@@ -172,9 +176,8 @@ const App = () => {
       text: '🤖 سلام! به ربات تلگرام واسطه‌گری امن و ثبت قراردادهای میانجی (Miyanji Escrow) خوش آمدید.\nپلتفرم بر پایه پایتون ۳.۱۰ و دیتابیس یکپارچه سوپابیس اجرا می‌شود.',
       keyboard: [
         ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-        ['👤 پروفایل کاربری', '💳 کیف پول و اعتبار'],
-        ['🎧 پشتیبانی و راهنمای استفاده 📖'],
-        ['💎 پنل سفیران']
+        ['💳 کیف پول و اعتبار', '💎 پنل سفیران'],
+        ['🪪 بررسی کدهای ملی', '🎧 پشتیبانی و راهنمای استفاده 📖']
       ]
     }
   ]);
@@ -194,7 +197,8 @@ const App = () => {
         fetch('/api/contracts').catch(() => null),
         fetch('/api/wallet/transactions').catch(() => null),
         fetch('/api/bot/logs').catch(() => null),
-        fetch('/api/security/status').catch(() => null)
+        fetch('/api/security/status').catch(() => null),
+        fetch('/api/admin/kyc/pending').catch(() => null)
       ]);
 
       if (resC && resC.ok) {
@@ -213,8 +217,40 @@ const App = () => {
         const sData = await resS.json().catch(() => null);
         if (sData) setSecurityStatus(sData);
       }
+      if (resS && (arguments as any)) {
+        // Handled via promise array below
+      }
+      // Check KYC response from Promise.all
+      const resK = await fetch('/api/admin/kyc/pending').catch(() => null);
+      if (resK && resK.ok) {
+        const kData = await resK.json().catch(() => null);
+        if (Array.isArray(kData)) setPendingKycList(kData);
+      }
     } catch {
       // Gracefully silent during server reloads or offline iframe states
+    }
+  };
+
+  const handleKycAction = async (userId: number, action: 'approve' | 'needs_correction') => {
+    try {
+      const res = await fetch('/api/admin/kyc/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          action,
+          reason: action === 'needs_correction' ? 'نیاز به بازبینی و اصلاح مشخصات سجلی' : undefined
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setKycActionMsg({ text: data.message, type: 'success' });
+        fetchBotData();
+      } else {
+        setKycActionMsg({ text: data.message || 'خطا در ثبت عملیات', type: 'error' });
+      }
+    } catch {
+      setKycActionMsg({ text: 'خطا در برقراری ارتباط با سرور', type: 'error' });
     }
   };
 
@@ -590,6 +626,18 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
           </button>
 
           <button
+            onClick={() => setActiveTab('admin_kyc')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium transition ${
+              activeTab === 'admin_kyc'
+                ? 'bg-amber-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <BadgeCheck className="w-4 h-4 text-amber-300" />
+            🪪 تایید کدهای ملی {pendingKycList.length > 0 && <span className="bg-amber-400 text-slate-900 text-[10px] px-1.5 py-0.2 rounded-full font-bold">{pendingKycList.length}</span>}
+          </button>
+
+          <button
             onClick={() => setActiveTab('database')}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium transition ${
               activeTab === 'database'
@@ -849,7 +897,7 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
                   { label: '💸 درخواست تسویه (با پین مالی)', cmd: '💸 درخواست تسویه و برداشت' },
                   { label: '🔐 تنظیم یا تغییر پین امنیتی مالی', cmd: '🔐 تنظیم/تغییر پین مالی' },
                   { label: '🛡 مرکز امنیت و هویت کاربری', cmd: '🛡 مرکز امنیت و هویت' },
-                  { label: '👤 پروفایل و استعلام شاهکار', cmd: '👤 پروفایل کاربری' },
+                  { label: '🪪 بررسی و تعیین تکلیف کدهای ملی (ادمین)', cmd: '🪪 بررسی کدهای ملی' },
                   { label: '💎 پنل سفیران و معرف', cmd: '💎 پنل سفیران' }
                 ].map((item, idx) => (
                   <button
@@ -1015,6 +1063,121 @@ CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_ha
             </div>
           );
         })()}
+
+        {/* Tab: Admin KYC National ID Review */}
+        {activeTab === 'admin_kyc' && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <BadgeCheck className="w-5 h-5 text-amber-400" />
+                  پنل مدیریت کدهای ملی | بررسی و تایید احراز هویت کاربران
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  مشاهده کدهای ملی ثبت‌شده توسط کاربران و تصمیم‌گیری جهت تایید رسمی هویت یا ارسال اخطار «نیاز به اصلاح»
+                </p>
+              </div>
+              <button
+                onClick={fetchBotData}
+                className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>بروزرسانی لیست</span>
+              </button>
+            </div>
+
+            {/* Notification message */}
+            {kycActionMsg && (
+              <div className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+                kycActionMsg.type === 'success' ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-300' : 'bg-rose-950/40 border-rose-700/60 text-rose-300'
+              }`}>
+                <span>{kycActionMsg.text}</span>
+                <button onClick={() => setKycActionMsg(null)} className="text-slate-400 hover:text-white font-bold px-1.5">✕</button>
+              </div>
+            )}
+
+            {/* Pending & All KYC Users List */}
+            <div className="space-y-3">
+              {pendingKycList.length === 0 ? (
+                <div className="text-center py-12 text-slate-500 bg-slate-950/40 rounded-xl border border-dashed border-slate-800">
+                  <BadgeCheck className="w-10 h-10 mx-auto text-emerald-500/50 mb-2" />
+                  <p className="text-sm font-medium text-slate-300">درخواست بررسی جدیدی در صف انتظار نیست</p>
+                  <p className="text-xs text-slate-500 mt-1">تمام کدهای ملی ثبت‌شده توسط کاربران تعیین تکلیف و تایید شده‌اند.</p>
+                </div>
+              ) : (
+                pendingKycList.map((user: any) => {
+                  const isValidChecksum = Boolean(user.national_id && user.national_id.length === 10);
+                  const isNeedsFix = user.kyc_status === 'needs_correction';
+                  return (
+                    <div
+                      key={user.id}
+                      className="bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl p-4 transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white text-sm">{user.full_name}</span>
+                          <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">
+                            ID: {user.id}
+                          </span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                            isNeedsFix
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                              : 'bg-blue-500/10 text-blue-400 border border-blue-500/30'
+                          }`}>
+                            {isNeedsFix ? '⚠️ در انتظار اصلاح کاربر' : '⏳ در انتظار تصمیم ادمین'}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+                          <span className="font-mono">
+                            🪪 کد ملی: <strong className="text-white text-xs">{user.national_id || '---'}</strong>
+                          </span>
+                          <span className="font-mono">
+                            📱 موبایل: <strong className="text-slate-300">{user.phone_number || '---'}</strong>
+                          </span>
+                          <span className={`text-[11px] ${isValidChecksum ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {isValidChecksum ? '✓ رقم کنترل ۱۰ رقمی منطبق' : '✗ فرمت نامعتبر'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
+                        <button
+                          onClick={() => handleKycAction(user.id, 'approve')}
+                          className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-3.5 py-2 rounded-xl shadow-sm transition active:scale-95"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>✅ تایید کد ملی</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleKycAction(user.id, 'needs_correction')}
+                          className="flex items-center gap-1.5 text-xs bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 font-medium px-3.5 py-2 rounded-xl transition active:scale-95"
+                        >
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          <span>⚠️ نیاز به اصلاح</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Guide Card for Admin */}
+            <div className="mt-4 bg-slate-950/60 border border-slate-800 rounded-xl p-4 text-xs text-slate-400 space-y-2">
+              <h4 className="font-bold text-slate-300 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-blue-400" />
+                راهنمای داوری و احراز هویت ادمین میانجی:
+              </h4>
+              <ul className="list-disc list-inside space-y-1 text-slate-400 pr-1">
+                <li>با انتخاب <strong className="text-emerald-400">«تایید کد ملی»</strong>، حساب کاربری کاربر ارتقا یافته، استعلام شاهکار ثبت می‌شود و قراردادهای او بدون محدودیت اجرا خواهد شد.</li>
+                <li>با انتخاب <strong className="text-amber-400">«نیاز به اصلاح»</strong>، یک پیام هشدار سیستمی به تلگرام کاربر ارسال شده و کاربر ملزم به تصحیح و ثبت مجدد کد ملی صحیح خود می‌گردد.</li>
+              </ul>
+            </div>
+          </div>
+        )}
 
         {/* Tab: Supabase SQL Schema */}
         {activeTab === 'database' && (
