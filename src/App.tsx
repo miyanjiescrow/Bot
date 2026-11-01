@@ -439,80 +439,170 @@ const App = () => {
   };
 
   const sqlSchemaCode = `-- =============================================================================
--- Miyanji Escrow System: Complete Supabase PostgreSQL Schema
--- Includes Passwordless Users, Deals, and Non-Repudiation Digital Signatures
+-- سامانه هوشمند واسطه‌گری امن و اسکرو میانجی (Miyanji Escrow Platform)
+-- اسکریپت رسمی، جامع و بدون خطای پایگاه داده در Supabase / PostgreSQL
 -- =============================================================================
 
--- ۱. جدول کاربران سیستم (احراز هویت بدون رمز عبور بر پایه تلگرام و شماره تماس)
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE OR REPLACE FUNCTION public.update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ۱. جدول کاربران سیستم (احراز هویت پایدار تلگرام و وب)
 CREATE TABLE IF NOT EXISTS public.users (
-    id BIGINT PRIMARY KEY, -- یکتای عددی (Telegram User ID)
-    telegram_id BIGINT UNIQUE NOT NULL,
+    id BIGINT PRIMARY KEY,
+    telegram_id BIGINT NULL,
     telegram_username VARCHAR(100) NULL,
-    phone_number VARCHAR(30) UNIQUE NOT NULL, -- دریافت شده از طریق دکمه Share Contact تلگرام
+    username VARCHAR(100) NULL,
+    phone_number VARCHAR(30) NULL,
     full_name VARCHAR(150) NOT NULL DEFAULT 'کاربر میانجی',
-    national_id VARCHAR(10) NULL, -- کد ملی ۱۰ رقمی ثبت‌احوال
-    role VARCHAR(30) NOT NULL DEFAULT 'employer' CHECK (role IN ('employer', 'freelancer', 'arbitrator', 'ambassador', 'admin')),
-    wallet_balance BIGINT NOT NULL DEFAULT 0,
-    escrow_locked_balance BIGINT NOT NULL DEFAULT 0,
-    kyc_level VARCHAR(20) NOT NULL DEFAULT 'basic' CHECK (kyc_level IN ('basic', 'silver', 'gold')),
-    kyc_status VARCHAR(20) NOT NULL DEFAULT 'unverified' CHECK (kyc_status IN ('unverified', 'pending', 'verified')),
+    national_id VARCHAR(10) NULL,
+    role VARCHAR(30) NOT NULL DEFAULT 'user',
+    wallet_balance NUMERIC(15, 2) NOT NULL DEFAULT 0.0,
+    escrow_locked_balance NUMERIC(15, 2) NOT NULL DEFAULT 0.0,
+    kyc_level VARCHAR(20) NOT NULL DEFAULT 'basic',
+    kyc_status VARCHAR(30) NOT NULL DEFAULT 'unverified',
+    kyc_reject_reason TEXT NULL,
+    kyc_submitted_at TIMESTAMPTZ NULL,
+    kyc_verified_at TIMESTAMPTZ NULL,
     is_verified BOOLEAN NOT NULL DEFAULT false,
     sheba VARCHAR(34) NULL,
-    referral_code VARCHAR(32) UNIQUE NULL,
+    sheba_owner_name VARCHAR(150) NULL,
+    financial_pin_hash TEXT NULL,
+    referral_code VARCHAR(32) NULL,
+    invited_by BIGINT NULL,
+    payment_cards JSONB DEFAULT '[]'::jsonb,
+    is_blacklisted BOOLEAN NOT NULL DEFAULT false,
+    is_terms_accepted BOOLEAN NOT NULL DEFAULT true,
+    terms_accepted_at TIMESTAMPTZ NULL,
+    impersonated_by BIGINT NULL,
+    password_hash TEXT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ۲. جدول معاملات و قراردادهای اسکرو
-CREATE TABLE IF NOT EXISTS public.deals (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contract_id VARCHAR(32) UNIQUE NOT NULL,
-    invite_token VARCHAR(64) UNIQUE NOT NULL,
-    
-    title VARCHAR(255) NOT NULL,
-    category VARCHAR(50) NOT NULL,
-    amount BIGINT NOT NULL CHECK (amount >= 10000), -- مبلغ به تومان
-    
-    commission_payer VARCHAR(30) NOT NULL DEFAULT 'split_50_50' 
-        CHECK (commission_payer IN ('employer', 'freelancer', 'split_50_50')),
-    commission_rate NUMERIC(4, 2) NOT NULL DEFAULT 5.0,
-    commission_amount BIGINT NOT NULL DEFAULT 0,
-    
-    creator_id BIGINT NOT NULL,
-    creator_role VARCHAR(20) NOT NULL CHECK (creator_role IN ('employer', 'freelancer')),
-    
-    has_inspection_period BOOLEAN NOT NULL DEFAULT false,
-    inspection_period_hours INT NOT NULL DEFAULT 0,
-    
-    has_free_revisions BOOLEAN NOT NULL DEFAULT true,
-    free_revisions_count INT DEFAULT 2,
-    
-    buyer_id BIGINT NULL REFERENCES public.users(id),
+-- ستون‌های تکمیلی کاربران جهت سازگاری جداول قدیمی
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS telegram_id BIGINT NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(100) NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username VARCHAR(100) NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30) NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS national_id VARCHAR(10) NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(15, 2) DEFAULT 0.0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS escrow_locked_balance NUMERIC(15, 2) DEFAULT 0.0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS kyc_level VARCHAR(20) DEFAULT 'basic';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS kyc_status VARCHAR(30) DEFAULT 'unverified';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS kyc_reject_reason TEXT NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sheba VARCHAR(34) NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sheba_owner_name VARCHAR(150) NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS financial_pin_hash TEXT NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS payment_cards JSONB DEFAULT '[]'::jsonb;
+
+CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON public.users(telegram_id);
+CREATE INDEX IF NOT EXISTS idx_users_phone ON public.users(phone_number);
+CREATE INDEX IF NOT EXISTS idx_users_national_id ON public.users(national_id);
+CREATE INDEX IF NOT EXISTS idx_users_kyc_status ON public.users(kyc_status);
+
+DROP TRIGGER IF EXISTS trigger_users_updated_at ON public.users;
+CREATE TRIGGER trigger_users_updated_at
+    BEFORE UPDATE ON public.users
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+-- ۲. جدول معاملات و قراردادهای اسکرو (contracts)
+CREATE TABLE IF NOT EXISTS public.contracts (
+    id UUID DEFAULT gen_random_uuid(),
+    contract_id VARCHAR(32) PRIMARY KEY,
+    invite_token VARCHAR(64) NULL,
+    title VARCHAR(255) NOT NULL DEFAULT 'معامله هوشمند میانجی',
+    category VARCHAR(50) NOT NULL DEFAULT 'GEN',
+    amount NUMERIC(15, 2) NOT NULL DEFAULT 0 CHECK (amount >= 0),
+    commission_payer VARCHAR(30) NOT NULL DEFAULT 'split_50_50',
+    commission_rate NUMERIC(5, 2) NOT NULL DEFAULT 5.0,
+    commission_amount NUMERIC(15, 2) NOT NULL DEFAULT 0,
+    creator_id BIGINT NULL,
+    creator_role VARCHAR(20) NOT NULL DEFAULT 'employer',
+    buyer_id BIGINT NULL,
     buyer_fullname VARCHAR(150) NULL,
     buyer_phone VARCHAR(30) NULL,
+    buyer_alt_phone VARCHAR(30) NULL,
+    buyer_national_id VARCHAR(10) NULL,
     buyer_signed_at TIMESTAMPTZ NULL,
-    
-    seller_id BIGINT NULL REFERENCES public.users(id),
+    buyer_otp_verified BOOLEAN NOT NULL DEFAULT false,
+    buyer_otp_code VARCHAR(20) NULL,
+    buyer_ip VARCHAR(50) NULL,
+    buyer_role VARCHAR(30) DEFAULT 'employer',
+    buyer_signature_hash VARCHAR(128) NULL,
+    seller_id BIGINT NULL,
     seller_fullname VARCHAR(150) NULL,
     seller_phone VARCHAR(30) NULL,
+    seller_alt_phone VARCHAR(30) NULL,
+    seller_national_id VARCHAR(10) NULL,
     seller_signed_at TIMESTAMPTZ NULL,
-    
-    status VARCHAR(40) NOT NULL DEFAULT 'draft' CHECK (status IN (
-        'draft', 'pending_counterparty', 'awaiting_escrow_deposit',
-        'escrow_locked', 'work_submitted', 'in_inspection',
-        'revisions_requested', 'completed', 'in_dispute', 'cancelled'
-    )),
-    
-    escrow_deposit_status VARCHAR(30) NOT NULL DEFAULT 'unpaid' 
-        CHECK (escrow_deposit_status IN ('unpaid', 'paid_locked', 'released', 'refunded')),
-    
+    seller_otp_verified BOOLEAN NOT NULL DEFAULT false,
+    seller_otp_code VARCHAR(20) NULL,
+    seller_ip VARCHAR(50) NULL,
+    seller_role VARCHAR(30) DEFAULT 'freelancer',
+    seller_signature_hash VARCHAR(128) NULL,
+    arbitrator_id BIGINT NULL,
+    deadline INT NOT NULL DEFAULT 7,
+    deadline_days INT NOT NULL DEFAULT 7,
+    has_inspection_period BOOLEAN NOT NULL DEFAULT false,
+    inspection_period_hours INT NOT NULL DEFAULT 0,
+    has_free_revisions BOOLEAN NOT NULL DEFAULT true,
+    free_revisions_count INT NOT NULL DEFAULT 2,
+    free_edits INT NOT NULL DEFAULT 2,
+    free_edits_left INT NOT NULL DEFAULT 2,
+    free_edits_total INT NOT NULL DEFAULT 2,
+    staged_payment BOOLEAN NOT NULL DEFAULT false,
+    recurring BOOLEAN NOT NULL DEFAULT false,
     description TEXT NULL,
+    deliverables JSONB DEFAULT '{}'::jsonb,
+    milestones JSONB DEFAULT '[]'::jsonb,
+    status VARCHAR(40) NOT NULL DEFAULT 'draft',
+    escrow_deposit_status VARCHAR(30) NOT NULL DEFAULT 'unpaid',
+    cancel_requested_by BIGINT NULL,
+    paid_at TIMESTAMPTZ NULL,
+    completed_at TIMESTAMPTZ NULL,
     history JSONB DEFAULT '[]'::jsonb,
+    created_by BIGINT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ۳. جدول شواهد حقوقی غیرقابل انکار (Non-Repudiation Signatures Audit Trail)
+-- ستون‌های تکمیلی قراردادها
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS contract_id VARCHAR(32);
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS invite_token VARCHAR(64) NULL;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS deadline INT DEFAULT 7;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS free_edits INT DEFAULT 2;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS free_edits_left INT DEFAULT 2;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS free_edits_total INT DEFAULT 2;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS cancel_requested_by BIGINT NULL;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS buyer_alt_phone VARCHAR(30) NULL;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS seller_alt_phone VARCHAR(30) NULL;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS buyer_otp_verified BOOLEAN DEFAULT false;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS seller_otp_verified BOOLEAN DEFAULT false;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS buyer_otp_code VARCHAR(20) NULL;
+ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS seller_otp_code VARCHAR(20) NULL;
+
+CREATE INDEX IF NOT EXISTS idx_contracts_creator ON public.contracts(creator_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_buyer ON public.contracts(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_seller ON public.contracts(seller_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_status ON public.contracts(status);
+CREATE INDEX IF NOT EXISTS idx_contracts_invite ON public.contracts(invite_token);
+CREATE INDEX IF NOT EXISTS idx_contracts_contract_id ON public.contracts(contract_id);
+
+DROP TRIGGER IF EXISTS trigger_contracts_updated_at ON public.contracts;
+CREATE TRIGGER trigger_contracts_updated_at
+    BEFORE UPDATE ON public.contracts
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+-- ۳. جدول امضاهای الکترونیک غیرقابل انکار (signatures)
 CREATE TABLE IF NOT EXISTS public.signatures (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     contract_id VARCHAR(32) NOT NULL,
@@ -521,25 +611,121 @@ CREATE TABLE IF NOT EXISTS public.signatures (
     full_name VARCHAR(150) NOT NULL,
     national_id VARCHAR(10) NOT NULL,
     phone_number VARCHAR(30) NOT NULL,
-    role VARCHAR(30) NOT NULL CHECK (role IN ('employer', 'freelancer', 'buyer', 'seller')),
+    role VARCHAR(30) NOT NULL,
     signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    otp_code_hash VARCHAR(128) NULL,
     otp_verified BOOLEAN NOT NULL DEFAULT true,
     client_ip VARCHAR(50) NULL,
     verification_method VARCHAR(50) NOT NULL DEFAULT 'telegram_contact_sms_otp',
-    signature_hash VARCHAR(128) NOT NULL, -- اثر انگشت رمزنگاری SHA-256
-    status VARCHAR(20) NOT NULL DEFAULT 'valid' CHECK (status IN ('valid', 'revoked')),
+    signature_hash VARCHAR(128) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'valid',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ایندکس‌ها جهت پاسخگویی بلادرنگ تلگرام و اعتبارسنجی سریع
-CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON public.users(telegram_id);
-CREATE INDEX IF NOT EXISTS idx_users_phone ON public.users(phone_number);
-CREATE INDEX IF NOT EXISTS idx_deals_contract_id ON public.deals(contract_id);
-CREATE INDEX IF NOT EXISTS idx_deals_invite_token ON public.deals(invite_token);
-CREATE INDEX IF NOT EXISTS idx_deals_creator_id ON public.deals(creator_id);
-CREATE INDEX IF NOT EXISTS idx_deals_status ON public.deals(status);
-CREATE INDEX IF NOT EXISTS idx_signatures_contract_id ON public.signatures(contract_id);
-CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_hash);`;
+CREATE INDEX IF NOT EXISTS idx_signatures_contract ON public.signatures(contract_id);
+CREATE INDEX IF NOT EXISTS idx_signatures_telegram ON public.signatures(telegram_id);
+CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_hash);
+
+-- ۴. سایر جداول سیستم (transactions, withdrawal_requests, ambassadors, user_states)
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    contract_id VARCHAR(32) NULL,
+    type VARCHAR(40) NOT NULL,
+    amount NUMERIC(15, 2) NOT NULL,
+    title VARCHAR(255) NOT NULL DEFAULT 'تراکنش مالی میانجی',
+    description TEXT NULL,
+    tracking_code VARCHAR(64) NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'completed',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_user ON public.transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_contract ON public.transactions(contract_id);
+
+-- حل قطعی خطای relation kind (ERROR 42809) در Supabase بدون ایجاد خطا یا حذف داده‌ها
+DO $$ 
+DECLARE 
+    r_kind CHAR;
+BEGIN
+    SELECT relkind INTO r_kind 
+    FROM pg_class c 
+    JOIN pg_namespace n ON n.oid = c.relnamespace 
+    WHERE n.nspname = 'public' AND c.relname = 'deals';
+    
+    IF r_kind = 'r' OR r_kind = 'p' THEN
+        BEGIN
+            EXECUTE 'INSERT INTO public.contracts SELECT * FROM public.deals ON CONFLICT (contract_id) DO NOTHING';
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+        EXECUTE 'DROP TABLE public.deals CASCADE';
+    ELSIF r_kind = 'v' OR r_kind = 'm' THEN
+        EXECUTE 'DROP VIEW public.deals CASCADE';
+    END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+CREATE OR REPLACE VIEW public.deals AS SELECT * FROM public.contracts;
+
+DO $$ 
+DECLARE 
+    r_kind CHAR;
+BEGIN
+    SELECT relkind INTO r_kind 
+    FROM pg_class c 
+    JOIN pg_namespace n ON n.oid = c.relnamespace 
+    WHERE n.nspname = 'public' AND c.relname = 'wallet_transactions';
+    
+    IF r_kind = 'r' OR r_kind = 'p' THEN
+        BEGIN
+            EXECUTE 'INSERT INTO public.transactions SELECT * FROM public.wallet_transactions ON CONFLICT DO NOTHING';
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+        EXECUTE 'DROP TABLE public.wallet_transactions CASCADE';
+    ELSIF r_kind = 'v' OR r_kind = 'm' THEN
+        EXECUTE 'DROP VIEW public.wallet_transactions CASCADE';
+    END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+CREATE OR REPLACE VIEW public.wallet_transactions AS SELECT * FROM public.transactions;
+
+CREATE TABLE IF NOT EXISTS public.withdrawal_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount NUMERIC(15, 2) NOT NULL,
+    sheba VARCHAR(34) NOT NULL,
+    sheba_owner_name VARCHAR(150) NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.ambassadors (
+    id BIGSERIAL PRIMARY KEY,
+    telegram_id BIGINT UNIQUE,
+    user_id BIGINT NULL,
+    commission_rate NUMERIC(5, 2) DEFAULT 10.0,
+    tier_level VARCHAR(30) DEFAULT 'Bronze',
+    is_active BOOLEAN DEFAULT true,
+    total_referrals INT DEFAULT 0,
+    total_earnings NUMERIC(15, 2) DEFAULT 0.0,
+    withdrawable_balance NUMERIC(15, 2) DEFAULT 0.0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.user_states (
+    id BIGINT PRIMARY KEY,
+    user_id BIGINT NULL,
+    state TEXT NOT NULL DEFAULT 'START',
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- مجوزها و دسترسی‌های بدون محدودیت برای کلاینت‌ها و وب
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;`;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans" dir="rtl">

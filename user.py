@@ -2266,7 +2266,7 @@ def register_user_handlers(bot: TeleBot):
             "free_edits_total": free_edits,
         }
 
-        # تولید و ارسال کد OTP واقعی از طریق پیامک برای نفر اول (عدم چاپ در چت تلگرام)
+        # تولید و ارسال کد OTP برای نفر اول (ارسال مستقیم در چت تلگرام به دلیل عدم اتصال به پنل پیامک)
         target_phone = draft.get("buyer_phone" if role == "employer" else "seller_phone") or (user_info.get("phone_number") if user_info else "") or "شماره همراه"
         masked_phone = f"{target_phone[:4]}***{target_phone[-4:]}" if len(target_phone) >= 10 else target_phone
         
@@ -2279,11 +2279,13 @@ def register_user_handlers(bot: TeleBot):
 
         bot.send_message(
             message.chat.id,
-            f"🔐 **تایید نهایی و امضای قرارداد با پیامک امن**\n\n"
-            f"شما در حال نهایی‌سازی معامله `{draft.get('title')}` هستید.\n"
-            f"📱 **کد تأیید ۶ رقمی امنیتی (OTP)** به شماره موبایل شما (`{masked_phone}`) پیامک گردید.\n\n"
-            f"لطفاً کد تایید پیامک‌شده را ارسال فرمایید (مهلت اعتبار: ۳ دقیقه):\n"
-            f"⚠️ *با ارسال کد، امضای الکترونیک شما با شواهد غیرقابل انکار در سامانه میانجی ثبت خواهد شد.*",
+            f"🔐 **تایید نهایی و امضای الکترونیک معامله**\n\n"
+            f"شما در حال نهایی‌سازی قرارداد `{draft.get('title')}` هستید.\n\n"
+            f"📩 **کد تأیید ۶ رقمی شما (OTP):**\n"
+            f"👉 `{otp}` 👈\n\n"
+            f"💡 _(به دلیل عدم اتصال به سامانه پیامک، کد مستقیماً توسط ربات برای شما ارسال شد)_\n\n"
+            f"لطفاً کد فوق را کپی یا تایپ کرده و ارسال فرمایید (مهلت اعتبار: ۳ دقیقه):\n"
+            f"⚠️ *با ارسال کد، امضای دیجیتال شما با اثر انگشت رمزنگاری در سامانه میانجی ثبت خواهد شد.*",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
@@ -4161,7 +4163,7 @@ def register_user_handlers(bot: TeleBot):
         masked_phone = f"{signer_phone[:4]}***{signer_phone[-4:]}" if len(signer_phone) >= 10 else (signer_phone or "شماره همراه شما")
         cid = data.get("contract_id", "")
 
-        # تولید کد OTP امن و ارسال از طریق پنل پیامک (بدون چاپ در چت تلگرام)
+        # تولید کد OTP و ارسال مستقیم در چت تلگرام به دلیل عدم اتصال به پنل پیامک
         otp = auth.generate_secure_otp(str(user_id), purpose=f"sign_{cid}")
         auth.send_sms_otp(signer_phone, otp, contract_id=cid)
         
@@ -4173,10 +4175,13 @@ def register_user_handlers(bot: TeleBot):
         
         bot.send_message(
             message.chat.id,
-            f"📱 **کد تأیید ۶ رقمی امنیتی به شماره موبایل شما (`{masked_phone}`) پیامک گردید.**\n\n"
-            f"لطفاً جهت نهایی‌سازی و ثبت رسمی سند در سامانه میانجی، کد تایید دریافتی را وارد فرمایید:\n"
+            f"🔐 **امضای رسمی و الکترونیک قرارداد اسکرو میانجی**\n\n"
+            f"📩 **کد تأیید ۶ رقمی شما (OTP):**\n"
+            f"👉 `{otp}` 👈\n\n"
+            f"💡 _(به دلیل عدم اتصال به سامانه پیامک، کد مستقیماً توسط ربات برای شما ارسال شد)_\n\n"
+            f"لطفاً جهت نهایی‌سازی و ثبت رسمی سند در سامانه میانجی، کد تایید فوق را وارد فرمایید:\n"
             f"_(مهلت اعتبار: ۳ دقیقه)_\n\n"
-            f"⚠️ *با ارسال کد پیامک‌شده، امضای الکترونیک غیرقابل انکار شما بر روی این قرارداد ثبت خواهد شد.*",
+            f"⚠️ *با ارسال کد، امضای الکترونیک غیرقابل انکار شما بر روی این قرارداد ثبت خواهد شد.*",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
