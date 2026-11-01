@@ -71,9 +71,9 @@ const portFromArg = portArgIndex !== -1 ? Number(process.argv[portArgIndex + 1])
 const hostArgIndex = process.argv.indexOf('--host');
 const hostFromArg = hostArgIndex !== -1 ? process.argv[hostArgIndex + 1] : null;
 
-// AI Studio Dev Server strictly listens on port 3000
-const PORT = portFromArg || 3000;
-const HOST = '0.0.0.0';
+// AI Studio Dev Server strictly listens on port 3000 (or container assigned PORT)
+const PORT = portFromArg || (process.env.PORT ? Number(process.env.PORT) : 3000);
+const HOST = hostFromArg || '0.0.0.0';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -98,6 +98,9 @@ function ensurePythonBotRunning() {
   try {
     // Check if main.py is already running
     const check = spawn('pgrep', ['-f', 'main.py']);
+    check.on('error', (err) => {
+      console.log('ℹ️ pgrep check notice:', err.message);
+    });
     check.on('close', (code) => {
       if (code !== 0) {
         console.log('🤖 Spawning Python Telegram Bot (python3 main.py)...');
@@ -388,13 +391,41 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     });
   }
 
+  // گام ۴: دریافت عنوان و سوال مبلغ
+  if (simulatorState.state === 'DEAL_TITLE') {
+    const title = input.trim();
+    if (title.length < 3) {
+      return res.json({
+        reply: '⚠️ **عنوان خیلی کوتاه است.** لطفاً حداقل ۳ حرف ارسال کنید:',
+        keyboard: [['🔙 انصراف و بازگشت']]
+      });
+    }
+
+    simulatorState.dealDraft = {
+      ...(simulatorState.dealDraft || {}),
+      title
+    };
+    simulatorState.state = 'DEAL_AMOUNT';
+
+    return res.json({
+      reply: `💰 **مبلغ کل معامله**\n` +
+             `> 📝 پروژه: «${title}»\n` +
+             `> 🔒 وجه در طول انجام پروژه در صندوق امانت میانجی محفوظ است.\n\n` +
+             `لطفاً مبلغ کل را به **تومان** وارد کرده یا از گزینه‌های زیر برگزینید:`,
+      keyboard: [
+        ['1,000,000 تومان', '2,500,000 تومان'],
+        ['5,000,000 تومان', '10,000,000 تومان'],
+        ['🔙 انصراف و بازگشت']
+      ]
+    });
+  }
+
   // گام ۳: انتخاب دسته‌بندی و دریافت عنوان کوتاه
   const isCategoryClick = !isLifecycleAction && !hasContractCode && !isGlobalMenuCommand &&
-                          !input.includes('امضا') && !input.includes('OTP') && !input.includes('تایید') &&
-                          (input.includes('طراحی') || input.includes('گرافیک') || input.includes('برنامه‌نویسی') || 
-                           input.includes('دانشجویی') || input.includes('محتوا') || input === '📑 سایر خدمات دیجیتال');
+                          (input === '🎨 طراحی و گرافیک' || input === '💻 برنامه‌نویسی' || 
+                           input === '🎓 خدمات دانشجویی' || input === '✍️ تولید محتوا' || input === '📑 سایر خدمات دیجیتال');
 
-  if (simulatorState.state === 'DEAL_CATEGORY' || (isCategoryClick && (!simulatorState.dealDraft?.title && simulatorState.dealDraft?.role))) {
+  if (simulatorState.state === 'DEAL_CATEGORY' || isCategoryClick) {
     let cat = 'GEN';
     let catLabel = 'خدمات دیجیتال';
 
@@ -424,35 +455,6 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
              `> 🏷 دسته‌بندی: **${catLabel}**\n\n` +
              'لطفاً یک عنوان خلاصه و گویا ارسال فرمایید (مثلاً «طراحی لوگو» یا «ربات پایتون»):',
       keyboard: [
-        ['🔙 انصراف و بازگشت']
-      ]
-    });
-  }
-
-  // گام ۴: دریافت عنوان و سوال مبلغ
-  if (simulatorState.state === 'DEAL_TITLE') {
-    const title = input.trim();
-    if (title.length < 3) {
-      return res.json({
-        reply: '⚠️ **عنوان خیلی کوتاه است.** لطفاً حداقل ۳ حرف ارسال کنید:',
-        keyboard: [['🔙 انصراف و بازگشت']]
-      });
-    }
-
-    simulatorState.dealDraft = {
-      ...(simulatorState.dealDraft || {}),
-      title
-    };
-    simulatorState.state = 'DEAL_AMOUNT';
-
-    return res.json({
-      reply: `💰 **مبلغ کل معامله**\n` +
-             `> 📝 پروژه: «${title}»\n` +
-             `> 🔒 وجه در طول انجام پروژه در صندوق امانت میانجی محفوظ است.\n\n` +
-             `لطفاً مبلغ کل را به **تومان** وارد کرده یا از گزینه‌های زیر برگزینید:`,
-      keyboard: [
-        ['1,000,000 تومان', '2,500,000 تومان'],
-        ['5,000,000 تومان', '10,000,000 تومان'],
         ['🔙 انصراف و بازگشت']
       ]
     });
@@ -673,10 +675,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
 
     return res.json({
       reply: `📩 **ارسال کد تایید پیامکی امضای دیجیتال (SMS OTP):**\n──────────────────\n` +
-             `کد ۶ رقمی امنیتی امضای قرارداد به شماره همراه تاییدشده **${maskedPhone}** پیامک گردید.\n\n` +
-             `🔒 **رعایت کامل امنیت:** به منظور پیشگیری از جعل و رعایت محرمانگی، کد در محیط چت چاپ نمی‌شود.\n\n` +
+             `کد ۶ رقمی امنیتی امضای قرارداد به شماره همراه **${maskedPhone}** صادر گردید.\n\n` +
+             `🔑 **کد تأیید ۶ رقمی شما (OTP):**\n` +
+             `👉 \`${generatedOtp}\` 👈\n\n` +
+             `💡 _(به دلیل عدم اتصال به سامانه پیامک، کد مستقیماً توسط ربات صادر و نمایش داده شد)_\n\n` +
              `⏱ مهلت اعتبار: **۳ دقیقه**\n` +
-             `لطفاً کد ۶ رقمی دریافتی را وارد فرمایید:`,
+             `لطفاً کد ۶ رقمی فوق را وارد یا انتخاب فرمایید:`,
       keyboard: [
         [generatedOtp],
         ['🔙 انصراف و بازگشت']
@@ -1144,10 +1148,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
 
     return res.json({
       reply: `📩 **مرحله ۳ از ۳ — ارسال کد تایید پیامکی (SMS OTP):**\n──────────────────\n` +
-             `کد ۶ رقمی امضای دیجیتال از طریق سامانه پیامکی به شماره تاییدشده **۰۹۳۵***۶۵۴۳** ارسال گردید.\n\n` +
-             `🔒 **رعایت کامل امنیت:** به دلایل امنیتی و پیشگیری از جعل، کد در محیط چت تلگرام چاپ نمی‌شود.\n\n` +
+             `کد ۶ رقمی امنیتی امضای قرارداد به شماره تاییدشده **۰۹۳۵***۶۵۴۳** صادر گردید.\n\n` +
+             `🔑 **کد تأیید ۶ رقمی شما (OTP):**\n` +
+             `👉 \`${generatedOtp}\` 👈\n\n` +
+             `💡 _(به دلیل عدم اتصال به سامانه پیامک، کد مستقیماً توسط ربات صادر و نمایش داده شد)_\n\n` +
              `⏱ مهلت ورود: **۳ دقیقه**\n` +
-             `لطفاً کد ۶ رقمی دریافتی را وارد فرمایید:`,
+             `لطفاً کد ۶ رقمی فوق را وارد یا انتخاب فرمایید:`,
       keyboard: [
         [generatedOtp],
         ['🔙 انصراف و بازگشت']
