@@ -4337,6 +4337,25 @@ def register_user_handlers(bot: TeleBot):
             
             db.clear_user_state(user_id)
             
+            # ارسال گزارش امضای طرف اول به MJNOTE بدون دکمه
+            c_info = contract or updates or draft or {}
+            c_title = c_info.get("title") or "معامله رسمی واسطه‌گری امن میانجی"
+            c_amount = utils.safe_float(c_info.get("amount", 0))
+            role_title = "کارفرما" if role == "employer" else "مجری"
+            utils.send_mjnote_report(
+                bot,
+                f"✍️ <b>گزارش امضای طرف اول معامله</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"📝 <b>عنوان:</b> {utils.escape_html(str(c_title))}\n"
+                f"💰 <b>مبلغ معامله:</b> {utils.format_currency(c_amount)}\n"
+                f"👤 <b>طرف اول ({role_title}):</b> {utils.escape_html(full_name)} (<code>{user_id}</code>)\n"
+                f"📱 <b>شماره تماس:</b> <code>{phone}</code>\n"
+                f"🔢 <b>کد ملی:</b> <code>{national_id}</code>\n"
+                f"🔒 <b>کد شواهد امضا:</b> <code>{sig_hash[:16]}...</code>\n"
+                f"⏳ <b>وضعیت:</b> طرف اول امضا کرد و در انتظار امضای طرف دوم است."
+            )
+            
             # اطلاع به طرف دوم در صورتی که شناسه او در قرارداد مشخص باشد
             notify_other_party(
                 bot, contract or updates, user_id,
@@ -4666,6 +4685,20 @@ def register_user_handlers(bot: TeleBot):
         # ۱. ارسال سند رسمی به هر دو طرف و MJNOTE
         send_contract_pdf_to_parties(bot, contract)
 
+        # ارسال گزارش رسمی انعقاد قرارداد به MJNOTE بدون دکمه
+        c_amount = utils.safe_float(contract.get("amount", 0))
+        utils.send_mjnote_report(
+            bot,
+            f"🤝 <b>گزارش انعقاد رسمی معامله (تکمیل امضای طرفین)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+            f"📝 <b>عنوان:</b> {utils.escape_html(str(contract.get('title', 'معامله واسطه‌گری امن')))}\n"
+            f"💰 <b>مبلغ معامله:</b> {utils.format_currency(c_amount)}\n"
+            f"👥 <b>طرفین:</b> کارفرما <code>{buyer_id}</code> / مجری <code>{seller_id}</code>\n"
+            f"📑 <b>سند رسمی:</b> قرارداد توسط طرفین امضا و فایل رسمی صادر شد.\n"
+            f"💳 <b>وضعیت:</b> در انتظار واریز وجه امانت توسط کارفرما."
+        )
+
         # ۲. ارسال پیام تبریک و اطلاع‌رسانی نهایی‌شدن امضاها
         celebration_text = (
             f"🎊 **تبریک! قرارداد شماره `{cid}` با موفقیت توسط هر دو طرف امضا شد.**\n\n"
@@ -4990,12 +5023,8 @@ def register_user_handlers(bot: TeleBot):
                 except Exception as e:
                     logger.error(f"Failed to send payment notification to MJ_ADMIN: {e}")
             
-            # ارسال به MJNOTE (آرشیو)
-            if hasattr(config, 'MJNOTE') and config.MJNOTE:
-                try:
-                    bot.send_message(config.MJNOTE, admin_msg, parse_mode="Markdown")
-                except Exception:
-                    pass
+            # ارسال گزارش به MJNOTE بدون دکمه
+            utils.send_mjnote_report(bot, admin_msg)
 
         except Exception as e:
             logger.exception(f"Critical error in wallet payment handler: {e}")
@@ -5123,6 +5152,19 @@ def register_user_handlers(bot: TeleBot):
                 milestones[idx]["status"] = "paid"
                 db.update_contract(cid, {"milestones": milestones})
                 db.append_contract_history(cid, f"💰 پرداخت مرحله {idx+1} از کیف پول توسط کارفرما", actor_id=user_id)
+                
+                # ارسال گزارش به MJNOTE بدون دکمه
+                utils.send_mjnote_report(
+                    bot,
+                    f"💰 <b>گزارش پرداخت مرحله‌ای از کیف پول</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 <b>کد معامله:</b> <code>#{cid}</code> (مرحله {idx+1})\n"
+                    f"📋 <b>عنوان مرحله:</b> {utils.escape_html(str(ms.get('title', '')))}\n"
+                    f"💵 <b>مبلغ پرداختی:</b> {utils.format_currency(total_to_pay)}\n"
+                    f"👤 <b>کارفرما:</b> <code>{user_id}</code>\n"
+                    f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                    f"✅ <b>وضعیت:</b> وجه مرحله در صندوق امانت بلوکه شد."
+                )
                 
                 bot.answer_callback_query(call.id, "✅ مرحله با موفقیت پرداخت شد.", show_alert=True)
                 bot.send_message(call.message.chat.id, f"✅ **مرحله «{utils.escape_markdown(ms.get('title', ''))}» پرداخت شد.**\nمجری می‌تواند کار را آغاز کند.")
@@ -5926,17 +5968,17 @@ def register_user_handlers(bot: TeleBot):
                 logger.error(f"خطا در ارسال تحویلی پروژه به کارفرما: {e}")
 
 
-        # بایگانی نسخه در کانال مدیریت (MJNOTE) جهت دسترسی در صورت بروز اختلاف بعدی
+        # ارسال گزارش و بایگانی تحویل نهایی پروژه به MJNOTE بدون دکمه
         archive_caption = (
-            f"📂 <b>بایگانی تحویل نهایی پروژه</b>\n"
-            f"🔹 <b>کد معامله:</b> <code>#{cid}</code>\n"
-            f"👤 <b>مجری:</b> <code>{user_id}</code>\n\n"
-            f"📝 <b>توضیح:</b> {utils.escape_html(note or '—')}"
+            f"📦 <b>گزارش تحویل پروژه معامله</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+            f"👤 <b>مجری:</b> <code>{user_id}</code>\n"
+            f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+            f"📝 <b>توضیح تحویل:</b> {utils.escape_html(note or '—')}\n"
+            f"⏳ <b>وضعیت:</b> پروژه تحویل شد و در انتظار تایید کارفرما قرار گرفت."
         )
-        if file_id:
-            utils.notify_archive(bot, content_type=file_type, file_id=file_id, text=archive_caption)
-        else:
-            utils.notify_archive(bot, content_type="text", text=archive_caption)
+        utils.send_mjnote_report(bot, text=archive_caption, file_id=file_id, content_type=file_type if file_id else "text")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("ms_files_"))
     def handle_view_ms_files(call: CallbackQuery):
@@ -6126,6 +6168,19 @@ def register_user_handlers(bot: TeleBot):
 
         db.append_contract_history(cid, f"✅ کارفرما پروژه را تایید نهایی کرد و وجه آزاد شد.", actor_id=user_id)
 
+        # ارسال گزارش تکمیل معامله به MJNOTE بدون دکمه
+        utils.send_mjnote_report(
+            bot,
+            f"🏁 <b>گزارش تکمیل نهایی معامله</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+            f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+            f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+            f"💰 <b>مبلغ کل:</b> {utils.format_currency(amount)}\n"
+            f"💵 <b>خالص دریافتی مجری:</b> {utils.format_currency(net)}\n"
+            f"✅ <b>وضعیت:</b> کارفرما کار را تایید نهایی کرد، وجه آزاد و معامله تکمیل گردید."
+        )
+
         bot.answer_callback_query(call.id, "✅ تایید نهایی ثبت و وجه آزاد شد.")
         bot.send_message(
             call.message.chat.id,
@@ -6162,6 +6217,17 @@ def register_user_handlers(bot: TeleBot):
                 
             db.update_contract(cid, {"status": "cancelled"})
             db.append_contract_history(cid, "🚫 معامله پیش از قفل شدن مبلغ به‌صورت یک‌طرفه لغو شد.", actor_id=user_id)
+            
+            # ارسال گزارش لغو معامله به MJNOTE بدون دکمه
+            utils.send_mjnote_report(
+                bot,
+                f"🚫 <b>گزارش لغو معامله</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"👤 <b>لغوکننده:</b> <code>{user_id}</code>\n"
+                f"⚠️ <b>وضعیت:</b> معامله پیش از واریز و قفل وجه لغو شد."
+            )
+            
             bot.answer_callback_query(call.id, "🚫 معامله لغو شد.")
             bot.send_message(
                 call.message.chat.id,
@@ -6585,8 +6651,23 @@ def register_user_handlers(bot: TeleBot):
             if proof_file_id:
                 db.append_contract_history(cid, "📎 فایل مدرک داوری توسط کاربر ارسال شد.", actor_id=user_id, file_id=proof_file_id)
 
-            # اطلاع به ادمین
+            # اطلاع به ادمین و ارسال گزارش به MJNOTE بدون دکمه
             safe_reason = utils.escape_html(reason)
+            mjnote_report = (
+                "⚖️ <b>گزارش ثبت پرونده داوری (اختلاف)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"👤 <b>شاکی:</b> <code>{user_id}</code>\n"
+                f"📝 <b>شرح شکایت:</b> {safe_reason}\n"
+                "⚠️ <b>وضعیت:</b> پرونده داوری تشکیل شد و تسویه مالی تا صدور رأی قفل گردید."
+            )
+            utils.send_mjnote_report(
+                bot,
+                text=mjnote_report,
+                file_id=proof_file_id,
+                content_type="photo" if message.photo else ("document" if message.document else "text")
+            )
+
             admin_text = (
                 "⚖️ <b>درخواست داوری جدید (Mianji Room Needed)</b>\n"
                 f"📦 معامله: <code>{cid}</code>\n"

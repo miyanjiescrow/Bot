@@ -395,6 +395,22 @@ def register_admin_handlers(bot: TeleBot):
             db.append_contract_history(cid, f"⚖️ رأی داوری ادمین: {winner_text}", actor_id=admin_id)
             db.log_admin_action(admin_id, "resolve_dispute", f"cid={cid} winner={winner}", target_id=winner_id)
 
+            # ارسال گزارش رأی داور به MJNOTE بدون دکمه
+            winner_role_fa = "کارفرما (بازگشت وجه به کارفرما)" if winner == "buyer" else "مجری (آزادسازی وجه به مجری)"
+            utils.send_mjnote_report(
+                bot,
+                f"⚖️ <b>گزارش صدور رأی داوری</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"🏆 <b>نتیجه حکم داور:</b> به نفع {winner_role_fa}\n"
+                f"💰 <b>مبلغ معامله:</b> {utils.format_currency(amount)}\n"
+                f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+                f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                f"👮‍♂️ <b>داور / ادمین:</b> <code>{admin_id}</code>\n"
+                f"📜 <b>شرح رأی:</b> {utils.escape_html(winner_text)}\n"
+                f"🏁 <b>وضعیت:</b> رأی صادر و پرونده داوری مختومه گردید."
+            )
+
             for uid, msg in [(winner_id, f"✅ **رأی داوری**\n\n{winner_text}"),
                              (loser_id, f"⚖️ **رأی داوری قرارداد {cid}**\n\nداوری توسط تیم میانجی انجام شد.\n{winner_text}")]:
                 try:
@@ -457,6 +473,20 @@ def register_admin_handlers(bot: TeleBot):
             
             db.append_contract_history(cid, f"⚖️ {msg_text}", actor_id=admin_id)
             db.log_admin_action(admin_id, "resolve_dispute_split", f"cid={cid} seller_pct={seller_pct}")
+
+            # ارسال گزارش رأی تقسیم وجه به MJNOTE بدون دکمه
+            utils.send_mjnote_report(
+                bot,
+                f"⚖️ <b>گزارش صدور رأی داوری (تقسیم توافقی)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"💰 <b>مبلغ کل:</b> {utils.format_currency(amount)}\n"
+                f"💼 <b>سهم مجری ({seller_pct}٪):</b> {utils.format_currency(seller_share)}\n"
+                f"💼 <b>سهم کارفرما ({100-seller_pct}٪):</b> {utils.format_currency(buyer_share)}\n"
+                f"👤 <b>کارفرما:</b> <code>{buyer_id}</code> | 🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                f"👮‍♂️ <b>داور / ادمین:</b> <code>{admin_id}</code>\n"
+                f"🏁 <b>وضعیت:</b> رأی تقسیم وجه صادر، مبالغ واریز و پرونده مختومه شد."
+            )
 
             for uid, m in [(seller_id, f"✅ **نتیجه داوری معامله `{cid}`**\n\n{msg_text}"),
                              (buyer_id, f"✅ **نتیجه داوری معامله `{cid}`**\n\n{msg_text}")]:
@@ -965,6 +995,18 @@ def register_admin_handlers(bot: TeleBot):
                         bot.send_message(seller_id, seller_msg, parse_mode="Markdown", reply_markup=kb.get_deliver_project_keyboard(cid))
                     except Exception: pass
                     
+                    # ارسال گزارش به MJNOTE بدون دکمه
+                    utils.send_mjnote_report(
+                        bot,
+                        f"🧾 <b>گزارش تایید فیش هزینه ویرایش</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                        f"💰 <b>مبلغ هزینه ویرایش:</b> {utils.format_currency(price)}\n"
+                        f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+                        f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                        f"👮‍♂️ <b>ادمین:</b> <code>{admin_id}</code>\n"
+                        f"✅ <b>وضعیت:</b> فیش هزینه ویرایش تایید و در حساب امانت ذخیره شد."
+                    )
                     result_text = f"✅ فیش ویرایش معامله `{cid}` تایید شد."
                 else:
                     amount = utils.safe_float(contract.get("amount", 0))
@@ -973,6 +1015,19 @@ def register_admin_handlers(bot: TeleBot):
                     db.update_contract(cid, {"status": "active", "paid_at": paid_at})
                     db.append_contract_history(cid, "✅ فیش واریزی توسط ادمین تایید شد.", actor_id=admin_id)
                     db.log_admin_action(admin_id, "approve_receipt", f"cid={cid} amount={amount}")
+                    
+                    # ارسال گزارش به MJNOTE بدون دکمه
+                    utils.send_mjnote_report(
+                        bot,
+                        f"🧾 <b>گزارش تایید فیش واریزی معامله</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                        f"💰 <b>مبلغ واریزی:</b> {utils.format_currency(amount)}\n"
+                        f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+                        f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                        f"👮‍♂️ <b>ادمین:</b> <code>{admin_id}</code>\n"
+                        f"✅ <b>وضعیت:</b> فیش واریزی تایید شد و معامله فعال گردید."
+                    )
                     
                     # آپدیت وضعیت در جدول متمرکز
                     try:
@@ -2530,6 +2585,22 @@ def register_admin_handlers(bot: TeleBot):
                 db.append_contract_history(contract_id, f"✅ فیش مرحله {idx+1} تایید شد.", actor_id=admin_id)
                 db.log_admin_action(admin_id, "msreceipt_approve", f"cid={contract_id} idx={idx}")
                 
+                # ارسال گزارش به MJNOTE بدون دکمه
+                ms_title = milestones[idx].get("title", f"مرحله {idx+1}") if 0 <= idx < len(milestones) else f"مرحله {idx+1}"
+                ms_amount = milestones[idx].get("amount", 0) if 0 <= idx < len(milestones) else 0
+                utils.send_mjnote_report(
+                    bot,
+                    f"🧾 <b>گزارش تایید فیش مرحله‌ای معامله</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 <b>کد معامله:</b> <code>#{contract_id}</code> (مرحله {idx+1})\n"
+                    f"📋 <b>عنوان مرحله:</b> {utils.escape_html(str(ms_title))}\n"
+                    f"💰 <b>مبلغ مرحله:</b> {utils.format_currency(ms_amount)}\n"
+                    f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+                    f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                    f"👮‍♂️ <b>ادمین تاییدکننده:</b> <code>{admin_id}</code>\n"
+                    f"✅ <b>وضعیت:</b> فیش مرحله {idx+1} تایید گردید."
+                )
+                
                 # آپدیت جدول متمرکز
                 try:
                     db.supabase.table("pending_receipts").update({"status": "approved", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", f"{contract_id}:{idx}").eq("type", "milestone").eq("status", "pending").execute()
@@ -2619,6 +2690,19 @@ def register_admin_handlers(bot: TeleBot):
             bot.send_message(buyer_id, f"❌ **فیش {msg_type} معامله `{actual_cid}` رد شد**\n\n🚫 **دلیل رد:** {reason}\n\nلطفاً فیش صحیح را مجدداً ارسال کنید.", parse_mode="Markdown")
         except: pass
 
+        # ارسال گزارش رد فیش به MJNOTE بدون دکمه
+        msg_type = "هزینه ویرایش" if is_extra_edit else "واریزی"
+        utils.send_mjnote_report(
+            bot,
+            f"❌ <b>گزارش رد فیش {msg_type} معامله</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>کد معامله:</b> <code>#{actual_cid}</code>\n"
+            f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+            f"🚫 <b>دلیل رد فیش:</b> {utils.escape_html(reason)}\n"
+            f"👮‍♂️ <b>ادمین:</b> <code>{admin_id}</code>\n"
+            f"⚠️ <b>وضعیت:</b> فیش {msg_type} رد شد و به کاربر اطلاع داده شد."
+        )
+
         bot.send_message(message.chat.id, f"✅ فیش معامله `{actual_cid}` با موفقیت رد شد.")
 
     @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id if msg.from_user else msg.chat.id)[0] == "WAITING_REJECT_MS_RECEIPT_REASON")
@@ -2644,6 +2728,18 @@ def register_admin_handlers(bot: TeleBot):
         try:
             db.supabase.table("pending_receipts").update({"status": "rejected", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("related_id", f"{cid}:{idx}").eq("type", "milestone").eq("status", "pending").execute()
         except: pass
+
+        # ارسال گزارش رد فیش مرحله‌ای به MJNOTE بدون دکمه
+        utils.send_mjnote_report(
+            bot,
+            f"❌ <b>گزارش رد فیش مرحله‌ای معامله</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>کد معامله:</b> <code>#{cid}</code> (مرحله {idx})\n"
+            f"👤 <b>کارفرما:</b> <code>{bid}</code>\n"
+            f"🚫 <b>دلیل رد فیش:</b> {utils.escape_html(reason)}\n"
+            f"👮‍♂️ <b>ادمین:</b> <code>{admin_id}</code>\n"
+            f"⚠️ <b>وضعیت:</b> فیش مرحله {idx} رد شد."
+        )
 
         if bid:
             try:
@@ -2693,6 +2789,17 @@ def register_admin_handlers(bot: TeleBot):
                             
                         msg = f"✅ **کیف‌پول شما شارژ شد**\n\nمبلغ {utils.format_currency(amount)} به کیف‌پول شما اضافه شد."
                         result = f"✅ درخواست شارژ کاربر `{target_uid}` تایید و کیف پول شارژ شد."
+                        
+                        # ارسال گزارش شارژ به MJNOTE بدون دکمه
+                        utils.send_mjnote_report(
+                            bot,
+                            f"💳 <b>گزارش تایید شارژ کیف پول</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👤 <b>شناسه کاربر:</b> <code>{target_uid}</code>\n"
+                            f"💵 <b>مبلغ شارژ:</b> {utils.format_currency(amount)}\n"
+                            f"👮‍♂️ <b>ادمین تاییدکننده:</b> <code>{admin_id}</code>\n"
+                            f"✅ <b>وضعیت:</b> شارژ تایید و به کیف پول کاربر اضافه گردید."
+                        )
                     else:
                         result = "❌ خطا در شارژ کیف پول کاربر."
                         bot.answer_callback_query(call.id, result, show_alert=True)
@@ -2774,6 +2881,19 @@ def register_admin_handlers(bot: TeleBot):
                 # برای برداشت فعلاً وضعیت را در pending_receipts (اگر وجود داشته باشد) آپدیت می‌کنیم
                 supabase.table("pending_receipts").update({"status": "rejected", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("user_id", uid).eq("type", "wallet").eq("status", "pending").execute()
         except: pass
+
+        # ارسال گزارش رد به MJNOTE بدون دکمه
+        type_fa = "شارژ" if rtype == "deposit" else "برداشت"
+        utils.send_mjnote_report(
+            bot,
+            f"❌ <b>گزارش رد درخواست {type_fa} کیف پول</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>کاربر:</b> <code>{uid}</code>\n"
+            f"💵 <b>مبلغ:</b> {utils.format_currency(amt)}\n"
+            f"🚫 <b>دلیل رد:</b> {utils.escape_html(reason)}\n"
+            f"👮‍♂️ <b>ادمین:</b> <code>{admin_id}</code>\n"
+            f"⚠️ <b>وضعیت:</b> درخواست رد شد."
+        )
 
         msg = f"❌ **درخواست {rtype} شما رد شد**\n\n🚫 **دلیل رد:** {reason}\n\nدر صورت نیاز با پشتیبانی تماس بگیرید."
         try:
@@ -3032,6 +3152,22 @@ def register_admin_handlers(bot: TeleBot):
             db.append_contract_history(cid, f"⚖️ رأی داوری: {winner_text}", actor_id=admin_id)
             db.log_admin_action(admin_id, "resolve_decide", f"cid={cid} winner={winner}", target_id=winner_id)
 
+            # ارسال گزارش رأی داور به MJNOTE بدون دکمه
+            winner_role_fa = "کارفرما" if winner == "buyer" else "مجری"
+            utils.send_mjnote_report(
+                bot,
+                f"⚖️ <b>گزارش صدور رأی داوری</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"🏆 <b>نتیجه حکم:</b> به نفع {winner_role_fa}\n"
+                f"💰 <b>مبلغ معامله:</b> {utils.format_currency(amount)}\n"
+                f"👤 <b>کارفرما:</b> <code>{buyer_id}</code>\n"
+                f"🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                f"👮‍♂️ <b>داور / ادمین:</b> <code>{admin_id}</code>\n"
+                f"📜 <b>شرح رأی:</b> {utils.escape_html(winner_text)}\n"
+                f"🏁 <b>وضعیت:</b> پرونده داوری مختومه گردید."
+            )
+
             for uid, msg in [(winner_id, f"✅ **رأی داوری**\n\n{winner_text}"),
                              (loser_id, f"⚖️ **رأی داوری — {cid}**\n\n{winner_text}")]:
                 try:
@@ -3094,6 +3230,20 @@ def register_admin_handlers(bot: TeleBot):
                                        f"⚖️ تقسیم داوری: {buyer_percent}٪ کارفرما / {seller_percent}٪ مجری",
                                        actor_id=admin_id)
             db.log_admin_action(admin_id, "resolve_split", f"cid={cid} buyer={buyer_percent}%")
+
+            # ارسال گزارش رأی داور به MJNOTE بدون دکمه
+            utils.send_mjnote_report(
+                bot,
+                f"⚖️ <b>گزارش صدور رأی داوری (تقسیم توافقی)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>کد معامله:</b> <code>#{cid}</code>\n"
+                f"💰 <b>مبلغ معامله:</b> {utils.format_currency(amount)}\n"
+                f"💼 <b>سهم کارفرما ({buyer_percent}٪):</b> {utils.format_currency(buyer_share)}\n"
+                f"💼 <b>سهم مجری ({seller_percent}٪):</b> {utils.format_currency(seller_net)}\n"
+                f"👤 <b>کارفرما:</b> <code>{buyer_id}</code> | 🛠 <b>مجری:</b> <code>{seller_id}</code>\n"
+                f"👮‍♂️ <b>داور / ادمین:</b> <code>{admin_id}</code>\n"
+                f"🏁 <b>وضعیت:</b> پرونده داوری مختومه گردید."
+            )
 
             split_text = (
                 f"⚖️ **رأی داوری — تقسیم توافقی**\n\n"

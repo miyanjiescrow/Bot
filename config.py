@@ -60,7 +60,7 @@ class Config:
     # اگر این متغیر تنظیم نشود، ربات به‌صورت خودکار به حالت قبل (ارسال به
     # پیوی همه ادمین‌ها) بازمی‌گردد تا هیچ پیامی گم نشود.
     _mjnote_env = os.getenv("MJNOTE")
-    MJNOTE = _safe_int(_mjnote_env)
+    MJNOTE = _safe_int(_mjnote_env, ARCHIVE_CHANNEL_ID)
 
     # ----------------------------------------------------
     # تنظیمات پایگاه داده Supabase

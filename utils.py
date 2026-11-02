@@ -571,39 +571,62 @@ def escape_html(text: str) -> str:
         return ""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def archive_document(bot, file_id, content_type: str = "document", caption: str = "", parse_mode: str = "HTML"):
+def get_mjnote_channel_id() -> Optional[int]:
+    """دریافت شناسه عددی کانال گزارش‌ها و بایگانی MJNOTE"""
+    from config import config
+    cid = getattr(config, "MJNOTE", None)
+    if cid:
+        return cid
+    archive_id = getattr(config, "ARCHIVE_CHANNEL_ID", None)
+    if archive_id:
+        return archive_id
+    return None
+
+def send_mjnote_report(bot: TeleBot, text: str, file_id=None, content_type: str = "text") -> bool:
     """
-    بایگانی بی‌صدا و صرفاً سندی در کانال MJNOTE.
-    مطابق با منطق جدید: بدون پیام‌های متنی طولانی، فقط فایل.
+    ارسال گزارش متنی، عکس یا سند به کانال گزارش‌ها (MJNOTE).
+    قانون قطعی: در کانال MJNOTE فقط و فقط گزارش‌های وضعیتی ارسال می‌شوند
+    و تحت هیچ شرایطی دکمه‌های شیشه‌ای یا تعاملی (reply_markup) ارسال نمی‌گردد.
     """
-    import io as _io
-    mjnote_id = getattr(config, "MJNOTE", 0)
-    if not mjnote_id:
+    channel_id = get_mjnote_channel_id()
+    if not channel_id:
         return False
     try:
-        # آرشیو بی‌صدا: فقط فایل با کپشن کوتاه (حداکثر ۴۰۰ کاراکتر از کپشن اصلی)
-        clean_caption = caption[:400] if caption else ""
-        
-        # مدیریت BytesIO (بروزرسانی شده برای پایداری بیشتر)
+        import io as _io
         actual_file = file_id
         if isinstance(file_id, _io.BytesIO):
             file_id.seek(0)
             actual_file = _io.BytesIO(file_id.read())
             actual_file.name = getattr(file_id, "name", "document.pdf")
-            
-        if content_type == "photo":
-            bot.send_photo(mjnote_id, actual_file, caption=clean_caption, parse_mode=parse_mode)
-        elif content_type == "document":
-            bot.send_document(mjnote_id, actual_file, caption=clean_caption, parse_mode=parse_mode)
+
+        clean_caption = text[:1024] if text else ""
+        if file_id and content_type == "photo":
+            bot.send_photo(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+        elif file_id and content_type == "document":
+            bot.send_document(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+        elif file_id and content_type == "video":
+            bot.send_video(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+        elif file_id and content_type == "voice":
+            bot.send_voice(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+        elif file_id and content_type == "audio":
+            bot.send_audio(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+        else:
+            bot.send_message(channel_id, text[:4096], parse_mode="HTML", reply_markup=None)
         return True
     except Exception as e:
-        logger.error(f"❌ Error in archive_document: {e}")
+        logger.error(f"❌ Error sending report to MJNOTE ({channel_id}): {e}")
         return False
+
+def archive_document(bot, file_id, content_type: str = "document", caption: str = "", parse_mode: str = "HTML"):
+    """
+    بایگانی بی‌صدا و صرفاً سندی در کانال MJNOTE بدون هیچ دکمه‌ای.
+    """
+    return send_mjnote_report(bot, text=caption, file_id=file_id, content_type=content_type)
 
 def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_id: int, amount: float, file_id: str):
     """
     ارسال اعلان فیش جدید برای ادمین‌ها.
-    receipt_type: 'wallet' or 'contract'
+    دکمه‌های اقدام (تایید/رد) فقط برای پیوی ادمین‌ها ارسال می‌شود و به کانال بدون دکمه می‌رود.
     """
     from config import config
     import database as db
@@ -613,40 +636,47 @@ def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_
     
     type_fa = "شارژ کیف پول" if receipt_type == 'wallet' else "پرداخت معامله"
     text = (
-        f"🧾 **فیش واریزی جدید دریافت شد**\n"
+        f"🧾 <b>فیش واریزی جدید دریافت شد</b>\n"
         f"──────────────────\n"
-        f"📂 نوع: **{type_fa}**\n"
-        f"📌 شناسه: `{related_id}`\n"
-        f"👤 فرستنده: {name} (`{user_id}`)\n"
-        f"💰 مبلغ: `{format_currency(amount)}`\n"
-        f"📅 زمان: `{get_tehran_now_jalali_str()}`\n"
+        f"📂 نوع: <b>{type_fa}</b>\n"
+        f"📌 شناسه: <code>{related_id}</code>\n"
+        f"👤 فرستنده: {escape_html(name)} (<code>{user_id}</code>)\n"
+        f"💰 مبلغ: <code>{format_currency(amount)}</code>\n"
+        f"📅 زمان: <code>{get_tehran_now_jalali_str()}</code>\n"
     )
     
-    # تعیین دکمه‌ها برای ادمین
+    # تعیین دکمه‌ها فقط برای پیوی ادمین‌ها
     if receipt_type == 'wallet':
-        # استفاده از دکمه‌های مخصوص تراکنش کیف پول
         import keyboards as kb
         markup = kb.get_deposit_action_inline(related_id, user_id, amount)
     else:
-        # استفاده از دکمه‌های مخصوص معامله
         import keyboards as kb
         markup = kb.get_receipt_admin_approval_inline(related_id, user_id)
 
-    # ارسال به تمام ادمین‌ها یا کانال مدیریت
+    # ۱. ارسال نسخه گزارش به کانال MJNOTE بدون دکمه
+    mjnote_caption = (
+        f"🧾 <b>گزارش دریافت فیش واریزی جدید</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📂 <b>نوع:</b> {type_fa}\n"
+        f"📌 <b>شناسه:</b> <code>{related_id}</code>\n"
+        f"👤 <b>فرستنده:</b> {escape_html(name)} (<code>{user_id}</code>)\n"
+        f"💰 <b>مبلغ:</b> {format_currency(amount)}\n"
+        f"⏳ <b>وضعیت:</b> در انتظار بررسی و تایید مدیریت"
+    )
+    send_mjnote_report(bot, text=mjnote_caption, file_id=file_id, content_type="photo")
+
+    # ۲. ارسال به پیوی ادمین‌ها به همراه دکمه‌های تایید و رد
     admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
-    if getattr(config, 'ARCHIVE_CHANNEL_ID', None):
-         admin_targets.append(config.ARCHIVE_CHANNEL_ID)
-         
-    for target in {t for t in admin_targets if t}:
+    for target in {t for t in admin_targets if t and t > 0}:
         try:
-            bot.send_photo(target, file_id, caption=text, parse_mode="Markdown", reply_markup=markup)
+            bot.send_photo(target, file_id, caption=text, parse_mode="HTML", reply_markup=markup)
         except Exception as e:
             logger.warning(f"Failed to notify admin {target} about receipt: {e}")
 
 def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: str, national_id: str):
     """
-    ارسال اعلان درخواست احراز هویت جدید (کد ملی) به ادمین‌ها با دکمه‌های شیشه‌ای تایید و رد.
-    همانند زیرساخت تایید فیش واریزی، امکان تایید یا رد مستقیم برای مدیریت را فراهم می‌کند.
+    ارسال اعلان درخواست احراز هویت جدید (کد ملی) به ادمین‌ها با دکمه‌های تایید و رد در پیوی ادمین‌ها،
+    و ارسال صرفاً گزارش بدون دکمه به کانال MJNOTE.
     """
     import keyboards as kb
     from config import config
@@ -658,7 +688,20 @@ def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: s
     valid_format = validate_iranian_national_code(clean_nid)
     status_fmt = "✅ رقم کنترل معتبر" if valid_format else "⚠️ ساختار غیرمعیار"
     
-    text = (
+    # گزارش برای کانال MJNOTE بدون دکمه
+    mjnote_text = (
+        f"🆔 <b>گزارش درخواست احراز هویت جدید (کد ملی)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>نام کاربر:</b> {safe_name}\n"
+        f"🔢 <b>کد ملی:</b> <code>{clean_nid}</code> ({status_fmt})\n"
+        f"📱 <b>شماره موبایل:</b> <code>{clean_phone}</code>\n"
+        f"🆔 <b>شناسه کاربر:</b> <code>{user_id}</code>\n"
+        f"⏳ <b>وضعیت:</b> در انتظار بررسی و تایید مدارک"
+    )
+    send_mjnote_report(bot, text=mjnote_text)
+    
+    # پیام برای پیوی ادمین با دکمه‌های تایید/رد
+    admin_text = (
         f"🆔 <b>درخواست احراز هویت جدید (کد ملی)</b>\n"
         f"──────────────────\n"
         f"👤 نام و نام خانوادگی: <b>{safe_name}</b>\n"
@@ -669,25 +712,18 @@ def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: s
         f"──────────────────\n"
         f"جهت بررسی و ثبت نظر، لطفاً از دکمه‌های زیر استفاده فرمایید:"
     )
-    
     markup = kb.get_kyc_admin_action_inline(user_id, clean_nid)
     
     admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
-    if getattr(config, 'ARCHIVE_CHANNEL_ID', None):
-        admin_targets.append(config.ARCHIVE_CHANNEL_ID)
-    if getattr(config, 'LOG_CHANNEL_ID', None):
-        admin_targets.append(config.LOG_CHANNEL_ID)
-        
     sent_any = False
-    for target in {t for t in admin_targets if t}:
+    for target in {t for t in admin_targets if t and t > 0}:
         try:
-            bot.send_message(target, text, parse_mode="HTML", reply_markup=markup)
+            bot.send_message(target, admin_text, parse_mode="HTML", reply_markup=markup)
             sent_any = True
         except Exception as e:
             logger.warning(f"Failed to notify admin {target} about KYC: {e}")
             
     return sent_any
-
 
 def notify_archive(
     bot,
@@ -699,61 +735,24 @@ def notify_archive(
     admin_ids: Optional[List[int]] = None,
 ) -> None:
     """
-    بایگانی در MJNOTE (فقط فایل‌ها و اسناد).
-    اگر محتوا متنی باشد، طبق قانون جدید نباید به MJNOTE ارسال شود (به پیوی ادمین‌ها روت می‌شود).
+    بایگانی در کانال MJNOTE.
+    مطابق با دستور کاربر: در کانال MJNOTE فقط گزارش و اسناد ارسال می‌شود و هیچ دکمه‌ای نمی‌رود.
     """
-    import io as _io
-    mjnote_id = getattr(config, "MJNOTE", 0)
-    
-    # اگر فایل باشد، به MJNOTE می‌فرستیم
-    if mjnote_id and file_id:
-        try:
-            raw_bytes: Optional[bytes] = None
-            file_name: str = "file"
-            if isinstance(file_id, _io.BytesIO):
-                file_id.seek(0)
-                raw_bytes = file_id.read()
-                file_name = getattr(file_id, "name", "document.pdf")
+    # ۱. ارسال همیشگی گزارش به کانال MJNOTE بدون هیچ‌گونه دکمه
+    send_mjnote_report(bot, text=text, file_id=file_id, content_type=content_type)
 
-            # آرشیو بی‌صدا (فقط فایل با کپشن کوتاه)
-            caption = text[:400] if text else ""
-            if content_type == "photo":
-                if raw_bytes:
-                    bot.send_photo(mjnote_id, _io.BytesIO(raw_bytes), caption=caption, parse_mode=parse_mode)
-                else:
-                    bot.send_photo(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-            elif content_type == "document":
-                if raw_bytes:
-                    buf = _io.BytesIO(raw_bytes)
-                    buf.name = file_name
-                    bot.send_document(mjnote_id, buf, caption=caption, parse_mode=parse_mode)
-                else:
-                    bot.send_document(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-            elif content_type == "video":
-                bot.send_video(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-            elif content_type == "voice":
-                bot.send_voice(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-            elif content_type == "audio":
-                bot.send_audio(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-            elif content_type == "animation":
-                bot.send_animation(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-            elif content_type == "video_note":
-                bot.send_video_note(mjnote_id, file_id)
-            else:
-                # اگر نوع دیگری بود به عنوان داکیومنت می‌فرستیم
-                try: bot.send_document(mjnote_id, file_id, caption=caption, parse_mode=parse_mode)
-                except: pass
-        except Exception as e:
-            logger.error(f"❌ Error archiving document to MJNOTE: {e}")
-
-    # برای پیام‌های متنی یا اطلاع‌رسانی‌ها، آن‌ها را به پیوی ادمین‌ها می‌فرستیم (نه کانال آرشیو)
-    if not file_id or content_type == "text":
+    # ۲. فقط در صورتی که دکمه‌ای وجود داشته باشد، آن دکمه به پیوی ادمین‌ها ارسال شود
+    if reply_markup:
         targets = list(admin_ids or getattr(config, "ADMIN_IDS", []))
+        single_admin = getattr(config, "ADMIN_ID", 0)
+        if single_admin and single_admin not in targets:
+            targets.append(single_admin)
         for chat_id in targets:
-            try:
-                bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
-            except Exception as e:
-                logger.error(f"❌ Error sending log to admin {chat_id}: {e}")
+            if chat_id and chat_id > 0:
+                try:
+                    bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+                except Exception as e:
+                    logger.error(f"❌ Error sending interactive alert to admin {chat_id}: {e}")
 
 
 def credit_ambassador_commission(bot, contract: Dict[str, Any], commission_amount: float, cid: str) -> None:
@@ -1149,12 +1148,8 @@ def send_admin_alert(bot, text: str, content_type: str = "text", file_id=None, r
     ]
     is_actionable = any(kw in text for kw in allowed_keywords)
 
-    # ۱. بایگانی در MJNOTE (فقط اگر فایل باشد - بدون متن طولانی)
-    if mjnote_id and file_id:
-        try:
-            archive_document(bot, file_id, content_type, caption=text[:400], parse_mode=parse_mode)
-        except Exception as e:
-            logger.warning(f"Error archiving to MJNOTE: {e}")
+    # ۱. بایگانی و ارسال گزارش در MJNOTE بدون هیچ‌گونه دکمه
+    send_mjnote_report(bot, text=text, file_id=file_id, content_type=content_type)
 
     # ۲. تعیین اهداف عملیاتی (همواره شامل پیوی ادمین‌ها به همراه دکمه‌های تایید و رد)
     targets = []
@@ -1197,8 +1192,8 @@ def send_admin_alert(bot, text: str, content_type: str = "text", file_id=None, r
     for target in targets:
         try:
             actual_text = text[:1024] if target < 0 else text
-            # ارسال دکمه‌های شیشه‌ای تایید/رد
-            actual_markup = reply_markup
+            # دکمه‌های شیشه‌ای فقط به پیوی ادمین‌ها (target > 0) ارسال شوند؛ کانال‌ها بدون دکمه
+            actual_markup = reply_markup if target > 0 else None
 
             if file_id and content_type in ["photo", "document"]:
                 if content_type == "photo":
