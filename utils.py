@@ -617,6 +617,70 @@ def send_mjnote_report(bot: TeleBot, text: str, file_id=None, content_type: str 
         logger.error(f"❌ Error sending report to MJNOTE ({channel_id}): {e}")
         return False
 
+def log_audit_record(
+    bot: TeleBot,
+    category: str,
+    action_title: str,
+    description: str,
+    actor_id: Optional[int] = None,
+    actor_role: Optional[str] = None,
+    target_user_id: Optional[int] = None,
+    contract_id: Optional[str] = None,
+    amount: Optional[float] = None,
+    extra_data: Optional[Dict[str, Any]] = None,
+    file_id=None,
+    content_type: str = "text"
+) -> bool:
+    """
+    ثبت رسمی سوابق عملکرد دکمه‌ها و رویدادهای کلیدی (تایید، لغو، رای داور)
+    کاملاً تفکیک‌شده از پیام‌های تعاملی کاربر در تلگرام و ارسال مستقیم به کانال تعیین‌شده (MJNOTE).
+    """
+    channel_id = get_mjnote_channel_id()
+    if not channel_id:
+        return False
+
+    cat_badge = {
+        "تایید": "✅ تایید و احراز",
+        "لغو": "🚫 لغو و رد",
+        "داوری": "⚖️ رسیدگی و داوری",
+    }.get(category, f"📌 {category}")
+
+    lines = [
+        "🏛 <b>سامانه ثبت رسمی سوابق و نظارت میانجی</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📂 <b>دسته‌بندی:</b> {cat_badge}",
+        f"🔘 <b>عملکرد دکمه:</b> {escape_html(action_title)}",
+    ]
+
+    if contract_id:
+        cid_clean = str(contract_id).replace("ee:", "")
+        lines.append(f"📌 <b>کد معامله:</b> <code>#{cid_clean}</code>")
+
+    if amount is not None and amount > 0:
+        lines.append(f"💰 <b>ارزش مالی:</b> <code>{format_currency(amount)}</code>")
+
+    if actor_id:
+        role_label = actor_role or "کاربر"
+        lines.append(f"👮‍♂️ <b>اقدام‌کننده ({role_label}):</b> <code>{actor_id}</code>")
+
+    if target_user_id:
+        lines.append(f"👤 <b>کاربر مرتبط / هدف:</b> <code>{target_user_id}</code>")
+
+    if description:
+        lines.append(f"📝 <b>شرح وضعیت:</b> {escape_html(description)}")
+
+    if extra_data:
+        for k, v in extra_data.items():
+            if v:
+                lines.append(f"▫️ <b>{escape_html(str(k))}:</b> {escape_html(str(v))}")
+
+    lines.append(f"🕒 <b>زمان ثبت قطعی:</b> <code>{get_tehran_now_jalali_str()}</code>")
+    lines.append("────────────────────")
+    lines.append("🔒 <i>سوابق رسمی عملیات — تفکیک‌شده از پیام‌های تعاملی کاربری</i>")
+
+    text = "\n".join(lines)
+    return send_mjnote_report(bot, text=text, file_id=file_id, content_type=content_type)
+
 def archive_document(bot, file_id, content_type: str = "document", caption: str = "", parse_mode: str = "HTML"):
     """
     بایگانی بی‌صدا و صرفاً سندی در کانال MJNOTE بدون هیچ دکمه‌ای.
