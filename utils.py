@@ -527,13 +527,31 @@ def calculate_commission(amount: float, user_id: Optional[int] = None, payer: st
 # ۴. توابع ساخت لینک سریع، نمایش سند و پنل شیشه‌ای
 # ====================================================
 
+def get_bot_username(bot=None) -> str:
+    """دریافت نام کاربری تمیز بدون @ ربات تلگرام با تضمین اصالت و سازگاری"""
+    uname = ""
+    if bot:
+        try:
+            me = bot.get_me()
+            if me and me.username:
+                uname = me.username
+                config.BOT_USERNAME = uname
+        except Exception:
+            pass
+    if not uname:
+        uname = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "mianji_ir_bot"
+    return str(uname).lstrip("@").strip()
+
 def generate_quick_contract_link(bot_username: str, contract_id: str) -> str:
     """تولید لینک اختصاصی امضای سریع قرارداد (Deep Link)"""
-    return f"https://t.me/{bot_username}?start=contract_{contract_id}"
+    clean_bot = (bot_username or get_bot_username()).lstrip("@").strip()
+    clean_id = normalize_deal_id(contract_id)
+    return f"https://t.me/{clean_bot}?start=c_{clean_id}"
 
 def generate_ambassador_link(bot_username: str, ambassador_id: int) -> str:
     """تولید لینک دعوت اختصاصی سفیر جهت انتشار در کانال (Deep Link ردیابی معرف)"""
-    return f"https://t.me/{bot_username}?start=ref_{ambassador_id}"
+    clean_bot = (bot_username or get_bot_username()).lstrip("@").strip()
+    return f"https://t.me/{clean_bot}?start=ref_{ambassador_id}"
 
 
 # ====================================================
@@ -1523,12 +1541,8 @@ def sanitize_contract_id(raw_id: str) -> str:
 
 def format_invitation_message(contract_id: str, bot_username: str = None) -> str:
     clean_id = normalize_deal_id(contract_id)
-    if not bot_username:
-        try:
-            bot_username = getattr(config, 'BOT_USERNAME', 'mianji_ir_bot')
-        except Exception:
-            bot_username = 'mianji_ir_bot'
-    share_link = f"https://t.me/{bot_username}?start=c_{clean_id}"
+    clean_bot = (bot_username or get_bot_username()).lstrip("@").strip()
+    share_link = f"https://t.me/{clean_bot}?start=c_{clean_id}"
     return (
         f"🏛 **دعوت‌نامه رسمی قرارداد هوشمند (سامانه اسکرو میانجی)**\n"
         f"────────────────────────────\n"
@@ -1537,7 +1551,7 @@ def format_invitation_message(contract_id: str, bot_username: str = None) -> str
         f"🔗 **پیوند مستقیم مشاهده و امضا:**\n{share_link}\n\n"
         f"> 🛡️ **راهنمای امنیتی ضد فیشینگ (پیشگیری از کلاهبرداری):**\n"
         f"> جهت اطمینان ۱۰۰٪ از اصالت معامله و عدم ورود به لینک‌های جعلی یا بات‌های تقلبی، می‌توانید به جای کلیک بر روی لینک:\n"
-        f"> ۱. مستقیماً وارد ربات رسمی و تاییدشده میانجی شوید: @{bot_username}\n"
+        f"> ۱. مستقیماً وارد ربات رسمی و تاییدشده میانجی شوید: @{clean_bot}\n"
         f"> ۲. دستور /start را ارسال کرده یا دکمه «🔍 پیگیری با شناسه قرارداد» را بزنید.\n"
         f"> ۳. کد رهگیری `{clean_id}` را ارسال کنید تا قرارداد رسمی باز شده و پس از بررسی، آن را با اطمینان کامل امضا فرمایید.\n\n"
         f"⚖️ *سامانه میانجی؛ واسطه‌گری امن و صدور گواهی امضای الکترونیک اسناد تجاری.*"

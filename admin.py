@@ -801,17 +801,19 @@ def register_admin_handlers(bot: TeleBot):
                     pass
 
             user_msg = (
-                "⚠️ **پیام مدیریت میانجی: کد ملی شما نیاز به اصلاح دارد**\n"
-                "──────────────────\n"
-                f"کاربر گرامی، کد ملی ثبت‌شده شما (`{national_id}`) توسط مدیریت بررسی گردید و دارای مغایرت می‌باشد.\n\n"
-                "📌 **علت نیاز به اصلاح:**\n"
-                "• عدم انطباق کد ملی با مالک خط سیم‌کارت فعال در تلگرام\n"
-                "• اشتباه در ارقام یا رقم کنترل کد ملی\n\n"
-                "💡 لطفاً جهت تایید رسمی حساب و امکان آزادسازی یا تسویه وجوه، کد ملی صحیح ۱۰ رقمی متعلق به دارنده خط را مجدداً ارسال نمایید."
+                "⚠️ **صفحه ویرایش کد ملی - پیام مدیریت میانجی**\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"کاربر گرامی، کد ملی ثبت‌شده شما (`{national_id}`) توسط مدیریت بررسی گردید و **نیاز به اصلاح** دارد.\n\n"
+                "📌 **علل احتمالی مغایرت:**\n"
+                "• عدم انطباق کد ملی با دارنده خط سیم‌کارت\n"
+                "• اشتباه در ارقام یا رقم کنترل کد ملی\n"
+                "• تداخل در نام و نام خانوادگی شناسنامه‌ای\n\n"
+                "📝 **صفحه ویرایش برای شما فعال شد.**\n"
+                "جهت ثبت و ارسال مجدد، لطفاً روی دکمه «✏️ ویرایش و ثبت مجدد کد ملی» در زیر کلیک کرده یا **کد ملی ۱۰ رقمی** صحیح خود را مستقیماً در همین چت تایپ و ارسال فرمایید:"
             )
             try:
-                is_adm = is_admin(target_uid)
-                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_main_menu(is_adm))
+                db.set_user_state(target_uid, "WAITING_EDIT_NATIONAL_ID", {"prev_national_id": national_id})
+                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_kyc_edit_keyboard())
             except Exception as e:
                 logger.warning(f"Error notifying user {target_uid} of KYC correction: {e}")
 
@@ -822,7 +824,7 @@ def register_admin_handlers(bot: TeleBot):
                 bot,
                 category="لغو",
                 action_title="اعلام نیاز به اصلاح کد ملی",
-                description="کد ملی ارسالی دارای مغایرت تشخیص داده شد و درخواست اصلاح برای کاربر ارسال گردید.",
+                description="کد ملی ارسالی دارای مغایرت تشخیص داده شد و صفحه ویرایش برای کاربر ارسال گردید.",
                 actor_id=call.from_user.id,
                 actor_role="ادمین",
                 target_user_id=target_uid,
@@ -865,18 +867,19 @@ def register_admin_handlers(bot: TeleBot):
                     pass
 
             user_msg = (
-                "⚠️ **نتیجه بررسی احراز هویت**\n"
-                "──────────────────\n"
+                "❌ **صفحه ویرایش کد ملی - عدم تایید احراز هویت**\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
                 f"کاربر گرامی، اطلاعات کد ملی ارسالی شما (`{national_id}`) توسط مدیریت سامانه مورد تایید قرار نگرفت.\n\n"
-                "📌 **علل احتمالی:**\n"
-                "• عدم تطابق شماره سیم‌کارت با کد ملی ارائه‌شده\n"
-                "• اشتباه تایپی در ارقام کد ملی\n"
-                "• عدم تطابق نام و نام خانوادگی با شناسنامه\n\n"
-                "💡 لطفاً از بخش «👤 پروفایل کاربری» -> «🔐 احراز هویت هوشمند» اقدام به ثبت مجدد اطلاعات صحیح نمایید یا به پشتیبانی پیام دهید."
+                "📌 **علل احتمالی عدم تایید:**\n"
+                "• عدم تطابق شماره سیم‌کارت فعال با کد ملی وارد شده\n"
+                "• اشتباه در ثبت ارقام کد ملی\n"
+                "• عدم انطباق نام و مشخصات هویتی\n\n"
+                "📝 **صفحه ویرایش برای شما فعال گردید.**\n"
+                "جهت اصلاح و ارسال مجدد، روی دکمه «✏️ ویرایش و ثبت مجدد کد ملی» در زیر کلیک کنید یا **کد ملی ۱۰ رقمی** صحیح را مستقیماً در همین چت ارسال نمایید:"
             )
             try:
-                is_adm = is_admin(target_uid)
-                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_main_menu(is_adm))
+                db.set_user_state(target_uid, "WAITING_EDIT_NATIONAL_ID", {"prev_national_id": national_id})
+                bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_kyc_edit_keyboard())
             except Exception as e:
                 logger.warning(f"Error notifying user {target_uid} of KYC rejection: {e}")
 

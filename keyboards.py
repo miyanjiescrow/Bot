@@ -548,6 +548,16 @@ def get_kyc_admin_action_inline(user_id: int, national_id: str = "") -> InlineKe
     return markup
 
 
+def get_kyc_edit_keyboard() -> InlineKeyboardMarkup:
+    """صفحه کلید ویرایش کد ملی برای کاربر پس از رد یا اعلام نیاز به اصلاح توسط ادمین"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("✏️ ویرایش و ثبت مجدد کد ملی", callback_data="kyc_edit_nid"),
+        InlineKeyboardButton("💬 تماس با پشتیبانی سامانه", url=getattr(config, 'SUPPORT_URL', 'https://t.me/Mianji_Support'))
+    )
+    return markup
+
+
 def get_pending_kyc_list_inline(requests: list) -> InlineKeyboardMarkup:
     """لیست دکمه‌ای درخواست‌های احراز هویت در انتظار تایید ادمین"""
     markup = InlineKeyboardMarkup(row_width=1)
@@ -1337,11 +1347,12 @@ def get_broadcaster_preview_inline() -> InlineKeyboardMarkup:
 
 def get_deliver_project_keyboard(contract_id: str) -> InlineKeyboardMarkup:
     """دکمه شیشه‌ای تحویل پروژه برای پیام تایید واریز"""
-    markup = InlineKeyboardMarkup(row_width=1)
-    url = f"https://t.me/{config.BOT_USERNAME}?start=deliver_{contract_id}"
+    clean_bot = utils.get_bot_username()
+    clean_id = utils.normalize_deal_id(contract_id)
+    url = f"https://t.me/{clean_bot}?start=deliver_{clean_id}"
     markup.add(
         InlineKeyboardButton("🚀 تحویل پروژه / ارسال فایل", url=url),
-        InlineKeyboardButton("📖 مشاهده تعهدات قرارداد", callback_data=f"view_contract_terms:{contract_id}")
+        InlineKeyboardButton("📖 مشاهده تعهدات قرارداد", callback_data=f"view_contract_terms:{clean_id}")
     )
     return markup
 
@@ -1467,14 +1478,16 @@ def get_smart_deal_revisions_inline() -> InlineKeyboardMarkup:
 def get_smart_deal_invite_inline(invite_token: str, contract_id: str, bot_username: str) -> InlineKeyboardMarkup:
     """دکمه شیشه‌ای ارسال دعوت‌نامه به طرف دوم"""
     import urllib.parse
-    share_link = f"https://t.me/{bot_username}?start={invite_token}"
-    share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد قرارداد: #{contract_id}\nجهت بررسی مشخصات، مهلت تست و امضا کلیک فرمایید:"
+    clean_bot = (bot_username or utils.get_bot_username()).lstrip('@').strip()
+    clean_id = utils.normalize_deal_id(contract_id)
+    share_link = f"https://t.me/{clean_bot}?start=c_{clean_id}"
+    share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد قرارداد: #{clean_id}\nجهت بررسی مشخصات، مهلت تست و امضا کلیک فرمایید:"
     tg_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_text)}"
     
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("📤 ارسال دعوت‌نامه به طرف دوم (اشتراک‌گذاری)", url=tg_url),
-        InlineKeyboardButton("📑 مشاهده کارت و شرایط قرارداد", callback_data=f"view_contract_terms:{contract_id}"),
+        InlineKeyboardButton("📑 مشاهده کارت و شرایط قرارداد", callback_data=f"view_contract_terms:{clean_id}"),
         InlineKeyboardButton("🏠 بازگشت به منوی اصلی", callback_data="back_to_menu")
     )
     return markup

@@ -180,6 +180,17 @@ def main():
         exception_handler=BotWorkerExceptionHandler()
     )
 
+    if has_real_token:
+        try:
+            bot_info = bot.get_me()
+            if bot_info and bot_info.username:
+                verified_username = bot_info.username.lstrip("@").strip()
+                config.BOT_USERNAME = verified_username
+                os.environ["BOT_USERNAME"] = verified_username
+                logger.info(f"🤖 Verified Telegram Bot Identity: @{verified_username} ({bot_info.first_name}) [ID: {bot_info.id}]")
+        except Exception as e:
+            logger.warning(f"Notice connecting to Telegram getMe: {e}")
+
     # مدیریت سیگنال‌های سیستمی جهت خروج امن و آزادسازی فوری نشست در Render (Rolling Update)
     def shutdown_handler(signum, frame):
         logger.info(f"🛑 Received termination signal ({signum}). Stopping polling and releasing session...")

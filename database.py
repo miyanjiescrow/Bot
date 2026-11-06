@@ -9,8 +9,11 @@ import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Union, Tuple
-from functools import lru_cache
-from supabase import create_client, Client
+try:
+    from supabase import create_client, Client
+except ImportError:
+    create_client = None
+    Client = None
 from config import config
 import utils
 from phone_utils import normalize_phone_number
@@ -18,7 +21,18 @@ from phone_utils import normalize_phone_number
 logger = logging.getLogger("Miyanji_Database")
 
 # Local SQLite Database for persistent storage (FSM States, Users, Contracts, Transactions, Signatures)
-_FSM_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miyanji_fsm.db")
+# شناسایی مسیر دیسک پایدار (Render Persistent Disk یا متغیرهای محیطی)
+_persistent_dir = os.getenv("PERSISTENT_DATA_PATH") or os.getenv("DATA_DIR")
+if not _persistent_dir:
+    for candidate in ["/var/data", "/data"]:
+        if os.path.exists(candidate) and os.path.isdir(candidate):
+            _persistent_dir = candidate
+            break
+
+if _persistent_dir and os.path.exists(_persistent_dir):
+    _FSM_DB_PATH = os.path.join(_persistent_dir, "miyanji_fsm.db")
+else:
+    _FSM_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miyanji_fsm.db")
 _fsm_lock = threading.RLock()
 db_lock = threading.RLock()
 from concurrent.futures import ThreadPoolExecutor
@@ -1868,6 +1882,7 @@ def create_contract(
         core_payload = {
             "id": system_id,
             "contract_id": cid,
+            "invite_token": str(contract_data.get("invite_token") or f"c_{cid}"),
             "title": title_val,
             "amount": amt,
             "status": str(contract_data.get("status", "pending_approval")),
@@ -1966,84 +1981,86 @@ def get_contract(contract_id: str) -> Optional[Dict[str, Any]]:
             "history": []
         })
     try:
-        raw_id = str(contract_id)
+        raw_id = str(contract_id).strip()
         clean_id = utils.normalize_deal_id(raw_id)
         logger.info(f"🔍 [DB_GET_CONTRACT] Raw ID: '{raw_id}' | Normalized Clean ID: '{clean_id}'")
-        
-        # اگر Supabase متصل است، ابتدا آخرین وضعیت را از دیتابیس دریافت و کش را به‌روزرسانی می‌کنیم
-        if supabase:
-            try:
-                res = supabase.table("contracts").select("*").eq("contract_id", clean_id).execute()
-                if res.data and len(res.data) > 0:
-                    contract = res.data[0]
-                    with db_lock:
-                        _in_memory_contracts[clean_id] = dict(contract)
-                        _in_memory_contracts[raw_id] = dict(contract)
-                    return _enrich_contract(contract)
-            except Exception as ex1:
-                logger.debug(f"Query contracts by contract_id failed: {ex1}")
 
-            try:
-                res_alt = supabase.table("contracts").select("*").eq("id", clean_id).execute()
-                if res_alt.data and len(res_alt.data) > 0:
-                    contract = res_alt.data[0]
-                    with db_lock:
-                        _in_memory_contracts[clean_id] = dict(contract)
-                        _in_memory_contracts[raw_id] = dict(contract)
-                    return _enrich_contract(contract)
-            except Exception as ex2:
-                logger.debug(f"Query contracts by id failed: {ex2}")
-
+        # ۱. ابتدا بررسی حافظه موقت رم (_in_memory_contracts)
         with db_lock:
             if clean_id in _in_memory_contracts:
                 return _enrich_contract(_in_memory_contracts[clean_id])
             if raw_id in _in_memory_contracts:
                 return _enrich_contract(_in_memory_contracts[raw_id])
+            for c_val in _in_memory_contracts.values():
+                if not isinstance(c_val, dict): continue
+                c_cid = str(c_val.get("contract_id", ""))
+                c_tok = str(c_val.get("invite_token", ""))
+                c_sid = str(c_val.get("id", ""))
+                if c_cid in (clean_id, raw_id) or \
+                   (c_tok and c_tok in (clean_id, raw_id)) or \
+                   (c_sid and c_sid in (clean_id, raw_id)) or \
+                   (c_cid and utils.normalize_deal_id(c_cid) == clean_id):
+                    return _enrich_contract(c_val)
+        
+        # ۲. بررسی پایگاه‌داده ابری Supabase
+        if supabase:
+            for field in ["contract_id", "invite_token", "id"]:
+                for q_val in {clean_id, raw_id}:
+                    if not q_val: continue
+                    try:
+                        res = supabase.table("contracts").select("*").eq(field, q_val).execute()
+                        if res.data and len(res.data) > 0:
+                            contract = res.data[0]
+                            with db_lock:
+                                _in_memory_contracts[clean_id] = dict(contract)
+                                _in_memory_contracts[raw_id] = dict(contract)
+                                _save_contract_to_sqlite(contract)
+                            return _enrich_contract(contract)
+                    except Exception as ex:
+                        logger.debug(f"Query contracts by {field}={q_val} failed: {ex}")
 
-        if not supabase:
-            return None
+        # ۳. بررسی پایگاه‌داده محلی SQLite
+        try:
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            c = conn.cursor()
+            c.execute("SELECT contract_id, data_json FROM local_contracts WHERE contract_id = ? OR contract_id = ?", (clean_id, raw_id))
+            row = c.fetchone()
+            if not row:
+                c.execute("SELECT contract_id, data_json FROM local_contracts")
+                for cid_row, dt_str in c.fetchall():
+                    try:
+                        c_candidate = json.loads(dt_str)
+                        if isinstance(c_candidate, dict):
+                            cand_cid = str(c_candidate.get("contract_id", ""))
+                            cand_tok = str(c_candidate.get("invite_token", ""))
+                            if cand_cid in (clean_id, raw_id) or (cand_tok and cand_tok in (clean_id, raw_id)) or utils.normalize_deal_id(cand_cid) == clean_id:
+                                row = (cand_cid, dt_str)
+                                break
+                    except Exception:
+                        pass
+            conn.close()
+            if row and row[1]:
+                contract = json.loads(row[1])
+                with db_lock:
+                    _in_memory_contracts[clean_id] = dict(contract)
+                return _enrich_contract(contract)
+        except Exception as sql_err:
+            logger.debug(f"Error querying SQLite for contract {clean_id}: {sql_err}")
 
-        if not contract:
-            try:
-                res_states = supabase.table("user_states").select("data").execute()
-                for row in (res_states.data or []):
-                    data = row.get("data") or {}
-                    draft = data.get("contract_draft")
-                    if draft and (utils.sanitize_contract_id(str(draft.get("contract_id"))) == clean_id or utils.sanitize_contract_id(str(draft.get("id"))) == clean_id):
-                        contract = {
-                            "contract_id": clean_id,
-                            "title": draft.get("title", "قرارداد هوشمند میانجی"),
-                            "amount": draft.get("amount", 1000000.0),
-                            "description": draft.get("description", "قرارداد رسمی میانجی."),
-                            "status": draft.get("status", "pending_approval"),
-                            "category": draft.get("category", "GEN"),
-                            "milestones": draft.get("milestones", []),
-                            "history": [],
-                            "buyer_id": draft.get("buyer_id"),
-                            "seller_id": draft.get("seller_id")
-                        }
-                        break
-            except Exception as ex3:
-                logger.debug(f"Query user_states drafts failed: {ex3}")
+        # ۴. بررسی پیش‌نویس‌های ذخیره‌شده در وضعیت کاربران (drafts)
+        try:
+            with db_lock:
+                for u_state_val in _in_memory_user_states.values():
+                    if isinstance(u_state_val, tuple) and len(u_state_val) > 1 and isinstance(u_state_val[1], dict):
+                        d = u_state_val[1].get("contract_draft")
+                        if d and isinstance(d, dict):
+                            d_cid = str(d.get("contract_id", ""))
+                            if utils.normalize_deal_id(d_cid) == clean_id:
+                                return _enrich_contract(d)
+        except Exception:
+            pass
 
-        if not contract:
-            logger.warning(f"⚠️ [CONTRACT_FALLBACK_CREATED] Contract '{clean_id}' not found in DB, creating robust fallback record.")
-            contract = {
-                "contract_id": clean_id,
-                "title": f"قرارداد رسمی شماره {clean_id}",
-                "amount": 1000000.0,
-                "description": "قرارداد هوشمند و امن ثبت‌شده در سامانه میانجی.",
-                "status": "pending_approval",
-                "category": clean_id.split("-")[0] if "-" in clean_id else "GEN",
-                "milestones": [],
-                "history": [{"event": "ایجاد خودکار سیستمی", "ts": datetime.now(timezone.utc).isoformat()}]
-            }
-            try:
-                supabase.table("contracts").upsert(contract, on_conflict="contract_id").execute()
-            except Exception:
-                pass
-
-        return _enrich_contract(contract)
+        return None
 
     except Exception as e:
         logger.error(f"❌ [DB_GET_CONTRACT_ERR] Error getting contract for raw '{contract_id}': {e}", exc_info=True)

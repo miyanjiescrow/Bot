@@ -39,15 +39,25 @@ def show_welcome_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = 
     """
     نمایش پیام رسمی خوش‌آمدگویی و درخواست تایید شماره تماس با تک‌دکمه
     """
-    text = (
-        "🛡 به پلتفرم واسطه‌گری و پرداخت امن «میانجی» خوش آمدید\n\n"
-        "با میانجی می‌توانید پروژه‌ها و معاملات خود را در محیطی امن، قانونی و با ضمانت کامل بازگشت یا آزادسازی وجه انجام دهید.\n\n"
-        "📱 برای شروع استفاده از امکانات ربات، لطفاً از دکمه زیر شماره تماس خود را تایید کنید:"
-    )
+    if pending_contract_id:
+        clean_cid = utils.normalize_deal_id(pending_contract_id)
+        text = (
+            f"🤝 **دعوت‌نامه رسمی معامله امن در سامانه میانجی**\n\n"
+            f"شما به قرارداد شماره `{clean_cid}` دعوت شده‌اید.\n"
+            f"جهت مشاهده متن کامل، بررسی تعهدات و صدور گواهی امضای دیجیتال قانونی، لطفاً با لمس دکمه زیر شماره تماس خود را تایید فرمایید:\n\n"
+            f"_(شماره تماس شما جهت احراز هویت قانونی در سامانه ثبت شده و کاملاً محرمانه است)_"
+        )
+    else:
+        text = (
+            "🛡 به پلتفرم واسطه‌گری و پرداخت امن «میانجی» خوش آمدید\n\n"
+            "با میانجی می‌توانید پروژه‌ها و معاملات خود را در محیطی امن، قانونی و با ضمانت کامل بازگشت یا آزادسازی وجه انجام دهید.\n\n"
+            "📱 برای شروع استفاده از امکانات ربات، لطفاً از دکمه زیر شماره تماس خود را تایید کنید:"
+        )
     bot.send_message(
         chat_id, 
         text, 
-        reply_markup=get_contact_share_keyboard()
+        reply_markup=get_contact_share_keyboard(),
+        parse_mode="Markdown"
     )
 
 
@@ -125,9 +135,20 @@ def show_contract_invite(bot: TeleBot, chat_id: int, user_id: int, contract: dic
     """
     هدایت کاربر به مشاهده مشخصات معامله و امضای دیجیتال
     """
+    clean_id = utils.normalize_deal_id(contract_id)
     creator_id = contract.get("created_by") or contract.get("creator_id")
     creator_info = db.get_user(creator_id) if creator_id else None
     creator_name = creator_info.get("full_name") if creator_info else "کاربر سیستم"
+
+    # بررسی دسترسی: پس از امضای طرفین، فقط ادمین و طرفین قرارداد اجازه دسترسی دارند
+    is_both_signed = bool((contract.get("buyer_signed_at") or contract.get("employer_signed_at")) and 
+                          (contract.get("seller_signed_at") or contract.get("freelancer_signed_at")))
+    is_admin_check = (user_id == getattr(config, 'OWNER_ID', 0) or user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+    is_party = (user_id in [contract.get("buyer_id"), contract.get("seller_id"), contract.get("creator_id")])
+    
+    if is_both_signed and not (is_admin_check or is_party):
+        bot.send_message(chat_id, "🚫 **محدودیت دسترسی**\n\nاین قرارداد توسط طرفین امضا شده است و شما اجازه دسترسی به محتوای آن را ندارید.", parse_mode="Markdown")
+        return
 
     category = contract.get("category", "GEN")
     role_titles = utils.get_role_titles(category)
@@ -151,7 +172,7 @@ def show_contract_invite(bot: TeleBot, chat_id: int, user_id: int, contract: dic
     welcome_msg = (
         f"📜 **دعوت رسمی به بررسی و امضای قرارداد دیجیتال**\n"
         f"────────────────────────────\n"
-        f"🔹 **شناسه معامله:** `{contract_id}`\n"
+        f"🔹 **شناسه معامله:** `{clean_id}`\n"
         f"📝 **عنوان موضوع:** {utils.escape_markdown(str(contract.get('title', 'بدون عنوان')))}\n"
         f"📂 **دسته‌بندی:** {category}\n"
         f"👥 **طرفین قرارداد:**\n"
@@ -164,18 +185,25 @@ def show_contract_invite(bot: TeleBot, chat_id: int, user_id: int, contract: dic
         f"جهت مشاهده متن کامل تعهدات و امضای قانونی با رمز یکبارمصرف پیامکی، دکمه زیر را لمس فرمایید:"
     )
 
-    bot.send_message(
-        chat_id,
-        welcome_msg,
-        parse_mode="Markdown",
-        reply_markup=kb.get_invite_overview_keyboard(contract_id)
-    )
+    try:
+        bot.send_message(
+            chat_id,
+            welcome_msg,
+            parse_mode="Markdown",
+            reply_markup=kb.get_invite_overview_keyboard(clean_id)
+        )
+    except Exception:
+        bot.send_message(
+            chat_id,
+            f"📜 دعوت رسمی به بررسی و امضای قرارداد دیجیتال\nشناسه معامله: {clean_id}\nعنوان: {contract.get('title', 'بدون عنوان')}\nمبلغ: {amount_text} تومان",
+            reply_markup=kb.get_invite_overview_keyboard(clean_id)
+        )
 
 
 def register_auth_handlers(bot: TeleBot):
 
     # ====================================================
-    # ۱. دستور /start با احراز هویت خودکار و پیام خوش‌آمدگویی دقیق
+    # ۱. دستور /start با احراز هویت خودکار و پردازش جامع انواع دیپ‌لینک
     # ====================================================
     @bot.message_handler(commands=['start'])
     def start_handler(message: Message):
@@ -183,15 +211,47 @@ def register_auth_handlers(bot: TeleBot):
             user_id = message.from_user.id
             args = message.text.split()
             pending_contract_id = None
+            invited_by = None
 
-            if len(args) > 1 and args[1].startswith(("c_", "contract_", "deal_")):
-                raw_param = args[1]
-                pending_contract_id = utils.normalize_deal_id(raw_param)
-                logger.info(f"🔗 [START_DEEP_LINK] User {user_id} joined with deal: {pending_contract_id}")
+            if len(args) > 1:
+                start_param = args[1].strip()
+                # ۱. لینک اختصاصی سفیر / معرف
+                if start_param.startswith(("ref_", "amb_")):
+                    try:
+                        clean_ref = start_param.replace("ref_", "").replace("amb_", "")
+                        ref_candidate = int(clean_ref)
+                        if ref_candidate != user_id:
+                            invited_by = ref_candidate
+                    except (ValueError, TypeError):
+                        invited_by = None
+                # ۲. لینک تحویل پروژه
+                elif start_param.startswith("deliver_"):
+                    pending_contract_id = utils.normalize_deal_id(start_param.replace("deliver_", "", 1))
+                # ۳. لینک قرارداد و معامله اسکرو (c_, contract_, deal_, inv_ یا کد مستقیم GEN-)
+                elif start_param.startswith(("c_", "contract_", "deal_", "inv_")) or "-" in start_param:
+                    pending_contract_id = utils.normalize_deal_id(start_param)
+                    logger.info(f"🔗 [START_DEEP_LINK] User {user_id} joined with deal: {pending_contract_id} (param: {start_param})")
 
-            # بررسی وجود شماره تلفن در Supabase دیتابیس
-            user = db.get_user(user_id)
-            phone = (user.get("phone_number") if user else None) or db.get_current_user_phone(user_id)
+            # ثبت یا به‌روزرسانی اولیه اطلاعات کاربر تلگرام
+            user_info = db.register_or_update_user(
+                user_id=user_id,
+                username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                invited_by=invited_by
+            )
+
+            # بررسی بلاک لیست
+            if user_info and user_info.get("is_blacklisted", False):
+                bot.send_message(
+                    message.chat.id,
+                    "⛔ **حساب شما مسدود شده است.**\n\n"
+                    "شما دسترسی به سامانه میانجی را ندارید. برای اطلاعات بیشتر با تیم پشتیبانی تماس بگیرید.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # بررسی وجود شماره تلفن در دیتابیس
+            phone = (user_info.get("phone_number") if user_info else None) or db.get_current_user_phone(user_id)
 
             if phone:
                 # کاربر قبلاً شماره خود را ثبت کرده است -> ورود مستقیم بدون درخواست مجدد
@@ -202,11 +262,15 @@ def register_auth_handlers(bot: TeleBot):
                         show_contract_invite(bot, message.chat.id, user_id, contract, pending_contract_id)
                         return
                     else:
-                        bot.send_message(message.chat.id, "⚠️ معامله موردنظر یافت نشد یا منقضی شده است.")
+                        bot.send_message(
+                            message.chat.id, 
+                            f"⚠️ **معامله با شناسه `{pending_contract_id}` یافت نشد یا حذف شده است.**\n\nمی‌توانید از منوی زیر جهت ایجاد یا مدیریت قراردادها اقدام نمایید:",
+                            parse_mode="Markdown"
+                        )
                 
                 show_main_dashboard(bot, message.chat.id, user_id)
             else:
-                # کاربر جدید یا بدون شماره تلفن -> نمایش پیام دقیق خوش‌آمدگویی و فقط یک دکمه ارسال شماره
+                # کاربر جدید یا بدون شماره تلفن -> نمایش پیام دقیق خوش‌آمدگویی و درخواست شماره با حفظ قرارداد معلق
                 st_data = {"pending_contract_id": pending_contract_id} if pending_contract_id else {}
                 db.set_user_state(user_id, "WAITING_CONTACT_SHARE", st_data)
                 show_welcome_landing(bot, message.chat.id, pending_contract_id)

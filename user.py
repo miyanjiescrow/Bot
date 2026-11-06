@@ -408,7 +408,7 @@ def register_user_handlers(bot: TeleBot):
         "AWAITING_TOPUP_AMOUNT", "WAITING_DEPOSIT_AMOUNT", "WAITING_FOR_PAYMENT_RECEIPT", "WAITING_DEPOSIT_RECEIPT", "WAITING_WITHDRAW_AMOUNT",
         "WAITING_WITHDRAW_SHEBA", "WAITING_WITHDRAW_HOLDER_NAME", "WAITING_AMBASSADOR_CASHOUT_INFO",
         "WAITING_KYC_PHONE", "WAITING_KYC_NATIONAL_ID", "WAITING_FULL_NAME",
-        "WAITING_PROFILE_FULLNAME", "EDITING_FULLNAME", "EDITING_NATIONAL_ID",
+        "WAITING_PROFILE_FULLNAME", "EDITING_FULLNAME", "EDITING_NATIONAL_ID", "WAITING_EDIT_NATIONAL_ID",
         "WAITING_NEGOTIATION_TEXT", "WAITING_NEGOTIATION_UPDATE", "WAITING_SIGN_FULLNAME",
         "WAITING_SIGN_PHONE", "WAITING_SIGN_NATIONAL_ID", "WAITING_SIGN_ALT_PHONE",
         "WAITING_PROJECT_REJECT_REASON", "WAITING_EXTRA_EDIT_PRICE", "WAITING_BARGAIN_PRICE",
@@ -2005,10 +2005,8 @@ def register_user_handlers(bot: TeleBot):
         # اطمینان از ذخیره در دیتابیس با وضعیت draft
         db.save_user_draft(user_id, draft, contract_id=cid)
 
-        # بررسی آستانه احراز هویت (۳ میلیون تومان)
-        amount = float(draft.get("amount", 0))
-        threshold = float(getattr(config, "IDENTITY_VERIFICATION_THRESHOLD", 3000000))
-        needs_national_id = (amount >= threshold)
+        # سیستم احراز هویت اجباری کد ملی برای تمامی قراردادها (تا اتصال سامانه شاهکار)
+        needs_national_id = True
         
         user_info = db.get_user(user_id) or {}
         user_fn = (user_info.get("full_name") or "").strip()
@@ -2059,12 +2057,12 @@ def register_user_handlers(bot: TeleBot):
             bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
             return
 
-        # ۳. اگر کد ملی ندارد و معامله نیاز به احراز دارد -> دریافت کد ملی
-        if needs_national_id and not has_national_id:
+        # ۳. اگر کد ملی ندارد -> دریافت الزامی کد ملی برای معامله
+        if not has_national_id:
             db.set_user_state(user_id, "WAITING_SIGN_NATIONAL_ID", state_data)
             text = (
-                "🪪 **احراز هویت قانونی معامله**\n\n"
-                "این معامله نیاز به ثبت کد ملی دارد.\n"
+                "🪪 **احراز هویت و ثبت الزامی کد ملی**\n\n"
+                "جهت درج در سند رسمی الکترونیک و رعایت الزامات قانونی، ثبت **کد ملی ۱۰ رقمی** برای تمامی قراردادها الزامی می‌باشد.\n"
                 "لطفاً **کد ملی ۱۰ رقمی** خود را وارد فرمایید:"
             )
             try:
@@ -2426,7 +2424,7 @@ def register_user_handlers(bot: TeleBot):
         except Exception as e:
             logger.error(f"Error in post-creation history: {e}")
 
-        bot_username = getattr(config, 'BOT_USERNAME', 'mianji_ir_bot')
+        bot_username = utils.get_bot_username()
         invite_text = utils.format_invitation_message(cid, bot_username)
         amount = utils.safe_float(contract.get("amount", 0) if contract else payload.get("amount", 0))
         payer = (contract.get("commission_payer") if contract else None) or payload.get("commission_payer", "freelancer")
@@ -3110,9 +3108,9 @@ def register_user_handlers(bot: TeleBot):
             else:
                 bot.answer_callback_query(call.id, "❌ خطا در رد تراکنش.")
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_kyc:", "reject_kyc:", "adm:kyc:appr:", "adm:kyc:rej:")))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_kyc:", "reject_kyc:", "adm:kyc:appr:", "adm:kyc:rej:", "adm:kyc:fix:")))
     def handle_kyc_admin_decision(call: CallbackQuery):
-        """مدیریت تایید یا رد احراز هویت / کد ملی توسط ادمین (زیرساخت مشترک)"""
+        """مدیریت تایید، نیاز به اصلاح یا رد احراز هویت / کد ملی توسط ادمین (زیرساخت مشترک)"""
         user_caller = call.from_user.id
         if not is_admin_user(user_caller) and not is_owner_user(user_caller):
             bot.answer_callback_query(call.id, "❌ شما دسترسی ادمین ندارید.", show_alert=True)
@@ -3121,6 +3119,10 @@ def register_user_handlers(bot: TeleBot):
         parts = call.data.split(":")
         if call.data.startswith("adm:kyc:appr:"):
             action = "approve"
+            target_uid = int(parts[3])
+            national_id = parts[4] if len(parts) > 4 else ""
+        elif call.data.startswith("adm:kyc:fix:"):
+            action = "fix"
             target_uid = int(parts[3])
             national_id = parts[4] if len(parts) > 4 else ""
         elif call.data.startswith("adm:kyc:rej:"):
@@ -3167,6 +3169,36 @@ def register_user_handlers(bot: TeleBot):
                     logger.warning(f"Error notifying user {target_uid} of KYC approval: {e}")
             else:
                 bot.answer_callback_query(call.id, "❌ خطا در تایید احراز هویت.", show_alert=True)
+        elif action == "fix":
+            if db.request_user_kyc_correction(target_uid, reason="کد ملی نیاز به اصلاح دارد"):
+                bot.answer_callback_query(call.id, "⚠️ پیام نیاز به اصلاح و صفحه ویرایش برای کاربر ارسال شد.", show_alert=True)
+                new_text = (call.message.text or call.message.caption or "") + f"\n\n⚠️ <b>درخواست اصلاح کد ملی ثبت شد توسط {utils.escape_html(admin_name)}</b>"
+                try:
+                    bot.edit_message_text(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=None)
+                except Exception:
+                    try:
+                        bot.edit_message_caption(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=None)
+                    except Exception:
+                        pass
+
+                user_msg = (
+                    "⚠️ **صفحه ویرایش کد ملی - پیام مدیریت میانجی**\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"کاربر گرامی، کد ملی ثبت‌شده شما (`{national_id}`) توسط مدیریت بررسی گردید و **نیاز به اصلاح** دارد.\n\n"
+                    "📌 **علل احتمالی مغایرت:**\n"
+                    "• عدم انطباق کد ملی با دارنده خط سیم‌کارت\n"
+                    "• اشتباه در ارقام یا رقم کنترل کد ملی\n"
+                    "• تداخل در نام و نام خانوادگی شناسنامه‌ای\n\n"
+                    "📝 **صفحه ویرایش برای شما فعال شد.**\n"
+                    "جهت ثبت و ارسال مجدد، لطفاً روی دکمه «✏️ ویرایش و ثبت مجدد کد ملی» در زیر کلیک کرده یا **کد ملی ۱۰ رقمی** صحیح خود را مستقیماً در همین چت ارسال فرمایید:"
+                )
+                try:
+                    db.set_user_state(target_uid, "WAITING_EDIT_NATIONAL_ID", {"prev_national_id": national_id})
+                    bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_kyc_edit_keyboard())
+                except Exception as e:
+                    logger.warning(f"Error notifying user {target_uid} of KYC correction: {e}")
+            else:
+                bot.answer_callback_query(call.id, "❌ خطا در ثبت درخواست اصلاح.", show_alert=True)
         else:
             if db.reject_user_kyc(target_uid, reason="عدم تطابق یا نقص اطلاعات"):
                 bot.answer_callback_query(call.id, "❌ احراز هویت کاربر رد شد.", show_alert=True)
@@ -3180,17 +3212,19 @@ def register_user_handlers(bot: TeleBot):
                         pass
 
                 user_msg = (
-                    "⚠️ **نتیجه بررسی احراز هویت**\n"
-                    "──────────────────\n"
+                    "❌ **صفحه ویرایش کد ملی - عدم تایید احراز هویت**\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
                     f"کاربر گرامی، اطلاعات کد ملی ارسالی شما (`{national_id}`) توسط مدیریت سامانه مورد تایید قرار نگرفت.\n\n"
-                    "📌 **علل احتمالی:**\n"
-                    "• عدم تطابق شماره سیم‌کارت با کد ملی ارائه‌شده\n"
-                    "• اشتباه تایپی در ارقام کد ملی\n"
-                    "• عدم تطابق نام و نام خانوادگی با شناسنامه\n\n"
-                    "💡 لطفاً از بخش «👤 پروفایل کاربری» -> «🔐 احراز هویت هوشمند» اقدام به ثبت مجدد اطلاعات صحیح نمایید یا به پشتیبانی پیام دهید."
+                    "📌 **علل احتمالی عدم تایید:**\n"
+                    "• عدم تطابق شماره سیم‌کارت فعال با کد ملی وارد شده\n"
+                    "• اشتباه در ثبت ارقام کد ملی\n"
+                    "• عدم انطباق نام و مشخصات هویتی\n\n"
+                    "📝 **صفحه ویرایش برای شما فعال گردید.**\n"
+                    "جهت اصلاح و ارسال مجدد، روی دکمه «✏️ ویرایش و ثبت مجدد کد ملی» در زیر کلیک کرده یا **کد ملی ۱۰ رقمی** صحیح را مستقیماً در همین چت ارسال نمایید:"
                 )
                 try:
-                    bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=_get_main_menu_for_user(target_uid))
+                    db.set_user_state(target_uid, "WAITING_EDIT_NATIONAL_ID", {"prev_national_id": national_id})
+                    bot.send_message(target_uid, user_msg, parse_mode="Markdown", reply_markup=kb.get_kyc_edit_keyboard())
                 except Exception as e:
                     logger.warning(f"Error notifying user {target_uid} of KYC rejection: {e}")
             else:
@@ -3910,7 +3944,7 @@ def register_user_handlers(bot: TeleBot):
         raw_data = call.data
         cid = utils.sanitize_contract_id(raw_data)
         logger.info(f"🔗 [INVITE_CALLBACK] Raw callback_data: '{raw_data}' | Sanitized CID: '{cid}'")
-        bot_username = getattr(config, 'BOT_USERNAME', 'MiyanjiBot')
+        bot_username = utils.get_bot_username()
         text = utils.format_invitation_message(cid, bot_username)
         bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
         bot.answer_callback_query(call.id)
@@ -4131,13 +4165,47 @@ def register_user_handlers(bot: TeleBot):
 
         national_id = utils.fa_to_en_digits(message.text.strip())
         if not national_id.isdigit() or len(national_id) != 10:
-            bot.send_message(message.chat.id, "❌ کد ملی باید ۱۰ رقم باشد. دوباره وارد کنید:")
+            bot.send_message(message.chat.id, "❌ کد ملی باید دقیقاً ۱۰ رقم باشد. لطفاً دوباره وارد کنید:", reply_markup=kb.get_cancel_keyboard())
+            return
+
+        if not utils.validate_iranian_national_code(national_id) and not kyc_service.validate_national_id(national_id):
+            bot.send_message(
+                message.chat.id,
+                "❌ **رقم کنترل کد ملی نامعتبر است.**\nلطفاً یک کد ملی ۱۰ رقمی معتبر وارد فرمایید:",
+                parse_mode="Markdown",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+            return
+
+        if db.is_national_id_taken(national_id, exclude_user_id=user_id):
+            bot.send_message(
+                message.chat.id,
+                "⚠️ **این کد ملی قبلاً برای حساب کاربری دیگری ثبت و تایید شده است.**\nدر صورت نیاز با پشتیبانی تماس بگیرید.",
+                parse_mode="Markdown",
+                reply_markup=kb.get_cancel_keyboard()
+            )
             return
         
         _, data = db.get_user_state(user_id)
         if not data: data = {}
         data["signer_national_id"] = national_id
-        db.update_user_identity(user_id, national_id=national_id)
+
+        user_info = db.get_user(user_id) or {}
+        is_already_approved = bool(user_info.get("is_verified") and user_info.get("kyc_status") == "approved" and user_info.get("national_id") == national_id)
+
+        # اگر برای بار اول وارد سامانه شده یا قبلاً تایید نگرفته، در حالت pending قرار می‌گیرد و به ادمین ارجاع می‌شود
+        db.update_user_identity(
+            user_id, 
+            national_id=national_id, 
+            is_verified=is_already_approved, 
+            kyc_status="approved" if is_already_approved else "pending"
+        )
+        if not is_already_approved:
+            full_name = data.get("signer_fullname") or user_info.get("full_name") or f"کاربر {user_id}"
+            phone = data.get("signer_phone") or user_info.get("phone_number") or db.get_current_user_phone(user_id) or ""
+            db.submit_kyc_request(user_id, national_id=national_id, full_name=full_name, phone_number=phone)
+            utils.notify_admin_kyc(bot, user_id=user_id, full_name=full_name, phone_number=phone, national_id=national_id)
+
         _go_to_signing_confirm(bot, message.chat.id, user_id, data)
 
     def _go_to_signing_confirm(bot, chat_id, user_id, data):
@@ -4339,6 +4407,24 @@ def register_user_handlers(bot: TeleBot):
                 f"✍️ قرارداد توسط طرف اول (سازنده - {('کارفرما' if role == 'employer' else 'مجری')}) با رمز پیامکی OTP امضا و شواهد قانونی ({sig_hash[:16]}...) ثبت گردید.",
                 actor_id=user_id
             )
+
+            # ثبت و استعلام وضعیت احراز هویت سازنده (طرف اول)
+            try:
+                u_info = db.get_user(user_id) or {}
+                is_already_approved = bool(u_info.get("is_verified") and u_info.get("kyc_status") == "approved" and u_info.get("national_id") == national_id)
+                db.register_or_update_user(
+                    user_id=user_id,
+                    full_name=full_name,
+                    phone_number=phone,
+                    national_id=national_id,
+                    is_verified=is_already_approved,
+                    kyc_status="approved" if is_already_approved else "pending"
+                )
+                if not is_already_approved:
+                    db.submit_kyc_request(user_id, national_id=national_id, full_name=full_name, phone_number=phone)
+                    utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
+            except Exception as u_err:
+                logger.warning(f"Error registering creator identity: {u_err}")
             
             db.clear_user_state(user_id)
             
@@ -4368,7 +4454,7 @@ def register_user_handlers(bot: TeleBot):
                 "برای بررسی و امضای سند، لطفاً از بخش «📜 معاملات من» وارد شوید."
             )
             
-            bot_username = getattr(config, 'BOT_USERNAME', 'mianji_ir_bot')
+            bot_username = utils.get_bot_username()
             share_link = f"https://t.me/{bot_username}?start=c_{cid}"
             is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
             
@@ -4484,15 +4570,21 @@ def register_user_handlers(bot: TeleBot):
 
         contract.update(updates)
         
-        # ثبت در جدول کاربران
+        # ثبت در جدول کاربران با حفظ روال تایید ادمین
         try:
+            u_info = db.get_user(user_id) or {}
+            is_already_approved = bool(u_info.get("is_verified") and u_info.get("kyc_status") == "approved" and u_info.get("national_id") == national_id)
             db.register_or_update_user(
                 user_id=user_id,
                 full_name=full_name,
                 phone_number=phone,
                 national_id=national_id,
-                is_verified=True
+                is_verified=is_already_approved,
+                kyc_status="approved" if is_already_approved else "pending"
             )
+            if not is_already_approved:
+                db.submit_kyc_request(user_id, national_id=national_id, full_name=full_name, phone_number=phone)
+                utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
         except Exception as u_err:
             logger.warning(f"Error updating user identity: {u_err}")
 
@@ -8167,29 +8259,44 @@ def register_user_handlers(bot: TeleBot):
 
     @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "EDITING_FULLNAME")
 
-    @bot.callback_query_handler(func=lambda call: call.data == "edit_national_id")
+    @bot.callback_query_handler(func=lambda call: call.data in ["edit_national_id", "kyc_edit_nid", "edit_my_nid"])
     def edit_national_id_callback(call: CallbackQuery):
         user_id = call.from_user.id
-        db.set_user_state(user_id, "EDITING_NATIONAL_ID")
+        db.set_user_state(user_id, "WAITING_EDIT_NATIONAL_ID")
         bot.answer_callback_query(call.id)
         bot.send_message(
             call.message.chat.id,
-            "✏️ **کد ملی جدید را وارد کنید:**\n\n"
-            "(۱۰ رقم)",
+            "✏️ **صفحه ویرایش کد ملی**\n\n"
+            "لطفاً **کد ملی ۱۰ رقمی** صحیح و معتبر خود را (مطابق کارت ملی و خط همراه فعال) وارد فرمایید:\n"
+            "_(مثال: 0012345678)_",
             parse_mode="Markdown",
             reply_markup=kb.get_cancel_keyboard()
         )
 
-    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] == "EDITING_NATIONAL_ID")
+    @bot.message_handler(func=lambda msg: db.get_user_state(msg.from_user.id)[0] in ["EDITING_NATIONAL_ID", "WAITING_EDIT_NATIONAL_ID"])
     def process_edit_national_id(message: Message):
         user_id = message.from_user.id
-        raw_nid = message.text or ""
+        raw_nid = (message.text or "").strip()
+        if raw_nid in ["❌ انصراف", "/cancel", "🔙 انصراف و بازگشت"]:
+            db.clear_user_state(user_id)
+            is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
+            bot.send_message(message.chat.id, "❌ ویرایش کد ملی لغو شد.", reply_markup=kb.get_main_menu(is_admin))
+            return
+
         national_id = utils.fa_to_en_digits(raw_nid).strip()
+
+        if not national_id.isdigit() or len(national_id) != 10:
+            bot.send_message(
+                message.chat.id,
+                "❌ **کد ملی باید دقیقاً ۱۰ رقم باشد.**\nلطفاً دوباره وارد نمایید:",
+                reply_markup=kb.get_cancel_keyboard()
+            )
+            return
 
         if not utils.validate_iranian_national_code(national_id) and not kyc_service.validate_national_id(national_id):
             bot.send_message(
                 message.chat.id,
-                "❌ **کد ملی نامعتبر است.**\nلطفاً یک کد ملی ۱۰ رقمی با رقم کنترل معتبر وارد فرمایید:",
+                "❌ **رقم کنترل کد ملی نامعتبر است.**\nلطفاً یک کد ملی ۱۰ رقمی معتبر با رقم کنترل صحیح وارد فرمایید:",
                 parse_mode="Markdown",
                 reply_markup=kb.get_cancel_keyboard()
             )
@@ -8198,7 +8305,7 @@ def register_user_handlers(bot: TeleBot):
         if db.is_national_id_taken(national_id, exclude_user_id=user_id):
             bot.send_message(
                 message.chat.id,
-                "⚠️ **این کد ملی قبلاً برای حساب کاربری دیگری تایید شده است.**",
+                "⚠️ **این کد ملی قبلاً برای حساب کاربری دیگری تایید شده است.**\nدر صورت نیاز با پشتیبانی تماس بگیرید.",
                 parse_mode="Markdown",
                 reply_markup=_get_main_menu_for_user(user_id)
             )
@@ -8207,25 +8314,26 @@ def register_user_handlers(bot: TeleBot):
 
         user_info = db.get_user(user_id) or {}
         full_name = user_info.get("full_name") or f"کاربر {user_id}"
-        phone = user_info.get("phone_number") or ""
+        phone = user_info.get("phone_number") or db.get_current_user_phone(user_id) or ""
 
-        # ثبت درخواست تغییر کد ملی و ارسال به مدیریت
+        # ثبت کد ملی جدید با وضعیت در انتظار بررسی (pending) و بدون تایید آنی تا بررسی ادمین
+        db.update_user_identity(user_id, national_id=national_id, is_verified=False, kyc_status='pending')
         db.submit_kyc_request(user_id, national_id=national_id, full_name=full_name, phone_number=phone)
         db.clear_user_state(user_id)
 
+        # ارسال اعلان و دکمه‌های تایید/رد برای ادمین و گزارش به MJNOTE
         utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
 
         bot.send_message(
             message.chat.id,
             f"📋 **کد ملی جدید با موفقیت ثبت شد: `{national_id}`**\n\n"
-            "⏳ اطلاعات شما جهت احراز هویت و بررسی برای **مدیریت سامانه میانجی** ارسال گردید.\n"
-            "پس از تایید توسط ادمین، وضعیت حساب شما به حالت تایید شده تغییر خواهد کرد.",
+            "⏳ اطلاعات هویتی شما جهت احراز هویت و بررسی برای **مدیریت سامانه میانجی** ارسال گردید.\n"
+            "به محض تایید یا بررسی توسط ادمین، نتیجه بلافاصله از طریق همین ربات به اطلاع شما خواهد رسید.",
             parse_mode="Markdown",
             reply_markup=_get_main_menu_for_user(user_id)
         )
 
 
-    @bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
     @bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
     def back_to_menu_callback(call: CallbackQuery):
         """✅ Fixed: Only clear FSM states, preserve authentication"""
@@ -8247,7 +8355,7 @@ def register_user_handlers(bot: TeleBot):
             "WAITING_CUSTOM_FREE_EDITS", "WAITING_FIELD_EDIT",
             "WAITING_SIGN_PHONE", "WAITING_WORK_PHONE",
             "WAITING_SECOND_PARTY_FULLNAME", "WAITING_SECOND_PARTY_NATIONAL_ID",
-            "WAITING_SECOND_PARTY_PHONE",
+            "WAITING_SECOND_PARTY_PHONE", "WAITING_EDIT_NATIONAL_ID", "EDITING_NATIONAL_ID",
             "WAITING_RECEIPT_PHOTO", "WAITING_MS_RECEIPT_PHOTO",
             "WAITING_DELIVERY_FILE", "WAITING_MS_DELIVERY_FILE",
             "WAITING_SIGN_FULLNAME",
