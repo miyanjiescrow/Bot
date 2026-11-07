@@ -528,7 +528,7 @@ def calculate_commission(amount: float, user_id: Optional[int] = None, payer: st
 # ====================================================
 
 def get_bot_username(bot=None) -> str:
-    """دریافت نام کاربری تمیز بدون @ ربات تلگرام با تضمین اصالت و سازگاری"""
+    """دریافت نام کاربری تمیز بدون @ یا t.me/ ربات تلگرام با تضمین اصالت و سازگاری"""
     uname = ""
     if bot:
         try:
@@ -540,7 +540,11 @@ def get_bot_username(bot=None) -> str:
             pass
     if not uname:
         uname = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "mianji_ir_bot"
-    return str(uname).lstrip("@").strip()
+    
+    clean = str(uname).strip().replace("https://", "").replace("http://", "")
+    if "/" in clean:
+        clean = clean.split("/")[-1]
+    return clean.split("?")[0].lstrip("@").strip() or "mianji_ir_bot"
 
 def generate_quick_contract_link(bot_username: str, contract_id: str) -> str:
     """تولید لینک اختصاصی امضای سریع قرارداد (Deep Link)"""
@@ -1073,17 +1077,16 @@ def generate_contract_text(contract: Dict[str, Any], buyer_user: Dict[str, Any] 
             text += f"{branch} {escape_markdown(m.get('title'))}: {float(m.get('amount', 0)):,.0f} [{st}]\n"
         text += "───────────────────────\n\n"
 
-    specific_clauses = CATEGORY_LEGAL_CLAUSES.get(category, CATEGORY_LEGAL_CLAUSES["GEN"])
-    
+    clean_desc = escape_markdown(desc)
+    quoted_desc = "\n".join(f"> {line}" for line in clean_desc.splitlines() if line.strip()) or "> تعهدات مطابق توافق طرفین"
+
     text += (
-        r"📝 *تعهدات:* " + f"{escape_markdown(desc)}\n\n" +
-        r"⚖️ *قوانین اختصاصی:*" + "\n" +
-        f"{specific_clauses}\n\n" +
-        specific_clauses + "\n\n" +
-        "🛡 *شرایط داوری و امنیتی میانجی:*" + "\n" +
-        "• *تضمین وجوه (Escrow):* وجوه تا تایید نهایی در حساب امانت واسط *بلوکه* می‌ماند." + "\n" +
-        "• *استناد قانونی:* این سند طبق ماده ۱۰ قانون مدنی و قوانین تجارت الکترونیک معتبر است." + "\n" +
-        "• *داوری مرضی‌الطرفین:* پلتفرم میانجی به عنوان داور نهایی در صورت بروز اختلاف تعیین شده است."
+        "📝 *شرح تعهدات معامله:*\n" +
+        f"{quoted_desc}\n\n" +
+        "⚖️ *تضمین حقوقی و داوری میانجی:*\n" +
+        "> 🛡️ *صندوق امانت (Escrow):* وجه تا رضایت کامل کارفرما نزد میانجی مسدود می‌ماند.\n" +
+        "> 📜 *اعتبار قانونی:* سند رسمی طبق ماده ۱۰ قانون مدنی و تجارت الکترونیک.\n" +
+        "> ⚖️ *مرجع داوری:* سامانه هوشمند میانجی داور مرضی‌الطرفین است."
     )
 
     return text

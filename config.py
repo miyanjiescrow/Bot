@@ -10,7 +10,11 @@ class Config:
     # تنظیمات اصلی ربات تلگرام
     # ----------------------------------------------------
     BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-    BOT_USERNAME = os.getenv("BOT_USERNAME", "mianji_ir_bot").strip()
+    _raw_username = os.getenv("BOT_USERNAME", "mianji_ir_bot").strip()
+    _raw_username = _raw_username.replace("https://", "").replace("http://", "")
+    if "/" in _raw_username:
+        _raw_username = _raw_username.split("/")[-1]
+    BOT_USERNAME = _raw_username.split("?")[0].lstrip("@").strip() or "mianji_ir_bot"
     
     def _safe_int(val, default=None):
         if not val: return default

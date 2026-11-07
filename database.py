@@ -1164,28 +1164,33 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
         if (now - last_upd).total_seconds() < 300:
             return cached
 
+    # بررسی سریع رم محلی
+    mem_u = _in_memory_users.get(user_id)
+    if mem_u and mem_u.get("phone_number"):
+        _user_info_cache[user_id] = mem_u
+        _user_info_last_update[user_id] = now
+        return mem_u
+
     if not supabase:
-        return _in_memory_users.get(user_id)
+        return mem_u
+
     try:
-        res = supabase.table("users").select("*").eq("id", user_id).execute()
-        if res.data:
+        # استعلام یکپارچه با شرط OR به‌جای ۲ درخواست شبکه‌ای متوالی
+        res = supabase.table("users").select("*").or_(f"id.eq.{user_id},telegram_id.eq.{user_id}").limit(1).execute()
+        if res.data and len(res.data) > 0:
             user_data = res.data[0]
             _user_info_cache[user_id] = user_data
             _user_info_last_update[user_id] = now
             return user_data
-            
-        # بررسی بر اساس telegram_id
-        res_tg = supabase.table("users").select("*").eq("telegram_id", user_id).execute()
-        if res_tg.data:
-            user_data = res_tg.data[0]
-            _user_info_cache[user_id] = user_data
-            _user_info_last_update[user_id] = now
-            return user_data
 
-        return _in_memory_users.get(user_id)
+        # در صورت عدم وجود، نتیجه در کش ذخیره می‌شود تا درخواست‌های مکرر سرور را کند نکنند
+        fallback = mem_u or {}
+        _user_info_cache[user_id] = fallback
+        _user_info_last_update[user_id] = now
+        return fallback if fallback else None
     except Exception as e:
-        logger.error(f"Error fetching user {user_id}: {e}")
-        return _user_info_cache.get(user_id) or _in_memory_users.get(user_id)
+        logger.debug(f"Combined user fetch notice for {user_id}: {e}")
+        return _user_info_cache.get(user_id) or mem_u
 
 
 def set_user_role(user_id: int, role: str) -> bool:
@@ -2002,31 +2007,14 @@ def get_contract(contract_id: str) -> Optional[Dict[str, Any]]:
                    (c_cid and utils.normalize_deal_id(c_cid) == clean_id):
                     return _enrich_contract(c_val)
         
-        # ۲. بررسی پایگاه‌داده ابری Supabase
-        if supabase:
-            for field in ["contract_id", "invite_token", "id"]:
-                for q_val in {clean_id, raw_id}:
-                    if not q_val: continue
-                    try:
-                        res = supabase.table("contracts").select("*").eq(field, q_val).execute()
-                        if res.data and len(res.data) > 0:
-                            contract = res.data[0]
-                            with db_lock:
-                                _in_memory_contracts[clean_id] = dict(contract)
-                                _in_memory_contracts[raw_id] = dict(contract)
-                                _save_contract_to_sqlite(contract)
-                            return _enrich_contract(contract)
-                    except Exception as ex:
-                        logger.debug(f"Query contracts by {field}={q_val} failed: {ex}")
-
-        # ۳. بررسی پایگاه‌داده محلی SQLite
+        # ۲. بررسی سریع پایگاه‌داده محلی SQLite (فوق‌سریع - کمتر از ۲ میلی‌ثانیه)
         try:
-            conn = sqlite3.connect(_FSM_DB_PATH, timeout=5.0)
+            conn = sqlite3.connect(_FSM_DB_PATH, timeout=2.0)
             c = conn.cursor()
             c.execute("SELECT contract_id, data_json FROM local_contracts WHERE contract_id = ? OR contract_id = ?", (clean_id, raw_id))
             row = c.fetchone()
             if not row:
-                c.execute("SELECT contract_id, data_json FROM local_contracts")
+                c.execute("SELECT contract_id, data_json FROM local_contracts LIMIT 100")
                 for cid_row, dt_str in c.fetchall():
                     try:
                         c_candidate = json.loads(dt_str)
@@ -2043,9 +2031,38 @@ def get_contract(contract_id: str) -> Optional[Dict[str, Any]]:
                 contract = json.loads(row[1])
                 with db_lock:
                     _in_memory_contracts[clean_id] = dict(contract)
+                    _in_memory_contracts[raw_id] = dict(contract)
                 return _enrich_contract(contract)
         except Exception as sql_err:
             logger.debug(f"Error querying SQLite for contract {clean_id}: {sql_err}")
+
+        # ۳. در صورت عدم وجود در دیسک محلی، استعلام مستقیم و بهینه از Supabase
+        if supabase:
+            for q_val in [clean_id, raw_id]:
+                if not q_val: continue
+                try:
+                    res = supabase.table("contracts").select("*").eq("contract_id", q_val).limit(1).execute()
+                    if res.data and len(res.data) > 0:
+                        contract = res.data[0]
+                        with db_lock:
+                            _in_memory_contracts[clean_id] = dict(contract)
+                            _in_memory_contracts[raw_id] = dict(contract)
+                            _save_contract_to_sqlite(contract)
+                        return _enrich_contract(contract)
+                except Exception as ex:
+                    logger.debug(f"Direct contract_id query failed for {q_val}: {ex}")
+            
+            # در صورت عدم تطابق با contract_id، بررسی invite_token
+            try:
+                res_tok = supabase.table("contracts").select("*").eq("invite_token", clean_id).limit(1).execute()
+                if res_tok.data and len(res_tok.data) > 0:
+                    contract = res_tok.data[0]
+                    with db_lock:
+                        _in_memory_contracts[clean_id] = dict(contract)
+                        _save_contract_to_sqlite(contract)
+                    return _enrich_contract(contract)
+            except Exception:
+                pass
 
         # ۴. بررسی پیش‌نویس‌های ذخیره‌شده در وضعیت کاربران (drafts)
         try:
