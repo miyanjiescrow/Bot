@@ -527,6 +527,23 @@ def calculate_commission(amount: float, user_id: Optional[int] = None, payer: st
 # ۴. توابع ساخت لینک سریع، نمایش سند و پنل شیشه‌ای
 # ====================================================
 
+def clean_bot_username(raw: Optional[str] = None) -> str:
+    """
+    استخراج نام کاربری تمیز و استاندارد ربات تلگرام بدون پیشوند t.me/، https://، @ یا اسلش.
+    جلوگیری قطعی از باگ تکرار دامین (مانند https://t.me/T.me/mianji_ir_bot).
+    """
+    if not raw:
+        raw = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "mianji_ir_bot"
+    s = str(raw).strip()
+    s = re.sub(r'^https?://', '', s, flags=re.IGNORECASE)
+    while re.match(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', s, flags=re.IGNORECASE):
+        s = re.sub(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', '', s, flags=re.IGNORECASE)
+    s = s.lstrip('@/').strip()
+    if '/' in s:
+        s = s.split('/')[-1]
+    s = s.split('?')[0].strip()
+    return s or "mianji_ir_bot"
+
 def get_bot_username(bot=None) -> str:
     """دریافت نام کاربری تمیز بدون @ یا t.me/ ربات تلگرام با تضمین اصالت و سازگاری"""
     uname = ""
@@ -535,27 +552,24 @@ def get_bot_username(bot=None) -> str:
             me = bot.get_me()
             if me and me.username:
                 uname = me.username
-                config.BOT_USERNAME = uname
+                config.BOT_USERNAME = clean_bot_username(uname)
         except Exception:
             pass
     if not uname:
         uname = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "mianji_ir_bot"
-    
-    clean = str(uname).strip().replace("https://", "").replace("http://", "")
-    if "/" in clean:
-        clean = clean.split("/")[-1]
-    return clean.split("?")[0].lstrip("@").strip() or "mianji_ir_bot"
+    return clean_bot_username(uname)
 
 def generate_quick_contract_link(bot_username: str, contract_id: str) -> str:
     """تولید لینک اختصاصی امضای سریع قرارداد (Deep Link)"""
-    clean_bot = (bot_username or get_bot_username()).lstrip("@").strip()
+    clean_bot = clean_bot_username(bot_username)
     clean_id = normalize_deal_id(contract_id)
     return f"https://t.me/{clean_bot}?start=c_{clean_id}"
 
 def generate_ambassador_link(bot_username: str, ambassador_id: int) -> str:
     """تولید لینک دعوت اختصاصی سفیر جهت انتشار در کانال (Deep Link ردیابی معرف)"""
-    clean_bot = (bot_username or get_bot_username()).lstrip("@").strip()
+    clean_bot = clean_bot_username(bot_username)
     return f"https://t.me/{clean_bot}?start=ref_{ambassador_id}"
+
 
 
 # ====================================================
@@ -1044,50 +1058,33 @@ def generate_contract_text(contract: Dict[str, Any], buyer_user: Dict[str, Any] 
     seller_phone = contract.get("seller_phone") or (seller_user.get("phone_number") if seller_user else None) or "ثبت نشده"
 
     text = (
-        f"🏛 *سند رسمی معامله میانجی*\n"
-        f"📑 شناسه: `{cid}`\n\n"
-        f"📌 *وضعیت:* {status_badge}\n"
-        f"✍️ *امضا:* {signature_status}\n"
+        f"🏛 **سند رسمی معامله میانجی** | `{cid}`\n"
+        f"📌 **وضعیت:** {status_badge}\n"
+        f"✍️ **امضا:** {signature_status} | ✒️ **اصلاحیه:** {free_edits} مرحله\n"
         f"───────────────────────\n"
-        f"✒️ *ویرایش:* {free_edits} مرحله باقی‌مانده\n\n"
-    )
-
-    # بخش جدید: تعاریف و عناوین طرفین (Dynamic Role Titles)
-    roles = get_role_titles(category)
-    p_role = roles["provider"]
-    c_role = roles["client"]
-
-    text += (
-        f"📌 *موضوع:* {escape_markdown(title)}\n\n"
-        f"💰 *تراکنش مالی*\n"
-        f"├ مبلغ کل: {emp_pays:,.0f} تومان\n"
-        f"└ سهم مجری: **{net:,.0f} تومان** ({payer_fa})\n\n"
-        f"👥 *طرفین و زمان‌بندی*\n"
-        f"├ {c_role}: `{buyer_phone}`\n"
-        f"├ {p_role}: `{seller_phone}`\n"
-        f"└ مهلت: {deadline} روز\n"
-        "───────────────────────\n"
+        f"📝 **موضوع:** {escape_markdown(title)}\n"
+        f"💰 **مبلغ کل:** **{emp_pays:,.0f} تومان** (خالص دریافتی مجری: {net:,.0f} تومان)\n"
+        f"⏱ **مهلت تحویل:** {deadline} روز\n\n"
+        f"> 👥 **طرفین:** {c_role}: `{buyer_phone}` | {p_role}: `{seller_phone}`\n"
     )
 
     if milestones:
-        text += "📊 *مراحل پرداخت*\n"
+        text += "> 📊 **مراحل پرداخت:**\n"
         for idx, m in enumerate(milestones, 1):
             st = get_ms_status_label(m.get("status", "pending"))
             branch = "├" if idx < len(milestones) else "└"
-            text += f"{branch} {escape_markdown(m.get('title'))}: {float(m.get('amount', 0)):,.0f} [{st}]\n"
-        text += "───────────────────────\n\n"
+            text += f"> {branch} {escape_markdown(m.get('title'))}: {float(m.get('amount', 0)):,.0f} [{st}]\n"
+        text += "\n"
 
     clean_desc = escape_markdown(desc)
     quoted_desc = "\n".join(f"> {line}" for line in clean_desc.splitlines() if line.strip()) or "> تعهدات مطابق توافق طرفین"
 
     text += (
-        "📝 *شرح تعهدات معامله:*\n" +
-        f"{quoted_desc}\n\n" +
-        "⚖️ *تضمین حقوقی و داوری میانجی:*\n" +
-        "> 🛡️ *صندوق امانت (Escrow):* وجه تا رضایت کامل کارفرما نزد میانجی مسدود می‌ماند.\n" +
-        "> 📜 *اعتبار قانونی:* سند رسمی طبق ماده ۱۰ قانون مدنی و تجارت الکترونیک.\n" +
-        "> ⚖️ *مرجع داوری:* سامانه هوشمند میانجی داور مرضی‌الطرفین است."
+        f"📋 **تعهدات فنی پروژه (ملاک داوری):**\n{quoted_desc}\n\n"
+        f"> 🛡️ **تضمین اسکرو میانجی:**\n"
+        f"> وجه تا رضایت کامل کارفرما نزد میانجی مسدود می‌ماند. سند طبق ماده ۱۰ قانون مدنی نافذ و معتبر است."
     )
+
 
     return text
 
@@ -1544,20 +1541,18 @@ def sanitize_contract_id(raw_id: str) -> str:
 
 def format_invitation_message(contract_id: str, bot_username: str = None) -> str:
     clean_id = normalize_deal_id(contract_id)
-    clean_bot = (bot_username or get_bot_username()).lstrip("@").strip()
+    clean_bot = clean_bot_username(bot_username)
     share_link = f"https://t.me/{clean_bot}?start=c_{clean_id}"
     return (
-        f"🏛 **دعوت‌نامه رسمی قرارداد هوشمند (سامانه اسکرو میانجی)**\n"
-        f"────────────────────────────\n"
-        f"📋 **شناسه اختصاصی معامله:** `{clean_id}`\n\n"
-        f"سلام؛ طرف اول این قرارداد را ایجاد و با امضای دیجیتال تایید نموده است و شما را به عنوان طرف دوم جهت بررسی شرایط، تعهدات و امضای الکترونیک دعوت نموده است.\n\n"
-        f"🔗 **پیوند مستقیم مشاهده و امضا:**\n{share_link}\n\n"
-        f"> 🛡️ **راهنمای امنیتی ضد فیشینگ (پیشگیری از کلاهبرداری):**\n"
-        f"> جهت اطمینان ۱۰۰٪ از اصالت معامله و عدم ورود به لینک‌های جعلی یا بات‌های تقلبی، می‌توانید به جای کلیک بر روی لینک:\n"
-        f"> ۱. مستقیماً وارد ربات رسمی و تاییدشده میانجی شوید: @{clean_bot}\n"
-        f"> ۲. دستور /start را ارسال کرده یا دکمه «🔍 پیگیری با شناسه قرارداد» را بزنید.\n"
-        f"> ۳. کد رهگیری `{clean_id}` را ارسال کنید تا قرارداد رسمی باز شده و پس از بررسی، آن را با اطمینان کامل امضا فرمایید.\n\n"
-        f"⚖️ *سامانه میانجی؛ واسطه‌گری امن و صدور گواهی امضای الکترونیک اسناد تجاری.*"
+        f"🏛 **دعوت‌نامه رسمی قرارداد هوشمند اسکرو**\n"
+        f"📋 **شناسه معامله:** `{clean_id}`\n\n"
+        f"طرف اول این قرارداد را تنظیم و با امضای دیجیتال تایید نموده و شما را به عنوان طرف دوم دعوت کرده است.\n\n"
+        f"> 🛡️ **تضمین امنیت صندوق امانت میانجی:**\n"
+        f"> وجه معامله تا تایید رضایت نهایی نزد میانجی مسدود می‌ماند و بدون تایید شما آزاد نمی‌گردد.\n\n"
+        f"🔗 **لینک مشاهده و امضای دیجیتال:**\n{share_link}\n\n"
+        f"> 💡 **راهنمای ضد فیشینگ:**\n"
+        f"> می‌توانید شناسه `{clean_id}` را مستقیماً در ربات رسمی @{clean_bot} ارسال و معامله را بدون نیاز به کلیک، بررسی و امضا فرمایید."
     )
+
 
 

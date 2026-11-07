@@ -3,8 +3,10 @@ import logging
 import time
 import telebot
 import os
-import threading
-from flask import Flask
+import signal
+import json
+import urllib.request
+import fcntl
 from logging.handlers import RotatingFileHandler
 from config import config
 import database as db
@@ -16,7 +18,7 @@ import admin_settings
 import user
 import reminders
 
-# 1. Advanced Logging Configuration
+# Logging Configuration (Pure Telegram Bot - No Web Service)
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 log_file = 'bot.log'
 stream_handler = logging.StreamHandler(sys.stdout)
@@ -27,34 +29,6 @@ file_handler.setFormatter(log_formatter)
 logging.basicConfig(level=logging.INFO, handlers=[stream_handler, file_handler])
 logger = logging.getLogger("Miyanji_Main")
 
-# 2. Minimal Flask Server for Render Port Binding
-app = Flask(__name__)
-
-@app.route('/')
-def health_check():
-    return "Miyanji Bot is alive and polling!", 200
-
-@app.route('/healthz')
-def healthz():
-    return "OK", 200
-
-def run_flask():
-    preferred_port = int(os.environ.get("PORT") or os.environ.get("FLASK_PORT") or 8888)
-    ports_to_try = [preferred_port, 8888, 8889, 8890]
-    for p in ports_to_try:
-        try:
-            from werkzeug.serving import make_server
-            srv = make_server('0.0.0.0', p, app)
-            logger.info(f"🌐 Starting health check server on port {p}...")
-            srv.serve_forever()
-            break
-        except Exception as e:
-            logger.debug(f"Port {p} not available: {e}")
-
-import signal
-import json
-import urllib.request
-import fcntl
 
 PID_FILE = "/tmp/miyanji_bot.pid"
 _flock_handle = None
@@ -151,12 +125,9 @@ class BotWorkerExceptionHandler(telebot.ExceptionHandler):
 def main():
     # ۱. ثبت قفل تک‌نسخه‌ای جهت جلوگیری از اجرای چندگانه روی یک سرور
     acquire_single_instance_lock()
-
-    # ۲. راه‌اندازی سریع سرور سلامت (Health Check) برای Render
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
     
-    logger.info("🚀 Starting Miyanji Smart Escrow Application...")
+    logger.info("🚀 Starting Miyanji Smart Escrow Application (Pure Telegram Bot)...")
+
     
     # ۳. بررسی اتصال دیتابیس
     if not db.supabase:

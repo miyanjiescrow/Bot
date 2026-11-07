@@ -133,6 +133,39 @@ export function hashFinancialPin(pin: string): string {
   return crypto.createHash('sha256').update(`${pin.trim()}:${salt}`).digest('hex');
 }
 
+/**
+ * پاکسازی نام کاربری ربات تلگرام و جلوگیری قطعی از تولید لینک‌های دارای t.me تکراری
+ */
+export function cleanBotUsername(raw?: string | null): string {
+  if (!raw) {
+    raw = (typeof process !== 'undefined' ? process.env?.BOT_USERNAME : '') || 'mianji_ir_bot';
+  }
+  let s = String(raw).trim();
+  s = s.replace(/^https?:\/\//i, '');
+  while (/^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/+/i.test(s)) {
+    s = s.replace(/^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/+/i, '');
+  }
+  s = s.replace(/^[@/]+/, '').trim();
+  if (s.includes('/')) {
+    s = s.split('/').pop() || s;
+  }
+  s = s.split('?')[0].trim();
+  return s || 'mianji_ir_bot';
+}
+
+export function makeTelegramLink(botUsername?: string | null, startParam?: string): string {
+  const cleanBot = cleanBotUsername(botUsername);
+  if (startParam) {
+    let cleanP = startParam.replace(/^[?&]+/, '').trim();
+    if (cleanP.startsWith('start=')) {
+      cleanP = cleanP.slice(6);
+    }
+    return `https://t.me/${cleanBot}?start=${cleanP}`;
+  }
+  return `https://t.me/${cleanBot}`;
+}
+
+
 // کاربران اولیه سیستم با محوریت شماره تماس (Primary Account Identifier)
 export let users: UserProfile[] = [
   {
@@ -1936,7 +1969,8 @@ export function getAffiliateStats(userId?: number): AffiliateStats {
   const user = getUser(userId || _currentUserId) || getCurrentUser();
   return {
     referral_code: user.referral_code || 'REF-MIYANJI',
-    referral_link: `https://t.me/MiyanjiBot?start=${user.referral_code || 'REF-MIYANJI'}`,
+    referral_link: makeTelegramLink(undefined, user.referral_code || 'REF-MIYANJI'),
+
     total_clicks: 184,
     total_invited: 24,
     active_traders: 11,

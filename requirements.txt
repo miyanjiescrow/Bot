@@ -2,8 +2,8 @@ pyTelegramBotAPI
 supabase
 python-dotenv
 reportlab
-flask
 python-dateutil
+
 jdatetime
 fpdf2
 httpx

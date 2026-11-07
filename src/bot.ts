@@ -20,7 +20,10 @@ import {
   signContract,
   createContract,
   generateContractId,
+  cleanBotUsername,
+  makeTelegramLink,
 } from './db';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -489,34 +492,33 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
   }
 
   // بررسی ورود شناسه قرارداد یا استارت با توکن/شناسه
-  const contractIdMatch = clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/) || clean.match(/\/start\s+c_([A-Za-z0-9_-]+)/);
+  const contractIdMatch = clean.match(/\/start\s+(?:c_|deal_)?([A-Za-z0-9_-]+)/i) ||
+                          clean.match(/^(?:c_|deal_)([A-Za-z0-9_-]+)/i) ||
+                          clean.match(/([A-Za-z]{2,5}-\d{3,4}-\d{3,4})/i);
   if (contractIdMatch) {
     const rawId = contractIdMatch[1].toUpperCase();
-    const contract = getContract(rawId) || getContracts().find(c => c.contract_id.toUpperCase() === rawId || c.invite_token === clean);
+    const contract = getContract(rawId) || getContracts().find(c => c.contract_id.toUpperCase() === rawId || c.invite_token === clean || c.invite_token === `deal_${contractIdMatch[1]}`);
 
     if (contract) {
       const inspFa = (contract.inspection_period_hours || 0) > 0
-        ? `⏱ ${contract.inspection_period_hours} ساعت پس از تحویل`
-        : '⚡ تایید آنی (بدون مهلت تست)';
+        ? `${contract.inspection_period_hours} ساعت`
+        : 'تایید آنی';
       const revFa = contract.free_edits === 0
-        ? '🚫 بدون ویرایش رایگان'
-        : (contract.free_edits === -1 ? '🤝 توافقی بین طرفین' : `✅ ${contract.free_edits} بار اصلاحیه رایگان`);
+        ? 'بدون ویرایش'
+        : (contract.free_edits === -1 ? 'توافقی' : `${contract.free_edits} بار رایگان`);
 
       return {
-        reply: `📄 **قرارداد رسمی و معتبر اسکرو میانجی**\n` +
-          `🆔 **شناسه یکتا:** \`${contract.contract_id}\`\n` +
+        reply: `📄 **قرارداد رسمی اسکرو میانجی** | \`${contract.contract_id}\`\n` +
           `────────────────────────────\n` +
-          `📝 **عنوان:** ${contract.title}\n` +
-          `💰 **مبلغ معامله:** ${formatCurrency(contract.amount)}\n` +
-          `⚖️ **کارمزد:** توافقی ۵۰/۵۰\n` +
-          `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
-          `🔄 **سهمیه اصلاحیه:** ${revFa}\n` +
-          `👤 **طرف اول (سازنده):** ${contract.buyer_fullname || contract.seller_fullname || 'کاربر میانجی'}\n\n` +
-          `📋 **شرح تعهدات و مشخصات فنی (ملاک داوری):**\n` +
+          `📝 **موضوع:** ${contract.title}\n` +
+          `💰 **مبلغ کل معامله:** **${formatCurrency(contract.amount)}**\n` +
+          `⏱ **مهلت تست:** ${inspFa} | 🔄 **سهمیه اصلاحیه:** ${revFa}\n\n` +
+          `> 👥 **طرفین:** ${contract.buyer_fullname || 'کارفرما'} و ${contract.seller_fullname || 'مجری'}\n` +
+          `> 📋 **تعهدات فنی پروژه (ملاک داوری):**\n` +
           `> ${contract.description || 'تعهدات مشخص شده در سند قرارداد'}\n\n` +
-          `🛡 **راهنمای ضد فیشینگ:**\n` +
-          `> این استعلام مستقیماً از سرور امن میانجی انجام گرفته است. هیچ لینکی خارج از تلگرام نیاز نیست.\n\n` +
-          `وضعیت فعلی: **${contract.status === 'pending_party_b' ? 'در انتظار امضای طرف دوم ⏳' : contract.status === 'awaiting_escrow_deposit' ? 'در انتظار واریز وجه به صندوق امانت ⏳' : contract.status === 'in_inspection' || contract.status === 'work_submitted' ? 'پروژه تحویل داده شده (در حال ارزیابی)' : contract.status === 'completed' ? 'تکمیل شده و تسویه قطعی ✅' : contract.status}**`,
+          `> 🛡️ **تضمین صندوق امانت اسکرو:**\n` +
+          `> وجه تا تایید رضایت نهایی نزد میانجی مسدود می‌ماند و بدون تایید شما آزاد نمی‌گردد.\n\n` +
+          `📌 وضعیت: **${contract.status === 'pending_party_b' ? 'در انتظار امضای طرف دوم ⏳' : contract.status === 'awaiting_escrow_deposit' ? 'در انتظار واریز وجه امانت ⏳' : contract.status === 'in_inspection' || contract.status === 'work_submitted' ? 'پروژه تحویل داده شده (در حال ارزیابی)' : contract.status === 'completed' ? 'تکمیل شده و تسویه قطعی ✅' : contract.status}**`,
         keyboard: contract.status === 'pending_party_b'
           ? [
               [`✍️ امضا و پذیرش رسمی قرارداد ${contract.contract_id}`],
@@ -549,6 +551,7 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
       };
     }
   }
+
 
   // امضای طرف دوم
   if (clean.includes('امضا و پذیرش رسمی قرارداد')) {
@@ -715,8 +718,10 @@ export function startBot() {
 
   try {
     bot.start((ctx) => {
-      const res = handleSimulatorMessage('/start', ctx.from?.id);
-      const keyboard = Markup.keyboard(res.keyboard || MAIN_KEYBOARD).resize();
+      const payload = ctx.payload?.trim() || '';
+      const text = payload ? `/start ${payload}` : '/start';
+      const res = handleSimulatorMessage(text, ctx.from?.id);
+      const keyboard = res.keyboard ? Markup.keyboard(res.keyboard).resize() : undefined;
       ctx.reply(res.reply, keyboard);
     });
 
@@ -740,7 +745,8 @@ export function startBot() {
 
     bot.launch()
       .then(() => {
-        const msg = `✅ Miyanji Telegram Bot connected and polling active for @${process.env.BOT_USERNAME || 'mianji_ir_bot'}`;
+        const cleanBot = cleanBotUsername(process.env.BOT_USERNAME);
+        const msg = `✅ Miyanji Telegram Bot connected and polling active for @${cleanBot}`;
         console.log(`[Miyanji Bot] ${msg}`);
         appendBotLog(msg);
       })
@@ -749,6 +755,7 @@ export function startBot() {
         console.warn(`[Miyanji Bot] ${errMsg}`);
         appendBotLog(errMsg);
       });
+
 
     // Graceful stop
     process.once('SIGINT', () => bot?.stop('SIGINT'));

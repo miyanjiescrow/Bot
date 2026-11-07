@@ -1477,10 +1477,10 @@ def get_smart_deal_revisions_inline() -> InlineKeyboardMarkup:
 
 def get_smart_deal_invite_inline(invite_token: str, contract_id: str, bot_username: str) -> InlineKeyboardMarkup:
     """دکمه شیشه‌ای ارسال دعوت‌نامه به طرف دوم"""
-    import urllib.parse
-    clean_bot = (bot_username or utils.get_bot_username()).lstrip('@').strip()
+    clean_bot = utils.clean_bot_username(bot_username)
     clean_id = utils.normalize_deal_id(contract_id)
     share_link = f"https://t.me/{clean_bot}?start=c_{clean_id}"
+
     share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد قرارداد: #{clean_id}\nجهت بررسی مشخصات، مهلت تست و امضا کلیک فرمایید:"
     tg_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_text)}"
     

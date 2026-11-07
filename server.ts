@@ -58,7 +58,10 @@ import {
   normalizeIranianPhone,
   getPendingKycUsers,
   updateUserKycStatus,
+  cleanBotUsername,
+  makeTelegramLink,
 } from './src/db';
+
 import { isSupabaseConfigured } from './src/lib/supabase';
 import { startBot } from './src/bot';
 
@@ -88,12 +91,17 @@ app.use('/fonts', express.static(path.join(__dirname, 'Font')));
 let pythonBotProcess: any = null;
 
 function ensurePythonBotRunning() {
+  if (process.env.USE_PYTHON_BOT !== 'true') {
+    console.log('⚡ High-performance Node.js Telegraf engine is active. Python polling idle.');
+    return;
+  }
   if (!process.env.BOT_TOKEN) {
     console.log('ℹ️ BOT_TOKEN not configured in environment. Python Telegram bot will remain idle.');
     return;
   }
   const logFilePath = path.join(__dirname, 'bot.log');
   const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
 
   try {
     // Check if main.py is already running
@@ -171,8 +179,9 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
   res.json({
     status: 'online',
     runtime: 'Node.js 22 + Telegraf (با پشتیبانی از سورس پایتون ۳.۱۰)',
-    bot_username: process.env.BOT_USERNAME || 'mianji_ir_bot',
+    bot_username: cleanBotUsername(process.env.BOT_USERNAME),
     bot_token_configured: isTokenSet,
+
     diagnostics: {
       has_token: isTokenSet,
       token_message: isTokenSet
@@ -758,36 +767,23 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
       signingContractId: contractId
     };
 
-    const botUser = process.env.BOT_USERNAME || 'mianji_ir_bot';
-    const inviteLink = `https://t.me/${botUser}?start=c_${contractId}`;
+    const botUser = cleanBotUsername(process.env.BOT_USERNAME);
+    const inviteLink = makeTelegramLink(botUser, `c_${contractId}`);
     const inspFa = (draft.inspection_period_hours || 0) > 0 ? `${draft.inspection_period_hours} ساعت پس از تحویل` : 'تایید آنی';
     const revFa = (draft.free_revisions_count === 0 ? 'بدون ویرایش' : (draft.free_revisions_count === -1 ? 'توافقی' : `${draft.free_revisions_count} بار رایگان`));
 
     return res.json({
       reply: `🎉 **قرارداد به صورت رسمی با امضای دیجیتال طرف اول صادر گردید!**\n` +
              `🆔 **شناسه معامله:** \`${contractId}\`\n` +
-             `🔐 **اثر انگشت رمزنگاری امضا (SHA-256):**\n\`${sigHash}\`\n` +
-             `وضعیت: **در انتظار امضای طرف دوم (Pending Counterparty Signature)** ⏳\n` +
+             `وضعیت: **در انتظار امضای طرف دوم ⏳**\n` +
              `────────────────────────────\n` +
-             `📤 **متن دعوت‌نامه رسمی و راهنمای امنیتی (جهت ارسال به طرف دوم):**\n\n` +
-             `🏛 **دعوت‌نامه رسمی قرارداد هوشمند (سامانه اسکرو میانجی)**\n` +
-             `────────────────────────────\n` +
-             `📋 **شناسه اختصاصی معامله:** \`${contractId}\`\n` +
-             `👤 **طرف اول:** ${currentUser.full_name} (امضا شده با مهر الکترونیک ✅)\n` +
-             `📝 **موضوع:** ${draft.title}\n` +
-             `💰 **مبلغ معامله:** ${formatCurrency(amount)}\n` +
-             `🛡 **مهلت تست و بررسی:** ${inspFa}\n` +
-             `🔄 **سهمیه اصلاحیه:** ${revFa}\n\n` +
-             `📋 **تعهدات فنی و قانونی (ملاک داوری):**\n` +
-             `> ${draft.description}\n\n` +
-             `🔗 **لینک ورود مستقیم:**\n${inviteLink}\n\n` +
-             `> 🛡️ **راهنمای امنیتی ضد فیشینگ (پیشگیری از کلاهبرداری):**\n` +
-             `> جهت اطمینان ۱۰۰٪ از اصالت معامله و عدم کلیک روی لینک‌های ناشناس یا بات‌های تقلبی، می‌توانید به جای کلیک بر روی لینک:\n` +
-             `> ۱. مستقیماً وارد ربات رسمی و تاییدشده میانجی شوید: @${botUser}\n` +
-             `> ۲. دستور /start را ارسال کرده یا دکمه «🔍 پیگیری با شناسه قرارداد» را بزنید.\n` +
-             `> ۳. کد رهگیری \`${contractId}\` را ارسال کنید تا قرارداد رسمی باز شده و پس از بررسی، آن را با اطمینان کامل امضا فرمایید.\n` +
-             `────────────────────────────\n` +
-             `💡 با زدن دکمه زیر می‌توانید شبیه‌سازی ورود و امضای طرف دوم را انجام دهید:`,
+             `> 📝 **موضوع:** ${draft.title}\n` +
+             `> 💰 **مبلغ کل:** ${formatCurrency(amount)} | 🛡 **مهلت تست:** ${inspFa}\n` +
+             `> 🔄 **سهمیه اصلاحیه:** ${revFa}\n` +
+             `> 📋 **تعهدات فنی:** ${draft.description || 'تعهدات مشخص شده'}\n\n` +
+             `🔗 **لینک دعوت و امضای طرف دوم:**\n${inviteLink}\n\n` +
+             `> 🛡️ **راهنمای امنیتی ضد فیشینگ:**\n` +
+             `> طرف دوم می‌تواند با ارسال شناسه \`${contractId}\` در ربات رسمی @${botUser} معامله را مستقیماً بررسی و با اطمینان کامل امضا فرماید.`,
       keyboard: [
         ['🤝 شبیه‌سازی ورود طرف دوم (پذیرش و امضا)'],
         [`🔍 پیگیری با شناسه قرارداد`],
@@ -795,6 +791,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
         ['🔙 بازگشت به منوی اصلی']
       ]
     });
+
   }
 
   // گام ۱۱: جستجو یا ورود به قرارداد با شناسه معامله (جهت جلوگیری از فیشینگ و امضای مستقیم)

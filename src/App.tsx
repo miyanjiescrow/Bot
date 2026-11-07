@@ -770,7 +770,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
               <span>ریستارت سرویس</span>
             </button>
             <a
-              href={`https://t.me/${botStatus?.bot_username || 'mianji_ir_bot'}`}
+              href={`https://t.me/${(botStatus?.bot_username || 'mianji_ir_bot').replace(/^(https?:\/\/)?(t\.me\/|telegram\.me\/)?@?/i, '').replace(/\/.*$/, '').trim() || 'mianji_ir_bot'}`}
               target="_blank"
               rel="noreferrer"
               className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium px-3.5 py-1.5 rounded-lg shadow-sm transition"
@@ -778,6 +778,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
               <ExternalLink className="w-3.5 h-3.5" />
               <span>ربات تلگرام</span>
             </a>
+
           </div>
         </div>
       </header>
@@ -1001,7 +1002,8 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                       میانجی | ربات تلگرام اسکرو و قرارداد
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                     </h3>
-                    <p className="text-[10px] text-slate-400 font-mono">bot @{botStatus?.bot_username || 'mianji_ir_bot'}</p>
+                    <p className="text-[10px] text-slate-400 font-mono">bot @{(botStatus?.bot_username || 'mianji_ir_bot').replace(/^(https?:\/\/)?(t\.me\/|telegram\.me\/)?@?/i, '').replace(/\/.*$/, '').trim() || 'mianji_ir_bot'}</p>
+
                   </div>
                 </div>
                 <span className="text-[10px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded">

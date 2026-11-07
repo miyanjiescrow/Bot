@@ -8,13 +8,17 @@ except ImportError:
 class Config:
     # ----------------------------------------------------
     # تنظیمات اصلی ربات تلگرام
-    # ----------------------------------------------------
     BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
     _raw_username = os.getenv("BOT_USERNAME", "mianji_ir_bot").strip()
-    _raw_username = _raw_username.replace("https://", "").replace("http://", "")
+    import re
+    _raw_username = re.sub(r'^https?://', '', _raw_username, flags=re.IGNORECASE)
+    while re.match(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', _raw_username, flags=re.IGNORECASE):
+        _raw_username = re.sub(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', '', _raw_username, flags=re.IGNORECASE)
+    _raw_username = _raw_username.lstrip('@/').strip()
     if "/" in _raw_username:
         _raw_username = _raw_username.split("/")[-1]
-    BOT_USERNAME = _raw_username.split("?")[0].lstrip("@").strip() or "mianji_ir_bot"
+    BOT_USERNAME = _raw_username.split("?")[0].strip() or "mianji_ir_bot"
+
     
     def _safe_int(val, default=None):
         if not val: return default

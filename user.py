@@ -2424,7 +2424,7 @@ def register_user_handlers(bot: TeleBot):
         except Exception as e:
             logger.error(f"Error in post-creation history: {e}")
 
-        bot_username = utils.get_bot_username()
+        bot_username = utils.clean_bot_username()
         invite_text = utils.format_invitation_message(cid, bot_username)
         amount = utils.safe_float(contract.get("amount", 0) if contract else payload.get("amount", 0))
         payer = (contract.get("commission_payer") if contract else None) or payload.get("commission_payer", "freelancer")
@@ -2435,14 +2435,15 @@ def register_user_handlers(bot: TeleBot):
             f"✅ **معامله با موفقیت ایجاد و امضا شد**\n"
             f"🆔 شناسه معامله: `{cid}`\n"
             f"──────────────────\n"
-            f"💰 **خلاصه مالی اسکرو:**\n"
-            f"├ مبلغ کارفرما: **{employer_pays:,.0f} تومان**\n"
-            f"└ خالص سهم مجری: **{net:,.0f} تومان**\n\n"
-            f"🔗 **لینک اختصاصی دعوت و امضای طرف دوم:**\n"
+            f"> 💰 **خلاصه مالی اسکرو:**\n"
+            f"> ├ واریزی کارفرما: **{employer_pays:,.0f} تومان**\n"
+            f"> └ خالص سهم مجری: **{net:,.0f} تومان**\n\n"
+            f"🔗 **لینک دعوت و امضای طرف دوم:**\n"
             f"`{share_link}`\n\n"
-            f"> 🛡️ **راهنمای امنیتی ضد فیشینگ:**\n"
+            f"> 🛡️ **راهنمای ضد فیشینگ:**\n"
             f"> طرف دوم می‌تواند با ارسال شناسه `{cid}` در ربات رسمی @{bot_username} معامله را مستقیماً بررسی و امضا فرماید."
         )
+
         
         try:
             bot.send_message(
@@ -4456,7 +4457,7 @@ def register_user_handlers(bot: TeleBot):
                 "برای بررسی و امضای سند، لطفاً از بخش «📜 معاملات من» وارد شوید."
             )
             
-            bot_username = utils.get_bot_username()
+            bot_username = utils.clean_bot_username()
             share_link = f"https://t.me/{bot_username}?start=c_{cid}"
             is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
             
@@ -4477,28 +4478,21 @@ def register_user_handlers(bot: TeleBot):
             }
             comm_str = comm_payer_map.get(payer, "مجری")
 
-            # متن کامل پیش‌نویس و مشخصات معامله به همراه لینک امضای طرف دوم و دکمه ارسال
             draft_and_invite_html = (
-                f"🎉 <b>امضای رسمی و قانونی شما با موفقیت ثبت شد</b>\n"
+                f"🎉 <b>امضای دیجیتال شما ثبت شد</b>\n"
+                f"🆔 شناسه معامله: <code>{cid}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"📋 <b>پیش‌نویس و مشخصات معامله:</b>\n"
-                f"▫️ <b>شناسه اختصاصی معامله:</b> <code>{cid}</code>\n"
-                f"▫️ <b>عنوان:</b> {html.escape(str(c_title))}\n"
-                f"▫️ <b>ارزش معامله:</b> {c_amount:,.0f} تومان\n"
-                f"▫️ <b>نقش شما:</b> {c_role_str}\n"
-                f"▫️ <b>مهلت انجام:</b> {c_deadline} روز کاری\n"
-                f"▫️ <b>کارمزد امن میانجی:</b> {comm_str}\n"
-                f"▫️ <b>شرح تعهدات:</b> {html.escape(str(c_desc)[:250])}\n"
-                f"────────────────────\n"
-                f"💰 <b>خلاصه مالی اسکرو:</b>\n"
-                f"├ مبلغ پرداختی کارفرما: <b>{employer_pays:,.0f} تومان</b>\n"
-                f"└ خالص دریافتی مجری: <b>{net:,.0f} تومان</b>\n"
-                f"────────────────────\n"
-                f"🔒 <b>کد رهگیری شواهد امضا:</b> <code>{sig_hash[:20]}...</code>\n\n"
-                f"🔗 <b>لینک اختصاصی دعوت و امضای طرف دوم:</b>\n"
+                f"<blockquote>"
+                f"📝 <b>موضوع:</b> {html.escape(str(c_title))}\n"
+                f"💰 <b>ارزش معامله:</b> {c_amount:,.0f} تومان ({c_deadline} روز کاری)\n"
+                f"⚖️ <b>واریزی کارفرما:</b> {employer_pays:,.0f} ت | <b>خالص مجری:</b> {net:,.0f} ت\n"
+                f"🛡️ <b>تضمین اسکرو:</b> وجه تا تایید نهایی در صندوق امانت مسدود است."
+                f"</blockquote>\n\n"
+                f"🔗 <b>لینک دعوت طرف دوم:</b>\n"
                 f"<code>{share_link}</code>\n\n"
-                f"💡 <i>با زدن دکمه «📤 ارسال دعوت‌نامه به طرف دوم» در زیر، این پیش‌نویس را مستقیماً برای طرف دوم بفرستید تا سند را امضا کند.</i>"
+                f"<blockquote>💡 طرف دوم می‌تواند با ارسال شناسه <code>{cid}</code> در ربات @{bot_username} بدون نیاز به لینک، معامله را امضا کند.</blockquote>"
             )
+
 
             utils.send_celebration(
                 bot,

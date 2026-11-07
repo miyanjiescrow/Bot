@@ -405,18 +405,23 @@ def get_deal_preview_keyboard(deal_id: str):
 def get_deal_invite_keyboard(invite_token: str, bot_username: str, deal_id: str):
     """کیبورد اشتراک‌گذاری لینک دعوت اختصاصی به طرف دوم"""
     import urllib.parse
+    import utils
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    share_link = f"https://t.me/{bot_username}?start={invite_token}"
-    share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد قرارداد: #{deal_id}\nجهت بررسی مشخصات، مهلت تست و امضا کلیک فرمایید:"
+    clean_bot = utils.clean_bot_username(bot_username)
+    clean_id = utils.normalize_deal_id(deal_id)
+    share_param = f"c_{clean_id}" if clean_id else invite_token
+    share_link = f"https://t.me/{clean_bot}?start={share_param}"
+    share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد معامله: #{clean_id}\nجهت بررسی و امضای دیجیتال کلیک فرمایید:"
     tg_share_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_text)}"
     
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton("📤 ارسال دعوت‌نامه به طرف دوم (تلگرام)", url=tg_share_url),
-        InlineKeyboardButton("👁 مشاهده کارت قرارداد", callback_data=f"view_deal_{deal_id}"),
+        InlineKeyboardButton("👁 مشاهده کارت قرارداد", callback_data=f"view_deal_{clean_id}"),
         InlineKeyboardButton("🏠 بازگشت به منوی اصلی", callback_data="back_to_menu")
     )
     return kb
+
 
 def get_counterparty_acceptance_keyboard(deal_id: str):
     """کیبورد مشاهده و امضای قرارداد توسط طرف دوم (مخاطب)"""
