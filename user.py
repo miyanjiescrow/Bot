@@ -968,9 +968,9 @@ def register_user_handlers(bot: TeleBot):
                         db.create_pending_receipt(receipt_type="wallet", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="شارژ کیف پول")
                     except Exception:
                         pass
-                utils.notify_admin_receipt(bot, "wallet", related_id, user_id, amount, file_id)
                 db.clear_user_state(user_id)
                 
+                # پاسخ آنی و فوری به کاربر (User-First)
                 success_text = (
                     "✅ <b>فیش واریزی شما با موفقیت دریافت و ثبت شد.</b>\n\n"
                     f"🔢 شناسه تراکنش: <code>#{related_id}</code>\n"
@@ -988,6 +988,9 @@ def register_user_handlers(bot: TeleBot):
                     "📋 برای دسترسی به سایر بخش‌ها از منوی اصلی زیر استفاده کنید:",
                     reply_markup=_get_main_menu_for_user(user_id, is_admin_user(user_id))
                 )
+
+                # ارسال اعلان و فیش به ادمین‌ها در پس‌زمینه بدون ایجاد معطلی برای کاربر
+                utils.notify_admin_receipt(bot, "wallet", related_id, user_id, amount, file_id)
                 return
             
             elif payment_type == 'milestone_payment':
@@ -1004,12 +1007,16 @@ def register_user_handlers(bot: TeleBot):
                                 db.create_pending_receipt(receipt_type="milestone", related_id=f"{related_id}:{ms_idx}", user_id=user_id, file_id=file_id, amount=float(amount), description=f"پرداخت مرحله {ms_idx+1}")
                             except Exception:
                                 pass
-                        utils.notify_admin_receipt(bot, "contract", f"{related_id}:{ms_idx}", user_id, amount, file_id)
                 db.clear_user_state(user_id)
+
+                # پاسخ آنی به کاربر
                 try:
                     bot.edit_message_text(chat_id=message.chat.id, message_id=proc_msg.message_id, text=f"✅ <b>فیش واریزی مرحله {ms_idx+1} با موفقیت ثبت شد.</b>\n\nپس از بررسی و تایید مدیریت، مرحله فعال خواهد شد.", parse_mode="HTML")
                 except Exception:
                     bot.send_message(message.chat.id, f"✅ <b>فیش واریزی مرحله {ms_idx+1} با موفقیت ثبت شد.</b>\n\nپس از بررسی و تایید مدیریت، مرحله فعال خواهد شد.", parse_mode="HTML")
+
+                # ارسال به ادمین در پس‌زمینه
+                utils.notify_admin_receipt(bot, "contract", f"{related_id}:{ms_idx}", user_id, amount, file_id)
                 return
             
             else:
@@ -1020,12 +1027,16 @@ def register_user_handlers(bot: TeleBot):
                         db.create_pending_receipt(receipt_type="contract", related_id=str(related_id), user_id=user_id, file_id=file_id, amount=float(amount), description="پرداخت معامله")
                     except Exception:
                         pass
-                utils.notify_admin_receipt(bot, "contract", related_id, user_id, amount, file_id)
                 db.clear_user_state(user_id)
+
+                # پاسخ آنی به کاربر
                 try:
                     bot.edit_message_text(chat_id=message.chat.id, message_id=proc_msg.message_id, text="✅ <b>فیش واریزی شما با موفقیت ثبت شد.</b>\n\nپس از بررسی مدیریت، معامله فعال خواهد شد.", parse_mode="HTML")
                 except Exception:
                     bot.send_message(message.chat.id, "✅ <b>فیش واریزی شما با موفقیت ثبت شد.</b>\n\nپس از بررسی مدیریت، معامله فعال خواهد شد.", parse_mode="HTML")
+
+                # ارسال به ادمین در پس‌زمینه
+                utils.notify_admin_receipt(bot, "contract", related_id, user_id, amount, file_id)
                 return
 
         except Exception as e:
@@ -4775,10 +4786,22 @@ def register_user_handlers(bot: TeleBot):
             except Exception as e:
                 logger.warning(f"Error clearing state for user {uid}: {e}")
 
-        # ۱. ارسال سند رسمی به هر دو طرف و MJNOTE
+        # ۱. ارسال فوری پیام تبریک و اطلاع‌رسانی نهایی‌شدن امضاها به طرفین معامله (User-First)
+        celebration_text = (
+            f"🎊 **تبریک! قرارداد شماره `{cid}` با موفقیت توسط هر دو طرف امضا شد.**\n\n"
+            "📄 فایل PDF قرارداد امضا شده در پیام بعدی برای شما ارسال می‌گردد.\n"
+            "──────────────────\n"
+        )
+        for rid in {r for r in (buyer_id, seller_id) if r}:
+            try:
+                utils.send_celebration(bot, rid, text=celebration_text)
+            except Exception as e:
+                logger.error(f"Error sending celebration to {rid}: {e}")
+
+        # ۲. ارسال سند رسمی PDF به هر دو طرف و بایگانی MJNOTE (در ترد پس‌زمینه)
         send_contract_pdf_to_parties(bot, contract)
 
-        # ثبت رسمی انعقاد قرارداد و تکمیل امضای طرفین در کانال MJNOTE بدون دکمه
+        # ۳. ثبت رسمی انعقاد قرارداد و تکمیل امضای طرفین در کانال MJNOTE (در پس‌زمینه ناهمگام)
         c_amount = utils.safe_float(contract.get("amount", 0))
         utils.log_audit_record(
             bot,
@@ -4794,19 +4817,6 @@ def register_user_handlers(bot: TeleBot):
                 "وضعیت بعدی": "در انتظار واریز وجه امانت توسط کارفرما"
             }
         )
-
-        # ۲. ارسال پیام تبریک و اطلاع‌رسانی نهایی‌شدن امضاها
-        celebration_text = (
-            f"🎊 **تبریک! قرارداد شماره `{cid}` با موفقیت توسط هر دو طرف امضا شد.**\n\n"
-            "📄 فایل PDF قرارداد امضا شده در پیام بعدی برای شما ارسال می‌گردد.\n"
-            "──────────────────\n"
-        )
-        
-        for rid in {r for r in (buyer_id, seller_id) if r}:
-            try:
-                utils.send_celebration(bot, rid, text=celebration_text)
-            except Exception as e:
-                logger.error(f"Error sending celebration to {rid}: {e}")
 
         # ۳. راهنمای گام‌به‌گام بر اساس نوع پرداخت
         if is_staged:
@@ -5112,15 +5122,16 @@ def register_user_handlers(bot: TeleBot):
                 f"✅ وضعیت معامله به `paid` تغییر یافت."
             )
             
-            # ارسال به MJ_ADMIN
-            if hasattr(config, 'MJ_ADMIN') and config.MJ_ADMIN:
-                try:
-                    bot.send_message(config.MJ_ADMIN, admin_msg, parse_mode="Markdown")
-                except Exception as e:
-                    logger.error(f"Failed to send payment notification to MJ_ADMIN: {e}")
-            
-            # ارسال گزارش به MJNOTE بدون دکمه
-            utils.send_mjnote_report(bot, admin_msg)
+            # ارسال به MJ_ADMIN و MJNOTE در پس‌زمینه بدون مسدود کردن پاسخ به کاربر
+            def _send_payment_admin_reports():
+                if hasattr(config, 'MJ_ADMIN') and config.MJ_ADMIN:
+                    try:
+                        bot.send_message(config.MJ_ADMIN, admin_msg, parse_mode="Markdown")
+                    except Exception as e:
+                        logger.error(f"Failed to send payment notification to MJ_ADMIN: {e}")
+                utils.send_mjnote_report(bot, admin_msg)
+
+            utils.run_async_report(_send_payment_admin_reports)
 
         except Exception as e:
             logger.exception(f"Critical error in wallet payment handler: {e}")
@@ -8157,10 +8168,7 @@ def register_user_handlers(bot: TeleBot):
             db.submit_kyc_request(user_id, national_id=national_id, full_name=full_name, phone_number=phone)
             db.clear_user_state(user_id)
 
-            # ۲. ارسال درخواست احراز هویت با دکمه‌های تایید و رد به پنل و کانال ادمین
-            utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
-
-            # ۳. ارسال پیام تایید ثبت و در انتظار بررسی به کاربر
+            # ۲. ارسال فوری پیام تایید ثبت و در انتظار بررسی به کاربر (User-First)
             bot.send_message(
                 message.chat.id,
                 f"📋 **درخواست احراز هویت شما با موفقیت ثبت شد**\n"
@@ -8173,6 +8181,9 @@ def register_user_handlers(bot: TeleBot):
                 parse_mode="Markdown",
                 reply_markup=_get_main_menu_for_user(user_id)
             )
+
+            # ۳. ارسال درخواست احراز هویت با دکمه‌های تایید و رد به ادمین و MJNOTE در پس‌زمینه
+            utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
 
         except Exception as e:
             logger.error(f"Error in process_kyc_national_id: {e}", exc_info=True)
@@ -8317,9 +8328,7 @@ def register_user_handlers(bot: TeleBot):
         db.submit_kyc_request(user_id, national_id=national_id, full_name=full_name, phone_number=phone)
         db.clear_user_state(user_id)
 
-        # ارسال اعلان و دکمه‌های تایید/رد برای ادمین و گزارش به MJNOTE
-        utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
-
+        # ارسال فوری پیام تایید به کاربر (User-First)
         bot.send_message(
             message.chat.id,
             f"📋 **کد ملی جدید با موفقیت ثبت شد: `{national_id}`**\n\n"
@@ -8328,6 +8337,9 @@ def register_user_handlers(bot: TeleBot):
             parse_mode="Markdown",
             reply_markup=_get_main_menu_for_user(user_id)
         )
+
+        # ارسال اعلان و دکمه‌های تایید/رد برای ادمین و گزارش به MJNOTE در پس‌زمینه
+        utils.notify_admin_kyc(bot, user_id, full_name, phone, national_id)
 
 
     @bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")

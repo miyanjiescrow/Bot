@@ -168,6 +168,36 @@ const App = () => {
   const [newShebaOwner, setNewShebaOwner] = useState('');
   const [shebaMsg, setShebaMsg] = useState<string | null>(null);
   const [testPhoneInput, setTestPhoneInput] = useState('');
+  const [syncingDb, setSyncingDb] = useState(false);
+  const [syncStatusMsg, setSyncStatusMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const handleSyncDatabase = async () => {
+    setSyncingDb(true);
+    setSyncStatusMsg(null);
+    try {
+      const res = await fetch('/api/db/sync', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setSyncStatusMsg({
+          text: data.message || 'همگام‌سازی ابری با موفقیت انجام شد.',
+          type: 'success'
+        });
+        await fetchBotData();
+      } else {
+        setSyncStatusMsg({
+          text: data.error || 'خطا در برقراری ارتباط با Supabase.',
+          type: 'error'
+        });
+      }
+    } catch (err: any) {
+      setSyncStatusMsg({
+        text: `خطا در اتصال به سرور: ${err.message}`,
+        type: 'error'
+      });
+    } finally {
+      setSyncingDb(false);
+    }
+  };
 
   // Terminal Simulator State
   const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string; keyboard?: string[][] }>>([
@@ -1367,36 +1397,113 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
           </div>
         )}
 
-        {/* Tab: Supabase SQL Schema */}
+        {/* Tab: Supabase SQL Schema & Persistence */}
         {activeTab === 'database' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Database className="w-4 h-4 text-blue-400" />
-                  ساختار پیشنهادی جدول دیتابیس (Supabase SQL Schema)
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  پوشش کامل فیلدهای اختیاری مهلت تست (inspection_period)، اصلاحیه رایگان (free_revisions)، ایندکس‌ها و پالیسی‌های RLS
-                </p>
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
+            {/* Persistence & Ephemeral Disk Notice */}
+            <div className="bg-blue-950/40 border border-blue-500/30 rounded-xl p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <ShieldCheck className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <h4 className="text-sm font-bold text-white">
+                    چرا با هر بار دیپلوی اطلاعات پاک می‌شد و چگونه برای همیشه پایدار می‌ماند؟
+                  </h4>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    سرورهای ابری (مانند Render، Heroku، Cloud Run یا داکر) دارای دیسک موقت (<span className="text-blue-300 font-mono">Ephemeral Storage</span>) هستند. در هر بار دیپلوی یا به‌روزرسانی کد، کانتینر قبلی به طور کامل نابود شده و ایمیج جدید اجرا می‌شود؛ بنابراین دیتابیس محلی موقت (<span className="text-amber-300 font-mono">miyanji_fsm.db</span>) پاک می‌گردد.
+                  </p>
+                </div>
               </div>
 
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(sqlSchemaCode);
-                  setCopiedSql(true);
-                  setTimeout(() => setCopiedSql(false), 2000);
-                }}
-                className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition"
-              >
-                {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedSql ? 'کپی شد' : 'کپی اسکریپت SQL'}</span>
-              </button>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-blue-500/20 text-xs">
+                <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800 space-y-1">
+                  <div className="font-bold text-emerald-400 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>راهکار استاندارد ۱: اتصال به Supabase Cloud</span>
+                  </div>
+                  <p className="text-slate-400 text-[11px] leading-relaxed">
+                    با ثبت متغیرهای <code className="text-blue-300 font-mono">SUPABASE_URL</code> و <code className="text-blue-300 font-mono">SUPABASE_KEY</code> در پنل هاست، تمام کاربران، قراردادها و تراکنش‌ها در سرور دیتابیس ابری ذخیره شده و پس از صدها دیپلوی نیز خودکار بازیابی می‌شوند.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800 space-y-1">
+                  <div className="font-bold text-amber-400 flex items-center gap-1.5">
+                    <Database className="w-3.5 h-3.5" />
+                    <span>راهکار استاندارد ۲: دیسک پایدار (Render Persistent Disk)</span>
+                  </div>
+                  <p className="text-slate-400 text-[11px] leading-relaxed">
+                    در پنل Render در بخش Disks، یک دیسک پایدار روی مسیر <code className="text-amber-300 font-mono">/var/data</code> اضافه کرده و متغیر <code className="text-amber-300 font-mono">PERSISTENT_DATA_PATH=/var/data</code> را ست کنید تا فایل دیتابیس در سخت‌افزار مستقل ذخیره شود.
+                  </p>
+                </div>
+              </div>
             </div>
 
-            <pre className="bg-black/90 p-4 rounded-xl font-mono text-[11px] text-blue-300 overflow-x-auto leading-relaxed border border-slate-800" dir="ltr">
-              {sqlSchemaCode}
-            </pre>
+            {/* Live Connection Status & Sync Action */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className={`w-3 h-3 rounded-full ${botStatus?.supabase_configured ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center gap-2">
+                    <span>وضعیت اتصال پایگاه داده:</span>
+                    <span className={botStatus?.supabase_configured ? 'text-emerald-400' : 'text-amber-400'}>
+                      {botStatus?.supabase_configured ? 'متصل به Supabase Cloud (پایداری دائمی)' : 'پایگاه داده محلی SQLite (نیازمند تنظیم متغیرهای Supabase)'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    {botStatus?.supabase_configured
+                      ? 'همگام‌سازی ابری فعال است؛ پس از هر دیپلوی اطلاعات خودکار بازیابی می‌شوند.'
+                      : 'جهت جلوگیری از پاک شدن اطلاعات هنگام دیپلوی، متغیرهای SUPABASE_URL و SUPABASE_KEY را در تنظیمات هاست وارد نمایید.'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSyncDatabase}
+                  disabled={syncingDb}
+                  className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-3.5 py-2 rounded-lg font-medium transition"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncingDb ? 'animate-spin' : ''}`} />
+                  <span>{syncingDb ? 'درحال بازیابی...' : '🔄 همگام‌سازی و بازیابی لحظه‌ای از دیتابیس ابری'}</span>
+                </button>
+              </div>
+            </div>
+
+            {syncStatusMsg && (
+              <div className={`p-3 rounded-lg text-xs font-medium ${syncStatusMsg.type === 'success' ? 'bg-emerald-950/60 border border-emerald-500/30 text-emerald-300' : 'bg-rose-950/60 border border-rose-500/30 text-rose-300'}`}>
+                {syncStatusMsg.text}
+              </div>
+            )}
+
+            {/* SQL Script Section */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <FileCode2 className="w-4 h-4 text-blue-400" />
+                    اسکریپت ساخت جداول دیتابیس (فایل supabase_schema.sql)
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    این اسکریپت را یکبار در بخش SQL Editor در داشبورد Supabase اجرا نمایید تا تمامی جداول و ستون‌ها با موفقیت ساخته شوند.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(sqlSchemaCode);
+                    setCopiedSql(true);
+                    setTimeout(() => setCopiedSql(false), 2000);
+                  }}
+                  className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-2 rounded-lg transition"
+                >
+                  {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedSql ? 'کپی شد' : 'کپی اسکریپت کامل SQL'}</span>
+                </button>
+              </div>
+
+              <pre className="bg-black/90 p-4 rounded-xl font-mono text-[11px] text-blue-300 overflow-x-auto leading-relaxed border border-slate-800 max-h-[350px]" dir="ltr">
+                {sqlSchemaCode}
+              </pre>
+            </div>
           </div>
         )}
 

@@ -2034,3 +2034,177 @@ export function getDashboardStats(): DashboardStats {
     commissionRate: 10
   };
 }
+
+// ====================================================
+// ۹. بازیابی و همگام‌سازی ابری پس از دیپلوی (Cloud Sync on Deploy)
+// ====================================================
+
+export async function syncFromSupabase(): Promise<{ usersCount: number; contractsCount: number; txsCount: number }> {
+  if (!isSupabaseConfigured() || !supabase) {
+    return { usersCount: 0, contractsCount: 0, txsCount: 0 };
+  }
+
+  let usersCount = 0;
+  let contractsCount = 0;
+  let txsCount = 0;
+
+  try {
+    console.log('🔄 [DB_SYNC] Fetching persistent records from Supabase...');
+
+    // ۱. همگام‌سازی کاربران
+    const { data: sbUsers, error: uErr } = await supabase.table('users').select('*').limit(1000);
+    if (!uErr && sbUsers && sbUsers.length > 0) {
+      for (const u of sbUsers) {
+        const idx = users.findIndex(existing => existing.id === Number(u.id));
+        const formattedUser: UserProfile = {
+          id: Number(u.id),
+          telegram_id: u.telegram_id ? Number(u.telegram_id) : Number(u.id),
+          username: u.username || u.telegram_username || '',
+          full_name: u.full_name || `کاربر ${u.id}`,
+          phone_number: u.phone_number || '',
+          role: u.role || 'employer',
+          wallet_balance: Number(u.wallet_balance || 0),
+          escrow_locked_balance: Number(u.escrow_locked_balance || 0),
+          kyc_level: u.kyc_level || (u.is_verified ? 'gold' : 'basic'),
+          kyc_status: u.kyc_status || (u.is_verified ? 'verified' : 'unverified'),
+          national_id: u.national_id || '',
+          sheba: u.sheba || '',
+          sheba_owner_name: u.sheba_owner_name || u.full_name || '',
+          sheba_verified: Boolean(u.sheba),
+          sheba_locked_to_national_id: Boolean(u.sheba && u.national_id),
+          referral_code: u.referral_code || `REF-${u.id}`,
+          is_verified: Boolean(u.is_verified),
+          is_blacklisted: Boolean(u.is_blacklisted),
+          has_financial_pin: Boolean(u.financial_pin_hash),
+          financial_pin_hash: u.financial_pin_hash,
+          pin_failed_attempts: 0,
+          pin_locked_until: null,
+          security_score: u.is_verified ? 95 : 60,
+          created_at: u.created_at || new Date().toISOString()
+        };
+        if (idx !== -1) {
+          users[idx] = { ...users[idx], ...formattedUser };
+        } else {
+          users.push(formattedUser);
+        }
+      }
+      usersCount = sbUsers.length;
+    }
+
+    // ۲. همگام‌سازی قراردادها
+    const { data: sbContracts, error: cErr } = await supabase.table('contracts').select('*').limit(1000);
+    if (!cErr && sbContracts && sbContracts.length > 0) {
+      for (const c of sbContracts) {
+        const idx = contracts.findIndex(existing => existing.contract_id === c.contract_id || existing.id === c.id);
+        const formattedContract: Contract = {
+          id: c.id || `c_${c.contract_id}`,
+          contract_id: c.contract_id,
+          title: c.title || 'معامله هوشمند میانجی',
+          amount: Number(c.amount || 0),
+          category: c.category || 'GEN',
+          deadline: Number(c.deadline || 7),
+          description: c.description || '',
+          free_edits: Number(c.free_edits ?? c.free_edits_total ?? 2),
+          free_edits_left: Number(c.free_edits_left ?? 2),
+          free_edits_total: Number(c.free_edits_total ?? 2),
+          commission_payer: c.commission_payer || 'split_50_50',
+          creator_id: Number(c.creator_id || c.created_by || 0),
+          created_by: Number(c.creator_id || c.created_by || 0),
+          status: c.status || 'draft',
+          has_inspection_period: Boolean(c.has_inspection_period),
+          inspection_period_hours: Number(c.inspection_period_hours || 0),
+          has_free_revisions: Boolean(c.has_free_revisions ?? true),
+          free_revisions_count: Number(c.free_revisions_count ?? 2),
+          invite_token: c.invite_token || `deal_${c.contract_id}`,
+          escrow_deposit_status: c.escrow_deposit_status || (c.status === 'active' ? 'paid_locked' : 'unpaid'),
+          buyer_id: c.buyer_id ? Number(c.buyer_id) : undefined,
+          buyer_fullname: c.buyer_fullname,
+          buyer_phone: c.buyer_phone,
+          buyer_national_id: c.buyer_national_id,
+          buyer_signed_at: c.buyer_signed_at,
+          buyer_otp_verified: Boolean(c.buyer_otp_verified),
+          seller_id: c.seller_id ? Number(c.seller_id) : undefined,
+          seller_fullname: c.seller_fullname,
+          seller_phone: c.seller_phone,
+          seller_national_id: c.seller_national_id,
+          seller_signed_at: c.seller_signed_at,
+          seller_otp_verified: Boolean(c.seller_otp_verified),
+          paid_at: c.paid_at,
+          delivery_deadline: c.delivery_deadline,
+          staged_payment: Boolean(c.staged_payment),
+          milestones: Array.isArray(c.milestones) ? c.milestones : [],
+          history: Array.isArray(c.history) ? c.history : [],
+          created_at: c.created_at || new Date().toISOString()
+        };
+        if (idx !== -1) {
+          contracts[idx] = { ...contracts[idx], ...formattedContract };
+        } else {
+          contracts.unshift(formattedContract);
+        }
+      }
+      contractsCount = sbContracts.length;
+    }
+
+    // ۳. همگام‌سازی تراکنش‌ها
+    const { data: sbTxs, error: tErr } = await supabase.table('transactions').select('*').order('created_at', { ascending: false }).limit(500);
+    if (!tErr && sbTxs && sbTxs.length > 0) {
+      for (const t of sbTxs) {
+        const idx = transactions.findIndex(existing => String(existing.id) === String(t.id));
+        const formattedTx: WalletTransaction = {
+          id: String(t.id),
+          user_id: Number(t.user_id),
+          type: t.type || 'deposit',
+          amount: Number(t.amount || 0),
+          title: t.title || t.description || 'تراکنش مالی',
+          status: t.status || 'completed',
+          ref_id: t.tracking_code || String(t.id),
+          contract_id: t.contract_id,
+          created_at: t.created_at || new Date().toISOString()
+        };
+        if (idx !== -1) {
+          transactions[idx] = { ...transactions[idx], ...formattedTx };
+        } else {
+          transactions.unshift(formattedTx);
+        }
+      }
+      txsCount = sbTxs.length;
+    }
+
+    // ۴. همگام‌سازی امضاهای دیجیتال
+    const { data: sbSigs } = await supabase.table('signatures').select('*').limit(500);
+    if (sbSigs && sbSigs.length > 0) {
+      for (const s of sbSigs) {
+        if (!signatures.some(existing => existing.id === s.id || existing.signature_hash === s.signature_hash)) {
+          signatures.unshift({
+            id: s.id,
+            contract_id: s.contract_id,
+            user_id: s.telegram_id ? Number(s.telegram_id) : undefined,
+            telegram_id: Number(s.telegram_id),
+            telegram_username: s.telegram_username,
+            full_name: s.full_name,
+            national_id: s.national_id,
+            phone_number: s.phone_number,
+            role: s.role,
+            signed_at: s.signed_at,
+            otp_verified: Boolean(s.otp_verified),
+            client_ip: s.client_ip || '127.0.0.1',
+            verification_method: s.verification_method || 'telegram_contact_sms_otp',
+            signature_hash: s.signature_hash,
+            status: s.status || 'valid'
+          });
+        }
+      }
+    }
+
+    console.log(`✅ [DB_SYNC] Successfully restored: ${usersCount} users, ${contractsCount} contracts, ${txsCount} transactions.`);
+  } catch (err: any) {
+    console.warn('⚠️ [DB_SYNC] Notice syncing from Supabase:', err.message);
+  }
+
+  return { usersCount, contractsCount, txsCount };
+}
+
+// اجرای همگام‌سازی اولیه در صورت اتصال Supabase
+if (isSupabaseConfigured()) {
+  syncFromSupabase().catch(e => console.warn('Supabase initial sync error:', e.message));
+}

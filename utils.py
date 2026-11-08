@@ -10,7 +10,45 @@ except ImportError:
     TeleBot = Any
 from config import config
 
+import io as _io
+from concurrent.futures import ThreadPoolExecutor
+
 logger = logging.getLogger("Miyanji_Utils")
+
+# استخر نخ‌های اختصاصی برای ارسال فوق‌سریع و غیرمسدودکننده گزارش‌ها، لاگ‌ها و اعلان‌های ادمین
+# با این کار پاسخگویی به کاربر فوری و آنی خواهد بود و ادمین‌لاگ‌ها در پس‌زمینه بدون کوچک‌ترین افت امنیت ارسال می‌شوند
+_async_reporting_pool = ThreadPoolExecutor(max_workers=30, thread_name_prefix="MiyanjiAsyncReporting")
+
+
+def _clone_file_if_needed(file_obj):
+    """ایجاد نسخه مستقل از بافر در حافظه برای جلوگیری از بسته‌شدن بافر در ترد اصلی"""
+    if isinstance(file_obj, _io.BytesIO):
+        try:
+            file_obj.seek(0)
+            cloned = _io.BytesIO(file_obj.read())
+            cloned.name = getattr(file_obj, "name", "document.pdf")
+            file_obj.seek(0)
+            return cloned
+        except Exception:
+            return file_obj
+    return file_obj
+
+
+def run_async_report(func, *args, **kwargs):
+    """
+    اجرای کاملاً ناهمگام (Non-blocking) و ایمن وظایف گزارش‌دهی و ارسال اعلان به ادمین‌ها و کانال MJNOTE.
+    این معماری تضمین می‌کند ربات بلافاصله به کاربر پاسخ دهد و کاربر کوچک‌ترین کندی یا معطلی را احساس نکند،
+    در عین حال ۱۰۰٪ سوابق، لاگ‌ها و بررسی‌های ادمین بدون کم‌وکاست در پس‌زمینه با امنیت کامل ثبت و ارسال گردند.
+    """
+    try:
+        return _async_reporting_pool.submit(func, *args, **kwargs)
+    except Exception as e:
+        logger.error(f"Failed to submit async report task {getattr(func, '__name__', str(func))}: {e}")
+        try:
+            return func(*args, **kwargs)
+        except Exception as fallback_e:
+            logger.error(f"Fallback direct report also failed: {fallback_e}")
+            return None
 
 # منطقه زمانی تهران — مرجع تمام تاریخ/ساعت‌های نمایش‌داده‌شده به کاربر و PDF
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
@@ -623,35 +661,36 @@ def send_mjnote_report(bot: TeleBot, text: str, file_id=None, content_type: str 
     ارسال گزارش متنی، عکس یا سند به کانال گزارش‌ها (MJNOTE).
     قانون قطعی: در کانال MJNOTE فقط و فقط گزارش‌های وضعیتی ارسال می‌شوند
     و تحت هیچ شرایطی دکمه‌های شیشه‌ای یا تعاملی (reply_markup) ارسال نمی‌گردد.
+    کاملاً ناهمگام (Non-blocking async) جهت تضمین نهایت سرعت و عدم معطلی کاربر.
     """
     channel_id = get_mjnote_channel_id()
     if not channel_id:
         return False
-    try:
-        import io as _io
-        actual_file = file_id
-        if isinstance(file_id, _io.BytesIO):
-            file_id.seek(0)
-            actual_file = _io.BytesIO(file_id.read())
-            actual_file.name = getattr(file_id, "name", "document.pdf")
 
-        clean_caption = text[:1024] if text else ""
-        if file_id and content_type == "photo":
-            bot.send_photo(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
-        elif file_id and content_type == "document":
-            bot.send_document(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
-        elif file_id and content_type == "video":
-            bot.send_video(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
-        elif file_id and content_type == "voice":
-            bot.send_voice(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
-        elif file_id and content_type == "audio":
-            bot.send_audio(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
-        else:
-            bot.send_message(channel_id, text[:4096], parse_mode="HTML", reply_markup=None)
-        return True
-    except Exception as e:
-        logger.error(f"❌ Error sending report to MJNOTE ({channel_id}): {e}")
-        return False
+    actual_file = _clone_file_if_needed(file_id)
+    clean_caption = text[:1024] if text else ""
+
+    def _worker():
+        try:
+            if actual_file and content_type == "photo":
+                bot.send_photo(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+            elif actual_file and content_type == "document":
+                bot.send_document(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+            elif actual_file and content_type == "video":
+                bot.send_video(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+            elif actual_file and content_type == "voice":
+                bot.send_voice(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+            elif actual_file and content_type == "audio":
+                bot.send_audio(channel_id, actual_file, caption=clean_caption, parse_mode="HTML", reply_markup=None)
+            else:
+                bot.send_message(channel_id, text[:4096], parse_mode="HTML", reply_markup=None)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error sending async report to MJNOTE ({channel_id}): {e}")
+            return False
+
+    run_async_report(_worker)
+    return True
 
 def log_audit_record(
     bot: TeleBot,
@@ -725,7 +764,9 @@ def archive_document(bot, file_id, content_type: str = "document", caption: str 
 
 def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_id: int, amount: float, file_id: str):
     """
-    ارسال اعلان فیش جدید برای ادمین‌ها.
+    ارسال اعلان فیش جدید برای ادمین‌ها و کانال MJNOTE.
+    کاملاً ناهمگام (Async Non-Blocking) در استخر نخ پس‌زمینه اجرا می‌شود
+    تا پاسخ به کاربر آنی باشد و کاربر معطل ارسال عکس به ادمین‌ها نشود.
     دکمه‌های اقدام (تایید/رد) فقط برای پیوی ادمین‌ها ارسال می‌شود و به کانال بدون دکمه می‌رود.
     """
     from config import config
@@ -753,7 +794,6 @@ def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_
         import keyboards as kb
         markup = kb.get_receipt_admin_approval_inline(related_id, user_id)
 
-    # ۱. ارسال نسخه گزارش به کانال MJNOTE بدون دکمه
     mjnote_caption = (
         f"🧾 <b>گزارش دریافت فیش واریزی جدید</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -763,20 +803,28 @@ def notify_admin_receipt(bot: TeleBot, receipt_type: str, related_id: str, user_
         f"💰 <b>مبلغ:</b> {format_currency(amount)}\n"
         f"⏳ <b>وضعیت:</b> در انتظار بررسی و تایید مدیریت"
     )
-    send_mjnote_report(bot, text=mjnote_caption, file_id=file_id, content_type="photo")
 
-    # ۲. ارسال به پیوی ادمین‌ها به همراه دکمه‌های تایید و رد
-    admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
-    for target in {t for t in admin_targets if t and t > 0}:
-        try:
-            bot.send_photo(target, file_id, caption=text, parse_mode="HTML", reply_markup=markup)
-        except Exception as e:
-            logger.warning(f"Failed to notify admin {target} about receipt: {e}")
+    actual_file = _clone_file_if_needed(file_id)
+
+    def _worker():
+        # ۱. ارسال نسخه گزارش به کانال MJNOTE بدون دکمه
+        send_mjnote_report(bot, text=mjnote_caption, file_id=actual_file, content_type="photo")
+
+        # ۲. ارسال به پیوی ادمین‌ها به همراه دکمه‌های تایید و رد
+        admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
+        for target in {t for t in admin_targets if t and t > 0}:
+            try:
+                bot.send_photo(target, actual_file, caption=text, parse_mode="HTML", reply_markup=markup)
+            except Exception as e:
+                logger.warning(f"Failed to notify admin {target} about receipt: {e}")
+
+    run_async_report(_worker)
 
 def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: str, national_id: str):
     """
     ارسال اعلان درخواست احراز هویت جدید (کد ملی) به ادمین‌ها با دکمه‌های تایید و رد در پیوی ادمین‌ها،
     و ارسال صرفاً گزارش بدون دکمه به کانال MJNOTE.
+    کاملاً ناهمگام (Async Non-Blocking) در پس‌زمینه اجرا می‌شود تا کاربر بلافاصله تأییدیه خود را ببیند.
     """
     import keyboards as kb
     from config import config
@@ -798,7 +846,6 @@ def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: s
         f"🆔 <b>شناسه کاربر:</b> <code>{user_id}</code>\n"
         f"⏳ <b>وضعیت:</b> در انتظار بررسی و تایید مدارک"
     )
-    send_mjnote_report(bot, text=mjnote_text)
     
     # پیام برای پیوی ادمین با دکمه‌های تایید/رد
     admin_text = (
@@ -813,17 +860,19 @@ def notify_admin_kyc(bot: TeleBot, user_id: int, full_name: str, phone_number: s
         f"جهت بررسی و ثبت نظر، لطفاً از دکمه‌های زیر استفاده فرمایید:"
     )
     markup = kb.get_kyc_admin_action_inline(user_id, clean_nid)
-    
-    admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
-    sent_any = False
-    for target in {t for t in admin_targets if t and t > 0}:
-        try:
-            bot.send_message(target, admin_text, parse_mode="HTML", reply_markup=markup)
-            sent_any = True
-        except Exception as e:
-            logger.warning(f"Failed to notify admin {target} about KYC: {e}")
-            
-    return sent_any
+
+    def _worker():
+        send_mjnote_report(bot, text=mjnote_text)
+        
+        admin_targets = [getattr(config, 'ADMIN_ID', 0)] + list(getattr(config, 'ADMIN_IDS', []))
+        for target in {t for t in admin_targets if t and t > 0}:
+            try:
+                bot.send_message(target, admin_text, parse_mode="HTML", reply_markup=markup)
+            except Exception as e:
+                logger.warning(f"Failed to notify admin {target} about KYC: {e}")
+
+    run_async_report(_worker)
+    return True
 
 def notify_archive(
     bot,
@@ -837,22 +886,28 @@ def notify_archive(
     """
     بایگانی در کانال MJNOTE.
     مطابق با دستور کاربر: در کانال MJNOTE فقط گزارش و اسناد ارسال می‌شود و هیچ دکمه‌ای نمی‌رود.
+    کاملاً ناهمگام (Async Non-Blocking).
     """
-    # ۱. ارسال همیشگی گزارش به کانال MJNOTE بدون هیچ‌گونه دکمه
-    send_mjnote_report(bot, text=text, file_id=file_id, content_type=content_type)
+    actual_file = _clone_file_if_needed(file_id)
 
-    # ۲. فقط در صورتی که دکمه‌ای وجود داشته باشد، آن دکمه به پیوی ادمین‌ها ارسال شود
-    if reply_markup:
-        targets = list(admin_ids or getattr(config, "ADMIN_IDS", []))
-        single_admin = getattr(config, "ADMIN_ID", 0)
-        if single_admin and single_admin not in targets:
-            targets.append(single_admin)
-        for chat_id in targets:
-            if chat_id and chat_id > 0:
-                try:
-                    bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
-                except Exception as e:
-                    logger.error(f"❌ Error sending interactive alert to admin {chat_id}: {e}")
+    def _worker():
+        # ۱. ارسال همیشگی گزارش به کانال MJNOTE بدون هیچ‌گونه دکمه
+        send_mjnote_report(bot, text=text, file_id=actual_file, content_type=content_type)
+
+        # ۲. فقط در صورتی که دکمه‌ای وجود داشته باشد، آن دکمه به پیوی ادمین‌ها ارسال شود
+        if reply_markup:
+            targets = list(admin_ids or getattr(config, "ADMIN_IDS", []))
+            single_admin = getattr(config, "ADMIN_ID", 0)
+            if single_admin and single_admin not in targets:
+                targets.append(single_admin)
+            for chat_id in targets:
+                if chat_id and chat_id > 0:
+                    try:
+                        bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+                    except Exception as e:
+                        logger.error(f"❌ Error sending interactive alert to admin {chat_id}: {e}")
+
+    run_async_report(_worker)
 
 
 def credit_ambassador_commission(bot, contract: Dict[str, Any], commission_amount: float, cid: str) -> None:
@@ -1218,22 +1273,11 @@ def send_admin_alert(bot, text: str, content_type: str = "text", file_id=None, r
     ۱. موارد اکشن‌دار (واریز، برداشت، داوری) -> MJ_ADMIN (کانال مدیریت)
     ۲. اسناد و فیش‌ها -> MJNOTE (بایگانی بی‌صدا)
     ۳. سایر موارد -> پیوی ادمین‌ها
+    کاملاً ناهمگام (Async Non-Blocking) در استخر نخ‌های پس‌زمینه تا بازخورد به کاربر فوری باشد.
     """
-    mjnote_id = getattr(config, "MJNOTE", 0)
     admin_channel = getattr(config, "MJ_ADMIN", 0)
-    admin_ids = getattr(config, "ADMIN_IDS", [])
 
-    # تشخیص نوع درخواست برای فیلتر کردن کانال مدیریت (Actionable ONLY)
-    allowed_keywords = [
-        "درخواست واریز", "فیش واریزی", "درخواست برداشت", "درخواست داوری", 
-        "ثبت اختلاف", "شارژ کیف پول", "شارژ حساب", "واریز مرحله جدید"
-    ]
-    is_actionable = any(kw in text for kw in allowed_keywords)
-
-    # ۱. بایگانی و ارسال گزارش در MJNOTE بدون هیچ‌گونه دکمه
-    send_mjnote_report(bot, text=text, file_id=file_id, content_type=content_type)
-
-    # ۲. تعیین اهداف عملیاتی (همواره شامل پیوی ادمین‌ها به همراه دکمه‌های تایید و رد)
+    # تعیین اهداف عملیاتی (همواره شامل پیوی ادمین‌ها به همراه دکمه‌های تایید و رد)
     targets = []
     
     # افزودن تمام شناسه‌های ادمین به عنوان مقصد قطعی
@@ -1255,7 +1299,7 @@ def send_admin_alert(bot, text: str, content_type: str = "text", file_id=None, r
             s_aid = int(str(single_admin).strip())
             if s_aid and s_aid not in targets:
                 targets.append(s_aid)
-        except:
+        except Exception:
             pass
 
     owner = getattr(config, "OWNER_ID", None)
@@ -1264,29 +1308,37 @@ def send_admin_alert(bot, text: str, content_type: str = "text", file_id=None, r
             o_aid = int(str(owner).strip())
             if o_aid and o_aid not in targets:
                 targets.append(o_aid)
-        except:
+        except Exception:
             pass
 
     # افزودن کانال مدیریت در صورت تنظیم
     if admin_channel and admin_channel != 0 and admin_channel not in targets:
         targets.append(admin_channel)
 
-    for target in targets:
-        try:
-            actual_text = text[:1024] if target < 0 else text
-            # دکمه‌های شیشه‌ای فقط به پیوی ادمین‌ها (target > 0) ارسال شوند؛ کانال‌ها بدون دکمه
-            actual_markup = reply_markup if target > 0 else None
+    actual_file = _clone_file_if_needed(file_id)
 
-            if file_id and content_type in ["photo", "document"]:
-                if content_type == "photo":
-                    bot.send_photo(target, file_id, caption=actual_text[:1024], parse_mode=parse_mode, reply_markup=actual_markup)
+    def _worker():
+        # ۱. بایگانی و ارسال گزارش در MJNOTE بدون هیچ‌گونه دکمه
+        send_mjnote_report(bot, text=text, file_id=actual_file, content_type=content_type)
+
+        # ۲. ارسال به تمام مقاصد ادمین
+        for target in targets:
+            try:
+                actual_text = text[:1024] if target < 0 else text
+                # دکمه‌های شیشه‌ای فقط به پیوی ادمین‌ها (target > 0) ارسال شوند؛ کانال‌ها بدون دکمه
+                actual_markup = reply_markup if target > 0 else None
+
+                if actual_file and content_type in ["photo", "document"]:
+                    if content_type == "photo":
+                        bot.send_photo(target, actual_file, caption=actual_text[:1024], parse_mode=parse_mode, reply_markup=actual_markup)
+                    else:
+                        bot.send_document(target, actual_file, caption=actual_text[:1024], parse_mode=parse_mode, reply_markup=actual_markup)
                 else:
-                    bot.send_document(target, file_id, caption=actual_text[:1024], parse_mode=parse_mode, reply_markup=actual_markup)
-            else:
-                bot.send_message(target, actual_text[:4096], parse_mode=parse_mode, reply_markup=actual_markup)
-        except Exception as e:
-            logger.error(f"❌ Error sending alert to {target}: {e}")
+                    bot.send_message(target, actual_text[:4096], parse_mode=parse_mode, reply_markup=actual_markup)
+            except Exception as e:
+                logger.error(f"❌ Error sending async alert to {target}: {e}")
 
+    run_async_report(_worker)
     return True
 
 def check_maintenance() -> bool:

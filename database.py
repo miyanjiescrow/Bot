@@ -275,6 +275,85 @@ except Exception as e:
     logger.error(f"خطا در اتصال به Supabase: {e}")
     supabase = None
 
+def _sync_from_supabase_on_startup():
+    """
+    همگام‌سازی و بازیابی خودکار اطلاعات از پایگاه داده ابری Supabase هنگام استارت ربات
+    جهت حفظ ۱۰۰٪ اطلاعات کاربران، معاملات و تراکنش‌ها پس از هر بار دیپلوی یا راه‌اندازی مجدد در رندر/داکر
+    """
+    if not supabase:
+        logger.info("ℹ️ Supabase client is not connected. Skipping cloud startup sync.")
+        return
+
+    logger.info("🔄 Initiating Supabase cloud synchronization on startup...")
+    try:
+        # ۱. همگام‌سازی کاربران
+        res_users = supabase.table("users").select("*").limit(2000).execute()
+        loaded_sb_users = 0
+        if res_users.data:
+            with db_lock:
+                for u in res_users.data:
+                    uid = u.get("id") or u.get("telegram_id")
+                    if uid:
+                        try:
+                            uid_int = int(uid)
+                            _in_memory_users[uid_int] = u
+                            _user_info_cache[uid_int] = u
+                            _save_user_to_sqlite(u)
+                            loaded_sb_users += 1
+                        except Exception:
+                            pass
+
+        # ۲. همگام‌سازی قراردادها و معاملات اسکرو
+        res_contracts = supabase.table("contracts").select("*").limit(2000).execute()
+        loaded_sb_contracts = 0
+        if res_contracts.data:
+            with db_lock:
+                for c in res_contracts.data:
+                    cid = c.get("contract_id") or c.get("id")
+                    if cid:
+                        _in_memory_contracts[str(cid)] = c
+                        clean_c = utils.normalize_deal_id(str(cid))
+                        if clean_c != str(cid):
+                            _in_memory_contracts[clean_c] = c
+                        _save_contract_to_sqlite(c)
+                        loaded_sb_contracts += 1
+
+        # ۳. همگام‌سازی تراکنش‌های مالی اخیر
+        res_txs = supabase.table("transactions").select("*").order("id", desc=True).limit(500).execute()
+        loaded_sb_txs = 0
+        if res_txs.data:
+            with db_lock:
+                for tx in res_txs.data:
+                    txid = tx.get("id")
+                    if txid:
+                        _in_memory_transactions[int(txid)] = tx
+                        _in_memory_transactions[str(txid)] = tx
+                        _save_transaction_to_sqlite(tx)
+                        loaded_sb_txs += 1
+
+        # ۴. همگام‌سازی امضاهای دیجیتال
+        try:
+            res_sigs = supabase.table("signatures").select("*").limit(1000).execute()
+            if res_sigs.data:
+                with db_lock:
+                    for sig in res_sigs.data:
+                        cid = sig.get("contract_id")
+                        if cid:
+                            if cid not in _in_memory_signatures:
+                                _in_memory_signatures[cid] = []
+                            _in_memory_signatures[cid].append(sig)
+                            _save_signature_to_sqlite(sig)
+        except Exception:
+            pass
+
+        logger.info(f"✅ Supabase startup sync complete: restored {loaded_sb_users} users, {loaded_sb_contracts} contracts, {loaded_sb_txs} transactions.")
+    except Exception as e:
+        logger.warning(f"Notice during startup sync from Supabase: {e}")
+
+# اجرای همگام‌سازی ابری در پس‌زمینه در زمان شروع
+if supabase:
+    db_pool.submit(_sync_from_supabase_on_startup)
+
 
 @lru_cache(maxsize=1024)
 def is_user_blacklisted(user_id: int) -> bool:

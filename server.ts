@@ -60,6 +60,7 @@ import {
   updateUserKycStatus,
   cleanBotUsername,
   makeTelegramLink,
+  syncFromSupabase,
 } from './src/db';
 
 import { isSupabaseConfigured } from './src/lib/supabase';
@@ -205,6 +206,20 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
     ],
     recent_logs: recentLogs
   });
+});
+
+// Manual/Automatic Supabase DB Sync endpoint
+app.post('/api/db/sync', async (req: Request, res: Response) => {
+  try {
+    const stats = await syncFromSupabase();
+    res.json({
+      success: true,
+      message: `همگام‌سازی موفق با Supabase: ${stats.usersCount} کاربر، ${stats.contractsCount} قرارداد و ${stats.txsCount} تراکنش بازیابی شدند.`,
+      stats
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Trigger restart of Python bot
