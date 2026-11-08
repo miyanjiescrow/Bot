@@ -9,6 +9,7 @@ import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Union, Tuple
+from functools import lru_cache
 try:
     from supabase import create_client, Client
 except ImportError:
@@ -1231,6 +1232,10 @@ def _clear_user_cache(user_id: int):
     global _user_info_cache, _user_info_last_update
     _user_info_cache.pop(user_id, None)
     _user_info_last_update.pop(user_id, None)
+    try:
+        is_user_blacklisted.cache_clear()
+    except Exception:
+        pass
 
 def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     """دریافت اطلاعات کامل کاربر با سیستم کشینگ فوق‌سریع لایه ۲"""
