@@ -39,8 +39,21 @@ function appendBotLog(message: string) {
   }
 }
 
+export function isValidTelegramToken(token: string | undefined): boolean {
+  if (!token) return false;
+  const clean = token.trim();
+  if (!clean.includes(':')) return false;
+  const parts = clean.split(':');
+  if (!/^\d+$/.test(parts[0]) || parts[0].length < 6) return false;
+  if (!parts[1] || parts[1].length < 20) return false;
+  if (parts[0] === '123456789' || parts[1].includes('ABCdefGhIJKlmNo') || clean.toLowerCase().includes('placeholder')) {
+    return false;
+  }
+  return true;
+}
+
 const botToken = process.env.BOT_TOKEN?.trim() || '';
-const hasValidToken = Boolean(botToken && botToken.includes(':'));
+const hasValidToken = isValidTelegramToken(botToken);
 
 export const bot = hasValidToken ? new Telegraf(botToken) : null;
 
@@ -709,8 +722,15 @@ export function handleSimulatorMessage(text: string, userId?: number): BotRespon
 export function startBot() {
   appendBotLog('🚀 Initializing Miyanji Escrow Telegraf runtime in Node.js 22...');
 
-  if (!bot) {
-    const msg = 'ℹ️ Telegram Bot Token (BOT_TOKEN) is not set or invalid. Running in simulated console mode.';
+  if (process.env.USE_PYTHON_BOT === 'true') {
+    const msg = 'ℹ️ Python Bot engine is designated (USE_PYTHON_BOT=true). Node.js Telegraf polling remains idle to prevent 409 conflict.';
+    console.log(`[Miyanji Bot] ${msg}`);
+    appendBotLog(msg);
+    return;
+  }
+
+  if (!hasValidToken || !bot) {
+    const msg = 'ℹ️ Telegram Bot Token (BOT_TOKEN) is not configured or is a placeholder. Standing by for real token in environment variables.';
     console.log(`[Miyanji Bot] ${msg}`);
     appendBotLog(msg);
     return;

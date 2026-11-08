@@ -64,7 +64,7 @@ import {
 } from './src/db';
 
 import { isSupabaseConfigured } from './src/lib/supabase';
-import { startBot } from './src/bot';
+import { startBot, isValidTelegramToken } from './src/bot';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -175,7 +175,7 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
 
   const stats = getDashboardStats();
 
-  const isTokenSet = Boolean(process.env.BOT_TOKEN && process.env.BOT_TOKEN.includes(':'));
+  const isTokenSet = isValidTelegramToken(process.env.BOT_TOKEN);
 
   res.json({
     status: 'online',

@@ -122,27 +122,109 @@ class BotWorkerExceptionHandler(telebot.ExceptionHandler):
         logger.error(f"🚨 [BOT_WORKER_ERROR] Exception in message handler: {exception}", exc_info=True)
         return True
 
+def is_valid_telegram_token(token: str) -> bool:
+    """بررسی اعتبارسنجی دقیق توکن تلگرام جهت جلوگیری از خطای 401 Unauthorized"""
+    if not token or not isinstance(token, str):
+        return False
+    clean = token.strip()
+    if ":" not in clean:
+        return False
+    parts = clean.split(":", 1)
+    if not parts[0].isdigit() or len(parts[0]) < 6:
+        return False
+    if len(parts[1]) < 20:
+        return False
+    # شناسایی توکن‌های تستی یا پیش‌فرض
+    if parts[0] == "123456789" or "ABCdefGhIJKlmNo" in parts[1] or "placeholder" in clean.lower():
+        return False
+    return True
+
+def start_render_health_server():
+    """
+    راه‌اندازی سرور HTTP سبک داخلی روی پورت محیطی ($PORT) برای سرویس‌های رندر (Render Web Service).
+    این وب‌سرور مینیمال در یک ترد دیمون مستقل (Daemon Thread) اجرا می‌شود تا:
+    ۱. سرویس رندر فوراً وضعیت لایو (Live) دریافت کند.
+    ۲. از خطای متداول 'Port scan timeout' در پلن‌های رایگان رندر جلوگیری کند.
+    ۳. امکان پینگ دوره‌ای و مانیتورینگ آنلاین سرویس فراهم شود.
+    """
+    port_env = os.getenv("PORT")
+    if not port_env:
+        return None
+
+    try:
+        port = int(port_env)
+    except (ValueError, TypeError):
+        return None
+
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+
+    class RenderHealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            raw_token = getattr(config, "BOT_TOKEN", "")
+            has_token = is_valid_telegram_token(raw_token)
+            status_data = {
+                "status": "live",
+                "service": "Miyanji Smart Escrow Telegram Bot",
+                "engine": "Python TeleBot",
+                "bot_configured": has_token,
+                "bot_username": getattr(config, "BOT_USERNAME", "mianji_ir_bot"),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self.wfile.write(json.dumps(status_data, ensure_ascii=False).encode("utf-8"))
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            # جلوگیری از پر شدن فایل لاگ با پینگ‌های مکرر هلث‌چک
+            pass
+
+    try:
+        server = HTTPServer(("0.0.0.0", port), RenderHealthHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="RenderHealthServer")
+        server_thread.start()
+        logger.info(f"🌐 [RENDER_HEALTH] Health check HTTP server active on 0.0.0.0:{port} -> Service marked as LIVE 🎉")
+        return server
+    except Exception as e:
+        logger.warning(f"Notice starting Render health server on port {port}: {e}")
+        return None
+
 def main():
-    # ۱. ثبت قفل تک‌نسخه‌ای جهت جلوگیری از اجرای چندگانه روی یک سرور
+    # ۱. راه‌اندازی فوری سرور هلث‌چک برای رندر جهت دریافت وضعیت Live
+    start_render_health_server()
+
+    # ۲. ثبت قفل تک‌نسخه‌ای جهت جلوگیری از اجرای چندگانه روی یک سرور
     acquire_single_instance_lock()
     
     logger.info("🚀 Starting Miyanji Smart Escrow Application (Pure Telegram Bot)...")
 
-    
     # ۳. بررسی اتصال دیتابیس
     if not db.supabase:
-        logger.error("❌ Critical: Supabase client failed to initialize!")
+        logger.warning("⚠️ Notice: Supabase cloud client is running with SQLite local persistent storage fallback.")
     else:
         logger.info("🔗 Supabase connection established.")
 
-    # ۴. پیکربندی ربات تلگرام با هندلر خطا برای تردها
-    token = config.BOT_TOKEN
-    has_real_token = bool(token and ":" in token)
+    # ۴. پیکربندی و اعتبارسنجی توکن ربات تلگرام
+    raw_token = config.BOT_TOKEN
+    has_real_token = is_valid_telegram_token(raw_token)
 
     if not has_real_token:
-        logger.warning("⚠️ BOT_TOKEN is not configured or invalid in environment variables.")
-        logger.info("ℹ️ Handlers and database services will be validated in standby mode.")
+        logger.warning(
+            "⚠️ [BOT_TOKEN_REQUIRED] توکن معتبر ربات تلگرام در متغیرهای محیطی یافت نشد!\n"
+            "   برای اینکه ربات به تلگرام متصل و آنلاین شود:\n"
+            "   ۱. در پنل هاست یا رندر (Render Dashboard)، به تب Environment بروید.\n"
+            "   ۲. متغیر BOT_TOKEN را با توکن دریافتی از @BotFather مقداردهی کنید.\n"
+            "   سرویس هم‌اکنون در وضعیت Live و هلث‌چک فعال باقی مانده است."
+        )
         token = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ1234567"
+    else:
+        token = raw_token.strip()
 
     bot = telebot.TeleBot(
         token, 
@@ -162,7 +244,7 @@ def main():
         except Exception as e:
             logger.warning(f"Notice connecting to Telegram getMe: {e}")
 
-    # مدیریت سیگنال‌های سیستمی جهت خروج امن و آزادسازی فوری نشست در Render (Rolling Update)
+    # ۵. مدیریت سیگنال‌های سیستمی جهت خروج امن و آزادسازی فوری نشست در Render (Rolling Update)
     def shutdown_handler(signum, frame):
         logger.info(f"🛑 Received termination signal ({signum}). Stopping polling and releasing session...")
         try:
@@ -171,7 +253,7 @@ def main():
             pass
         if has_real_token:
             try:
-                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot)
+                cleanup_and_reset_telegram_session(token, bot)
             except Exception:
                 pass
         try:
@@ -184,7 +266,7 @@ def main():
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
 
-    # ۵. ثبت تمامی هندلرها با ترتیب اولویت
+    # ۶. ثبت تمامی هندلرها با ترتیب اولویت
     try:
         logger.info("🛠 Registering handlers...")
         auth_handlers.register_auth_handlers(bot)
@@ -198,25 +280,25 @@ def main():
         logger.error(f"💥 Failed to register handlers: {e}", exc_info=True)
         return
 
-    # ۶. بررسی وجود توکن ربات تلگرام جهت آغاز پولینگ واقعی
+    # ۷. در صورت عدم وجود توکن واقعی، در حالت استندبای فعال می‌ماند تا سرویس کرش نکند
     if not has_real_token:
-        logger.info("💤 Bot handlers verified successfully. Set BOT_TOKEN in .env to begin live Telegram polling.")
+        logger.info("💤 Bot handlers verified successfully. Set BOT_TOKEN in environment to begin live Telegram polling.")
         while True:
             time.sleep(30)
 
     # پاکسازی مطمئن وبهوک یک‌بار در ابتدای استارت سیستم
-    cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
+    cleanup_and_reset_telegram_session(token, bot, drop_pending_updates=True)
 
-    # ۷. شروع پولینگ پایدار و دائمی بدون دور ریختن پیام‌های ورودی
+    # ۸. شروع پولینگ پایدار و دائمی
     conflict_count = 0
     while True:
         try:
-            logger.info("📡 Bot is now polling for updates...")
-            bot.polling(
-                none_stop=True,
-                timeout=25,
+            logger.info("📡 Bot is now polling for updates (infinity_polling)...")
+            bot.infinity_polling(
+                timeout=20,
                 long_polling_timeout=20,
-                skip_pending=True
+                skip_pending=True,
+                logger_level=logging.INFO
             )
             conflict_count = 0
             time.sleep(1)
@@ -235,12 +317,15 @@ def main():
                     f"   Pausing polling for {wait_time}s to allow the competing instance to release session..."
                 )
                 time.sleep(wait_time)
-                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
+                cleanup_and_reset_telegram_session(token, bot, drop_pending_updates=True)
                 time.sleep(2)
             elif e.error_code == 429:
                 wait_time = int(getattr(e, 'parameters', {}).get('retry_after', 15) if getattr(e, 'parameters', None) else 15)
                 logger.warning(f"⚠️ Telegram Rate Limit (429). Retrying after {wait_time}s...")
                 time.sleep(wait_time)
+            elif e.error_code == 401:
+                logger.error("❌ Telegram Token is invalid or revoked (401 Unauthorized). Please check BOT_TOKEN in environment variables.")
+                time.sleep(30)
             else:
                 conflict_count = 0
                 logger.error(f"💥 Telegram API error ({e.error_code}): {e.description}")
@@ -259,7 +344,7 @@ def main():
                     f"Waiting {wait_time}s for competing instance to release session..."
                 )
                 time.sleep(wait_time)
-                cleanup_and_reset_telegram_session(config.BOT_TOKEN, bot, drop_pending_updates=True)
+                cleanup_and_reset_telegram_session(token, bot, drop_pending_updates=True)
                 time.sleep(2)
             else:
                 conflict_count = 0
