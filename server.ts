@@ -859,7 +859,7 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     if (!deal) deal = getContracts().find(c => ['active', 'in_progress', 'paid', 'escrow_locked'].includes(c.status)) || getContracts()[0];
 
     if (deal) {
-      await deliverContract(deal.contract_id, { notes: 'خروجی کار و فایل‌های پروژه در محیط امن تحویل کارفرما گردید.' });
+      await deliverContract(deal.contract_id, { notes: 'خروجی کار و فایل‌های پروژه در محیط امن تحویل کارفرما گردید.', links: [] });
       return res.json({
         reply: `📦 **فایل‌ها و خروجی پروژه \`${deal.contract_id}\` با موفقیت تحویل کارفرما گردید!**\n──────────────────\n` +
                `> ⏱ مهلت تست و ارزیابی خروجی: **${deal.inspection_period_hours ? `${deal.inspection_period_hours} ساعت` : 'تایید آنی'}**\n` +
@@ -933,7 +933,12 @@ app.post('/api/bot/simulate', async (req: Request, res: Response) => {
     if (!deal) deal = getContracts()[0];
 
     if (deal) {
-      await createDispute(deal.contract_id, getCurrentUserId(), 'عدم توافق طرفین بر سر مشخصات تحویلی پروژه', 'quality');
+      await createDispute({
+        contract_id: deal.contract_id,
+        claimant_id: getCurrentUserId(),
+        description: 'عدم توافق طرفین بر سر مشخصات تحویلی پروژه',
+        reason: 'quality'
+      });
       return res.json({
         reply: `⚖️ **پرونده معامله \`${deal.contract_id}\` به هیئت داوری حقوقی سه جانبه میانجی ارجاع شد.**\n──────────────────\n` +
                `> 🛡 **پوشش قانون تجارت الکترونیک (ماده ۶ و ۱۰):**\n` +

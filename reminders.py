@@ -14,9 +14,9 @@ def start_reminder_service(bot):
     logger.info("🔔 سرویس یادآوری‌های خودکار فعال شد.")
 
 def _reminder_loop(bot):
-    """حلقه اصلی بررسی یادآوری‌ها (هر ۳۰ دقیقه پس از آماده‌سازی کامل شبکه)"""
-    # وقفه اولیه جهت اطمینان از بالا آمدن کامل شبکه و DNS سرور
-    time.sleep(25)
+    """حلقه اصلی بررسی یادآوری‌ها (هر ۳۰ دقیقه)"""
+    # وقفه اولیه جهت اطمینان از بالا آمدن کامل ربات و استقرار روی سرور
+    time.sleep(60)
     while True:
         try:
             _check_payment_reminders(bot)
@@ -24,26 +24,42 @@ def _reminder_loop(bot):
         except Exception as e:
             logger.error(f"Error in reminder loop: {e}")
         
-        # هر ۳۰ دقیقه یکبار چک کن
+        # هر ۳۰ دقیقه یکبار بررسی انجام شود
         time.sleep(1800)
 
 def _get_active_contracts_for_reminder(status_filter):
-    """کوئری ایمن به جداول deals یا contracts با مقاومت در برابر خطای موقت شبکه"""
-    if not db.supabase:
-        return []
-    for tbl in ["deals", "contracts"]:
-        try:
-            if isinstance(status_filter, list):
-                res = db.supabase.table(tbl).select("*").in_("status", status_filter).execute()
-            else:
-                res = db.supabase.table(tbl).select("*").eq("status", status_filter).execute()
-            if res.data:
-                return res.data
-        except Exception as e:
-            err_str = str(e)
-            if "Name or service not known" in err_str or "Errno -2" in err_str:
-                logger.warning(f"Notice: DNS/network not ready for reminders ({tbl}): {e}")
-            continue
+    """کوئری ایمن به معاملات برای یادآوری - با استفاده از دیتابیس محلی بدون معطلی شبکه"""
+    # اولویت اول و امن: خواندن فوری از حافظه پایدار رم و دیتابیس محلی
+    local_contracts = []
+    try:
+        with db.db_lock:
+            for c in getattr(db, "_in_memory_contracts", {}).values():
+                c_status = c.get("status")
+                if isinstance(status_filter, list):
+                    if c_status in status_filter:
+                        local_contracts.append(c)
+                elif c_status == status_filter:
+                    local_contracts.append(c)
+    except Exception:
+        pass
+
+    if local_contracts:
+        return local_contracts
+
+    # در صورت فعال و آنلاین بودن Supabase
+    if getattr(db, 'supabase', None) and getattr(db, 'is_supabase_online', False):
+        for tbl in ["contracts", "deals"]:
+            try:
+                if isinstance(status_filter, list):
+                    res = db.supabase.table(tbl).select("*").in_("status", status_filter).execute()
+                else:
+                    res = db.supabase.table(tbl).select("*").eq("status", status_filter).execute()
+                if res.data:
+                    return res.data
+            except Exception as e:
+                db.is_supabase_online = False
+                logger.debug(f"Notice: Supabase query in reminders skipped ({tbl}): {e}")
+                break
     return []
 
 def _check_payment_reminders(bot):

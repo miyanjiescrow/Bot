@@ -73,11 +73,13 @@ class Config:
     # ----------------------------------------------------
     # تنظیمات پایگاه داده Supabase
     # ----------------------------------------------------
-    _supabase_url_raw = os.getenv("SUPABASE_URL", "")
-    _supabase_key_raw = os.getenv("SUPABASE_KEY", "")
-
-    SUPABASE_URL = _supabase_url_raw.strip(' "\'')
-    SUPABASE_KEY = _supabase_key_raw.strip(' "\'')
+    _supabase_url_raw = (os.getenv("SUPABASE_URL") or "").strip().strip(' "\'')
+    if _supabase_url_raw:
+        if not _supabase_url_raw.startswith("http://") and not _supabase_url_raw.startswith("https://"):
+            _supabase_url_raw = f"https://{_supabase_url_raw}"
+        _supabase_url_raw = _supabase_url_raw.rstrip('/')
+    SUPABASE_URL = _supabase_url_raw
+    SUPABASE_KEY = (os.getenv("SUPABASE_KEY") or "").strip().strip(' "\'')
     
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "miyanji-docs").strip()
     

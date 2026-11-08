@@ -9,17 +9,20 @@ export type ContractStatus =
   | 'draft'
   | 'pending_party_b'
   | 'awaiting_payment'
+  | 'awaiting_escrow_deposit'
   | 'awaiting_receipt_approval'
   | 'active'
   | 'in_progress'
   | 'work_submitted'
+  | 'in_inspection'
+  | 'revisions_requested'
   | 'in_dispute'
   | 'completed'
   | 'cancelled';
 
 export type ContractCategory = 'DEV' | 'DS' | 'CNT' | 'CNS' | 'TRD' | 'GEN';
 
-export type KycStatus = 'unverified' | 'pending' | 'verified';
+export type KycStatus = 'unverified' | 'pending' | 'verified' | 'needs_correction' | 'rejected';
 export type KycLevel = 'basic' | 'silver' | 'gold';
 
 export interface Milestone {

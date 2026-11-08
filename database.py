@@ -265,24 +265,63 @@ def validate_iranian_sheba(sheba: str) -> bool:
     return int(numeric_str) % 97 == 1
 
 # ایجاد کلاینت اتصال به Supabase
+# ایجاد کلاینت اتصال به Supabase
 supabase: Optional[Client] = None
+is_supabase_online: bool = False
+_last_supabase_check_time: float = 0.0
+_supabase_check_cached_result: bool = False
+
+def check_supabase_online() -> bool:
+    """بررسی سریع اتصال شبکه و DNS به سرور Supabase با کش ۳۰ ثانیه‌ای جهت جلوگیری از تأخیرهای مکرر DNS"""
+    global is_supabase_online, _last_supabase_check_time, _supabase_check_cached_result
+    if not supabase or not getattr(config, 'SUPABASE_URL', None) or not getattr(config, 'SUPABASE_KEY', None):
+        is_supabase_online = False
+        _supabase_check_cached_result = False
+        return False
+
+    now = time.time()
+    if (now - _last_supabase_check_time) < 30.0:
+        return _supabase_check_cached_result
+
+    _last_supabase_check_time = now
+    try:
+        from urllib.parse import urlparse
+        import socket
+        parsed = urlparse(config.SUPABASE_URL)
+        hostname = parsed.hostname
+        if hostname:
+            socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
+        is_supabase_online = True
+        _supabase_check_cached_result = True
+        return True
+    except Exception:
+        is_supabase_online = False
+        _supabase_check_cached_result = False
+        return False
+
 try:
     if config.SUPABASE_URL and config.SUPABASE_KEY:
         supabase = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-        logger.info("اتصال به Supabase با موفقیت برقرار شد.")
+        is_supabase_online = check_supabase_online()
+        if is_supabase_online:
+            logger.info("اتصال به Supabase با موفقیت برقرار شد.")
+        else:
+            logger.warning("⚠️ سرور Supabase در حال حاضر در دسترس نیست (DNS/شبکه). سیستم با حافظه پایدار محلی SQLite کار می‌کند.")
     else:
-        logger.warning("اطلاعات SUPABASE_URL یا SUPABASE_KEY تنظیم نشده است.")
+        logger.warning("اطلاعات SUPABASE_URL یا SUPABASE_KEY تنظیم نشده است. سیستم با حافظه پایدار محلی SQLite کار می‌کند.")
 except Exception as e:
     logger.error(f"خطا در اتصال به Supabase: {e}")
     supabase = None
+    is_supabase_online = False
 
 def _sync_from_supabase_on_startup():
     """
     همگام‌سازی و بازیابی خودکار اطلاعات از پایگاه داده ابری Supabase هنگام استارت ربات
     جهت حفظ ۱۰۰٪ اطلاعات کاربران، معاملات و تراکنش‌ها پس از هر بار دیپلوی یا راه‌اندازی مجدد در رندر/داکر
     """
-    if not supabase:
-        logger.info("ℹ️ Supabase client is not connected. Skipping cloud startup sync.")
+    global is_supabase_online
+    if not supabase or not check_supabase_online():
+        logger.info("ℹ️ Supabase host is not reachable (DNS/Network). Operating smoothly with local persistent SQLite database.")
         return
 
     logger.info("🔄 Initiating Supabase cloud synchronization on startup...")
@@ -349,7 +388,8 @@ def _sync_from_supabase_on_startup():
 
         logger.info(f"✅ Supabase startup sync complete: restored {loaded_sb_users} users, {loaded_sb_contracts} contracts, {loaded_sb_txs} transactions.")
     except Exception as e:
-        logger.warning(f"Notice during startup sync from Supabase: {e}")
+        is_supabase_online = False
+        logger.warning(f"Notice during startup sync from Supabase: {e}. Fallback to local SQLite storage.")
 
 # اجرای همگام‌سازی ابری در پس‌زمینه در زمان شروع
 if supabase:
@@ -361,15 +401,26 @@ def is_user_blacklisted(user_id: int) -> bool:
     """
     بررسی کنندهٔ بلاک لیست برای یک کاربر (به صورت بهینه و کش شده)
     """
-    if not supabase:
+    if not user_id:
         return False
+    # اولویت اول: بررسی سریع از حافظه رم محلی (0 میلی‌ثانیه تاخیر)
+    cached_user = _in_memory_users.get(user_id) or _user_info_cache.get(user_id)
+    if cached_user and "is_blacklisted" in cached_user:
+        return bool(cached_user.get("is_blacklisted", False))
+
+    if not supabase or not is_supabase_online:
+        return False
+
     try:
         res = supabase.table("users").select("is_blacklisted").eq("id", user_id).execute()
         if res.data and len(res.data) > 0:
-            return bool(res.data[0].get("is_blacklisted", False))
+            val = bool(res.data[0].get("is_blacklisted", False))
+            if cached_user:
+                cached_user["is_blacklisted"] = val
+            return val
         return False
     except Exception as e:
-        logger.error(f"خطا در بررسی وضعیت بلاک لیست کاربر {user_id}: {e}")
+        logger.debug(f"Notice checking blacklist in Supabase: {e}")
         return False
 
 # ====================================================

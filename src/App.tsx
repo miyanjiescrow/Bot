@@ -247,9 +247,6 @@ const App = () => {
         const sData = await resS.json().catch(() => null);
         if (sData) setSecurityStatus(sData);
       }
-      if (resS && (arguments as any)) {
-        // Handled via promise array below
-      }
       // Check KYC response from Promise.all
       const resK = await fetch('/api/admin/kyc/pending').catch(() => null);
       if (resK && resK.ok) {

@@ -108,17 +108,41 @@ def cleanup_and_reset_telegram_session(token: str, bot_instance=None, drop_pendi
 
 class BotWorkerExceptionHandler(telebot.ExceptionHandler):
     def handle(self, exception):
-        # Do not swallow polling-level API exceptions or conflicts (409, 429, etc.)
-        # Returning False allows telebot to break out of __threaded_polling so our
-        # outer supervisor loop can back off, wait for the old container to shut down, and reconnect.
-        if isinstance(exception, telebot.apihelper.ApiTelegramException):
-            if exception.error_code in (409, 429, 502, 503, 504):
-                logger.warning(f"⚔️ Telebot ApiTelegramException ({exception.error_code}): {exception.description} -> Triggering outer recovery loop")
-                return False
         err_str = str(exception)
-        if any(term in err_str for term in ["Conflict", "409", "terminated by other getUpdates"]):
-            logger.warning("⚔️ Polling Conflict error caught -> Triggering outer recovery loop")
-            return False
+        is_conflict = (
+            (isinstance(exception, telebot.apihelper.ApiTelegramException) and exception.error_code == 409)
+            or any(term in err_str for term in ["Conflict", "409", "terminated by other getUpdates"])
+        )
+        if is_conflict:
+            logger.warning(
+                "⚔️ [CONFLICT_409] Duplicate bot instance detected on Telegram API (previous deployment container still active).\n"
+                "   Pausing 15s to allow competing container to shut down and release session..."
+            )
+            time.sleep(15)
+            try:
+                cleanup_and_reset_telegram_session(config.BOT_TOKEN, drop_pending_updates=True)
+            except Exception:
+                pass
+            return True
+
+        if isinstance(exception, telebot.apihelper.ApiTelegramException) and exception.error_code == 429:
+            retry_after = 15
+            try:
+                if hasattr(exception, 'result_json') and isinstance(exception.result_json, dict):
+                    retry_after = exception.result_json.get('parameters', {}).get('retry_after', 15)
+                elif hasattr(exception, 'parameters') and isinstance(exception.parameters, dict):
+                    retry_after = exception.parameters.get('retry_after', 15)
+            except Exception:
+                retry_after = 15
+            logger.warning(f"⚠️ Telegram Rate Limit (429). Retrying after {retry_after}s...")
+            time.sleep(retry_after)
+            return True
+
+        if isinstance(exception, telebot.apihelper.ApiTelegramException) and exception.error_code in (502, 503, 504):
+            logger.warning(f"⚠️ Telegram server network hiccup ({exception.error_code}). Pausing 5s...")
+            time.sleep(5)
+            return True
+
         logger.error(f"🚨 [BOT_WORKER_ERROR] Exception in message handler: {exception}", exc_info=True)
         return True
 
@@ -300,8 +324,9 @@ def main():
                 skip_pending=True,
                 logger_level=logging.INFO
             )
+            logger.info("ℹ️ Polling cycle completed. Reconnecting in 3s...")
             conflict_count = 0
-            time.sleep(1)
+            time.sleep(3)
         except telebot.apihelper.ApiTelegramException as e:
             try:
                 bot.stop_polling()

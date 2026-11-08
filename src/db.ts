@@ -670,7 +670,7 @@ export async function createContractSignature(data: {
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('signatures').upsert({
+      await supabase.from('signatures').upsert({
         contract_id: sig.contract_id,
         telegram_id: sig.telegram_id,
         telegram_username: sig.telegram_username,
@@ -1124,7 +1124,7 @@ export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id
   // ثبت یا به‌روزرسانی در Supabase در صورت اتصال
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('users').upsert({
+      await supabase.from('users').upsert({
         id: user.id,
         full_name: user.full_name,
         phone_number: user.phone_number,
@@ -1171,7 +1171,7 @@ export async function submitKyc(
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('users').update({
+      await supabase.from('users').update({
         national_id: user.national_id,
         sheba: user.sheba,
         kyc_status: 'verified',
@@ -1190,7 +1190,7 @@ export async function submitKyc(
   };
 }
 
-export function getPendingKycUsers(): User[] {
+export function getPendingKycUsers(): UserProfile[] {
   return users.filter(u => Boolean(u.national_id) && (!u.is_verified || u.kyc_status === 'pending' || u.kyc_status === 'needs_correction'));
 }
 
@@ -1208,7 +1208,7 @@ export async function updateUserKycStatus(userId: number, status: 'verified' | '
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('users').update({
+      await supabase.from('users').update({
         kyc_status: status,
         is_verified: user.is_verified,
         kyc_level: user.kyc_level
@@ -1329,7 +1329,7 @@ export async function createContract(data: Partial<Contract> & { as_draft?: bool
   // ثبت در Supabase
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').upsert({
+      await supabase.from('contracts').upsert({
         id: newContract.id,
         contract_id: newContract.contract_id,
         title: newContract.title,
@@ -1374,7 +1374,7 @@ export async function updateContract(contractId: string, updates: Partial<Contra
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').update(updates).eq('contract_id', existing.contract_id);
+      await supabase.from('contracts').update(updates).eq('contract_id', existing.contract_id);
     } catch (e: any) {
       console.warn('Supabase contract update warning:', e.message);
     }
@@ -1390,7 +1390,7 @@ export async function deleteContract(contractId: string): Promise<boolean> {
 
   if (deleted && isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').delete().eq('contract_id', contractId);
+      await supabase.from('contracts').delete().eq('contract_id', contractId);
     } catch (e: any) {
       console.warn('Supabase contract delete warning:', e.message);
     }
@@ -1487,7 +1487,7 @@ export async function signContract(
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').update({
+      await supabase.from('contracts').update({
         status: c.status,
         buyer_signed_at: c.buyer_signed_at,
         seller_signed_at: c.seller_signed_at,
@@ -1543,9 +1543,9 @@ export async function payContractEscrow(contractId: string, userId: number): Pro
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').update({ status: 'active', paid_at: now, history: c.history }).eq('contract_id', c.contract_id);
-      await supabase.table('users').update({ wallet_balance: user.wallet_balance, escrow_locked_balance: user.escrow_locked_balance }).eq('id', user.id);
-      await supabase.table('transactions').insert(tx);
+      await supabase.from('contracts').update({ status: 'active', paid_at: now, history: c.history }).eq('contract_id', c.contract_id);
+      await supabase.from('users').update({ wallet_balance: user.wallet_balance, escrow_locked_balance: user.escrow_locked_balance }).eq('id', user.id);
+      await supabase.from('transactions').insert(tx);
     } catch (e: any) {
       console.warn('Supabase pay escrow warning:', e.message);
     }
@@ -1573,7 +1573,7 @@ export async function deliverContract(contractId: string, deliverables: { notes:
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').update({ status: 'work_submitted', deliverables: c.deliverables, history: c.history }).eq('contract_id', c.contract_id);
+      await supabase.from('contracts').update({ status: 'work_submitted', deliverables: c.deliverables, history: c.history }).eq('contract_id', c.contract_id);
     } catch (e: any) {
       console.warn('Supabase deliver warning:', e.message);
     }
@@ -1642,7 +1642,7 @@ export async function approveContract(contractId: string): Promise<{ success: bo
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('contracts').update({ status: 'completed', history: c.history }).eq('contract_id', c.contract_id);
+      await supabase.from('contracts').update({ status: 'completed', history: c.history }).eq('contract_id', c.contract_id);
     } catch (e: any) {
       console.warn('Supabase approve warning:', e.message);
     }
@@ -1720,8 +1720,8 @@ export async function depositWallet(
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('users').update({ wallet_balance: user.wallet_balance }).eq('id', user.id);
-      await supabase.table('transactions').insert(tx);
+      await supabase.from('users').update({ wallet_balance: user.wallet_balance }).eq('id', user.id);
+      await supabase.from('transactions').insert(tx);
     } catch (e: any) {
       console.warn('Supabase deposit sync warning:', e.message);
     }
@@ -1816,8 +1816,8 @@ export async function withdrawWallet(
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('users').update({ wallet_balance: user.wallet_balance }).eq('id', user.id);
-      await supabase.table('transactions').insert(tx);
+      await supabase.from('users').update({ wallet_balance: user.wallet_balance }).eq('id', user.id);
+      await supabase.from('transactions').insert(tx);
     } catch (e: any) {
       console.warn('Supabase withdraw sync warning:', e.message);
     }
@@ -1891,8 +1891,8 @@ export async function createDispute(data: {
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('disputes').insert(newDispute);
-      await supabase.table('contracts').update({ status: 'in_dispute', dispute_id: newDispute.id, history: c.history }).eq('contract_id', c.contract_id);
+      await supabase.from('disputes').insert(newDispute);
+      await supabase.from('contracts').update({ status: 'in_dispute', dispute_id: newDispute.id, history: c.history }).eq('contract_id', c.contract_id);
     } catch (e: any) {
       console.warn('Supabase dispute insert warning:', e.message);
     }
@@ -1922,7 +1922,7 @@ export async function addDisputeMessage(
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      await supabase.table('disputes').update({ messages: d.messages }).eq('id', d.id);
+      await supabase.from('disputes').update({ messages: d.messages }).eq('id', d.id);
     } catch (e: any) {
       console.warn('Supabase dispute message warning:', e.message);
     }
@@ -2052,7 +2052,7 @@ export async function syncFromSupabase(): Promise<{ usersCount: number; contract
     console.log('🔄 [DB_SYNC] Fetching persistent records from Supabase...');
 
     // ۱. همگام‌سازی کاربران
-    const { data: sbUsers, error: uErr } = await supabase.table('users').select('*').limit(1000);
+    const { data: sbUsers, error: uErr } = await supabase.from('users').select('*').limit(1000);
     if (!uErr && sbUsers && sbUsers.length > 0) {
       for (const u of sbUsers) {
         const idx = users.findIndex(existing => existing.id === Number(u.id));
@@ -2092,7 +2092,7 @@ export async function syncFromSupabase(): Promise<{ usersCount: number; contract
     }
 
     // ۲. همگام‌سازی قراردادها
-    const { data: sbContracts, error: cErr } = await supabase.table('contracts').select('*').limit(1000);
+    const { data: sbContracts, error: cErr } = await supabase.from('contracts').select('*').limit(1000);
     if (!cErr && sbContracts && sbContracts.length > 0) {
       for (const c of sbContracts) {
         const idx = contracts.findIndex(existing => existing.contract_id === c.contract_id || existing.id === c.id);
@@ -2146,7 +2146,7 @@ export async function syncFromSupabase(): Promise<{ usersCount: number; contract
     }
 
     // ۳. همگام‌سازی تراکنش‌ها
-    const { data: sbTxs, error: tErr } = await supabase.table('transactions').select('*').order('created_at', { ascending: false }).limit(500);
+    const { data: sbTxs, error: tErr } = await supabase.from('transactions').select('*').order('created_at', { ascending: false }).limit(500);
     if (!tErr && sbTxs && sbTxs.length > 0) {
       for (const t of sbTxs) {
         const idx = transactions.findIndex(existing => String(existing.id) === String(t.id));
@@ -2171,7 +2171,7 @@ export async function syncFromSupabase(): Promise<{ usersCount: number; contract
     }
 
     // ۴. همگام‌سازی امضاهای دیجیتال
-    const { data: sbSigs } = await supabase.table('signatures').select('*').limit(500);
+    const { data: sbSigs } = await supabase.from('signatures').select('*').limit(500);
     if (sbSigs && sbSigs.length > 0) {
       for (const s of sbSigs) {
         if (!signatures.some(existing => existing.id === s.id || existing.signature_hash === s.signature_hash)) {
