@@ -37,7 +37,8 @@ import {
   Key,
   ChevronDown,
   ChevronUp,
-  HelpCircle
+  HelpCircle,
+  History
 } from 'lucide-react';
 
 interface BotStatus {
@@ -170,6 +171,83 @@ const App = () => {
   const [testPhoneInput, setTestPhoneInput] = useState('');
   const [syncingDb, setSyncingDb] = useState(false);
   const [syncStatusMsg, setSyncStatusMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // Contract Status Logs & Dropdown History States
+  const [expandedHistory, setExpandedHistory] = useState<Record<string, boolean>>({});
+  const [contractHistoryData, setContractHistoryData] = useState<Record<string, any[]>>({});
+  const [loadingHistory, setLoadingHistory] = useState<Record<string, boolean>>({});
+
+  const formatDateTimeFa = (isoString?: string) => {
+    if (!isoString) return '---';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return String(isoString);
+      return `${d.toLocaleDateString('fa-IR')} - ساعت ${d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}`;
+    } catch {
+      return String(isoString);
+    }
+  };
+
+  const toggleContractHistory = async (contractId: string) => {
+    const isCurrentlyOpen = !!expandedHistory[contractId];
+    setExpandedHistory(prev => ({ ...prev, [contractId]: !isCurrentlyOpen }));
+
+    if (!isCurrentlyOpen) {
+      const contractObj = contracts.find(c => c.contract_id === contractId);
+      if (contractObj?.history && !contractHistoryData[contractId]) {
+        setContractHistoryData(prev => ({ ...prev, [contractId]: contractObj.history }));
+      }
+
+      setLoadingHistory(prev => ({ ...prev, [contractId]: true }));
+      try {
+        const res = await fetch(`/api/contracts/${contractId}/history`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.history) {
+            setContractHistoryData(prev => ({ ...prev, [contractId]: data.history }));
+          }
+        }
+      } catch (e) {
+        console.warn('Error fetching contract status logs:', e);
+      } finally {
+        setLoadingHistory(prev => ({ ...prev, [contractId]: false }));
+      }
+    }
+  };
+
+  const refreshHistory = async (contractId: string) => {
+    setLoadingHistory(prev => ({ ...prev, [contractId]: true }));
+    try {
+      const res = await fetch(`/api/contracts/${contractId}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.history) {
+          setContractHistoryData(prev => ({ ...prev, [contractId]: data.history }));
+        }
+      }
+    } catch (e) {
+      console.warn('Error refreshing contract status logs:', e);
+    } finally {
+      setLoadingHistory(prev => ({ ...prev, [contractId]: false }));
+    }
+  };
+
+  const getHistoryForContract = (c: any) => {
+    const cid = c.contract_id;
+    if (contractHistoryData[cid] && contractHistoryData[cid].length > 0) {
+      return contractHistoryData[cid];
+    }
+    if (Array.isArray(c.history) && c.history.length > 0) {
+      return c.history;
+    }
+    return [
+      {
+        event: `ثبت اولیه معامله در سامانه میانجی (وضعیت فعلی: ${c.status})`,
+        timestamp: c.created_at || new Date().toISOString(),
+        actor: c.buyer_fullname || 'کارفرما'
+      }
+    ];
+  };
 
   const handleSyncDatabase = async () => {
     setSyncingDb(true);
@@ -1219,60 +1297,216 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                     <p className="text-[11px] text-slate-500">جهت ایجاد قرارداد جدید می‌توانید از تب «ایجاد معامله» استفاده کنید.</p>
                   </div>
                 ) : (
-                  filteredContracts.map((c, i) => (
-                    <div
-                      key={i}
-                      className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-slate-700 transition"
-                    >
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono text-xs font-bold text-blue-400">{c.contract_id}</span>
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                            c.status === 'active' || c.status === 'escrow_locked' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
-                            c.status === 'completed' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' :
-                            c.status === 'in_dispute' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
-                            c.status === 'draft' ? 'bg-purple-500/10 text-purple-300 border border-purple-500/30' :
-                            'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                          }`}>
-                            {c.status}
-                          </span>
-                          {c.has_inspection_period && (
-                            <span className="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
-                              <Clock className="w-2.5 h-2.5" />
-                              مهلت تست: {c.inspection_period_hours || 0}h
-                            </span>
-                          )}
-                          {c.free_edits !== undefined && (
-                            <span className="text-[10px] bg-purple-500/10 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded-full">
-                              ویرایش رایگان: {c.free_edits} بار
-                            </span>
-                          )}
-                        </div>
-                        <h4 className="text-xs font-bold text-white">{c.title}</h4>
-                        <p className="text-[11px] text-slate-400">
-                          کارفرما: {c.buyer_fullname || '---'} | مجری: {c.seller_fullname || '---'} | مهلت: {c.deadline || 7} روز
-                        </p>
-                      </div>
+                  filteredContracts.map((c, i) => {
+                    const isHistoryOpen = Boolean(expandedHistory[c.contract_id]);
+                    const historyList = getHistoryForContract(c);
+                    const isLoadingThisHistory = Boolean(loadingHistory[c.contract_id]);
 
-                      <div className="flex items-center gap-3">
-                        <div className="text-left">
-                          <span className="text-xs font-bold text-emerald-400 block">
-                            {(c.amount || 0).toLocaleString('fa-IR')} تومان
-                          </span>
-                          <span className="text-[10px] text-slate-500">صندوق امن میانجی</span>
+                    return (
+                      <div
+                        key={i}
+                        className={`bg-slate-950 border rounded-xl p-4 transition-all duration-200 ${
+                          isHistoryOpen ? 'border-blue-500/50 shadow-lg shadow-blue-950/20 bg-slate-950/95' : 'border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        {/* Main Summary Header */}
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                          <div className="space-y-1.5 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono text-xs font-bold text-blue-400">{c.contract_id}</span>
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                                c.status === 'active' || c.status === 'escrow_locked' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
+                                c.status === 'completed' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' :
+                                c.status === 'in_dispute' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
+                                c.status === 'draft' ? 'bg-purple-500/10 text-purple-300 border border-purple-500/30' :
+                                'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                              }`}>
+                                {c.status}
+                              </span>
+                              {c.has_inspection_period && (
+                                <span className="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  <Clock className="w-2.5 h-2.5" />
+                                  مهلت تست: {c.inspection_period_hours || 0}h
+                                </span>
+                              )}
+                              {c.free_edits !== undefined && (
+                                <span className="text-[10px] bg-purple-500/10 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded-full">
+                                  ویرایش رایگان: {c.free_edits} بار
+                                </span>
+                              )}
+                            </div>
+                            <h4 className="text-xs font-bold text-white">{c.title}</h4>
+                            <p className="text-[11px] text-slate-400">
+                              کارفرما: {c.buyer_fullname || '---'} | مجری: {c.seller_fullname || '---'} | مهلت: {c.deadline || 7} روز
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2.5 flex-wrap md:flex-nowrap justify-between md:justify-end">
+                            <div className="text-left md:ml-2">
+                              <span className="text-xs font-bold text-emerald-400 block">
+                                {(c.amount || 0).toLocaleString('fa-IR')} تومان
+                              </span>
+                              <span className="text-[10px] text-slate-500">صندوق امن میانجی</span>
+                            </div>
+
+                            {/* دکمه نمایش تاریخچه تغییرات وضعیت */}
+                            <button
+                              type="button"
+                              onClick={() => toggleContractHistory(c.contract_id)}
+                              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition font-medium ${
+                                isHistoryOpen
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm shadow-amber-500/10'
+                                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                              }`}
+                              title="مشاهده تایم‌لاین و تغییرات وضعیت از دیتابیس"
+                            >
+                              <History className={`w-3.5 h-3.5 ${isHistoryOpen ? 'text-amber-300' : 'text-amber-400'}`} />
+                              <span>{isHistoryOpen ? 'بستن تاریخچه' : 'نمایش تاریخچه'}</span>
+                              {isHistoryOpen ? (
+                                <ChevronUp className="w-3.5 h-3.5 text-amber-300" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                              )}
+                            </button>
+
+                            <a
+                              href={`/api/contracts/${c.contract_id}/pdf`}
+                              download
+                              className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>دانلود PDF</span>
+                            </a>
+                          </div>
                         </div>
 
-                        <a
-                          href={`/api/contracts/${c.contract_id}/pdf`}
-                          download
-                          className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>دانلود PDF</span>
-                        </a>
+                        {/* لیست کشویی تاریخچه تغییرات وضعیت (Status Logs Dropdown) */}
+                        {isHistoryOpen && (
+                          <div className="mt-4 pt-3.5 border-t border-slate-800/80 bg-slate-900/60 rounded-xl p-3.5 space-y-3">
+                            <div className="flex items-center justify-between flex-wrap gap-2 pb-2.5 border-b border-slate-800/70">
+                              <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-amber-500/10 rounded-lg border border-amber-500/30 text-amber-400">
+                                  <History className="w-4 h-4" />
+                                </div>
+                                <div>
+                                  <h5 className="text-xs font-bold text-white flex items-center gap-2">
+                                    <span>تاریخچه تغییرات وضعیت و پرونده معامله (Status Logs)</span>
+                                    <span className="text-[10px] bg-slate-800 text-amber-300 px-2 py-0.5 rounded-full border border-slate-700 font-mono">
+                                      {historyList.length} رویداد ثبت‌شده در دیتابیس
+                                    </span>
+                                  </h5>
+                                  <p className="text-[10px] text-slate-400 mt-0.5">
+                                    ثبت موثق و زمان‌دار کلیه تغییرات وضعیت، امضاها، پرداختی‌ها و ارجاعات
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => refreshHistory(c.contract_id)}
+                                  disabled={isLoadingThisHistory}
+                                  className="flex items-center gap-1.5 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-2.5 py-1 rounded-lg border border-slate-700 transition disabled:opacity-50"
+                                  title="استعلام آخرین سوابق از دیتابیس"
+                                >
+                                  <RefreshCw className={`w-3 h-3 text-blue-400 ${isLoadingThisHistory ? 'animate-spin' : ''}`} />
+                                  <span>بروزرسانی لاگ‌ها</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* محتوای لاگ‌های وضعیت */}
+                            {isLoadingThisHistory && !contractHistoryData[c.contract_id] ? (
+                              <div className="py-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                                <RefreshCw className="w-4 h-4 animate-spin text-amber-400" />
+                                <span>در حال دریافت سوابق تغییر وضعیت از دیتابیس...</span>
+                              </div>
+                            ) : historyList.length === 0 ? (
+                              <div className="py-5 text-center text-xs text-slate-400 bg-slate-950/60 rounded-lg border border-dashed border-slate-800">
+                                <Clock className="w-5 h-5 text-slate-500 mx-auto mb-1.5 opacity-60" />
+                                <p className="text-slate-300 font-medium">سابقه‌ای فراتر از ثبت اولیه برای این معامله ثبت نشده است.</p>
+                                <p className="text-[10px] text-slate-500 mt-0.5">
+                                  وضعیت فعلی در دیتابیس: <span className="font-mono text-blue-400">{c.status}</span>
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="space-y-2.5">
+                                {historyList.map((logItem: any, idx: number) => {
+                                  const eventText = logItem.event || logItem.action || '';
+                                  const isDeposit = eventText.includes('قفل') || eventText.includes('واریز') || eventText.includes('صندوق امانت') || eventText.includes('پرداخت');
+                                  const isSign = eventText.includes('امضا') || eventText.includes('OTP') || eventText.includes('تایید');
+                                  const isDeliver = eventText.includes('تحویل') || eventText.includes('خروجی') || eventText.includes('فایل');
+                                  const isDispute = eventText.includes('داوری') || eventText.includes('اعتراض') || eventText.includes('اختلاف');
+                                  const isComplete = eventText.includes('تکمیل') || eventText.includes('نهایی');
+                                  const isCancel = eventText.includes('لغو') || eventText.includes('انصراف');
+
+                                  const dotBg = isCancel ? 'bg-rose-500 border-rose-300' :
+                                    isDispute ? 'bg-amber-500 border-amber-300' :
+                                    isComplete ? 'bg-emerald-500 border-emerald-300' :
+                                    isDeliver ? 'bg-purple-500 border-purple-300' :
+                                    isDeposit ? 'bg-blue-500 border-blue-300' :
+                                    isSign ? 'bg-cyan-500 border-cyan-300' :
+                                    'bg-indigo-500 border-indigo-300';
+
+                                  const badgeStyle = isCancel ? 'bg-rose-500/10 text-rose-300 border-rose-500/20' :
+                                    isDispute ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' :
+                                    isComplete ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' :
+                                    isDeliver ? 'bg-purple-500/10 text-purple-300 border-purple-500/20' :
+                                    isDeposit ? 'bg-blue-500/10 text-blue-300 border-blue-500/20' :
+                                    isSign ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' :
+                                    'bg-slate-800 text-slate-300 border-slate-700';
+
+                                  const timeVal = logItem.timestamp || logItem.ts || logItem.created_at;
+                                  const actorVal = logItem.actor || logItem.role || (logItem.actor_id ? `کاربر ${logItem.actor_id}` : 'سیستم اسکرو');
+
+                                  return (
+                                    <div
+                                      key={idx}
+                                      className="bg-slate-950/80 border border-slate-800/90 hover:border-slate-700/80 rounded-lg p-3 transition flex items-start gap-3"
+                                    >
+                                      {/* نشانگر گرافیگی */}
+                                      <div className="pt-1">
+                                        <div className={`w-2.5 h-2.5 rounded-full border shadow-sm ${dotBg}`} />
+                                      </div>
+
+                                      {/* بدنه رویداد */}
+                                      <div className="flex-1 space-y-1">
+                                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                          <div className="flex items-center gap-2">
+                                            <span className={`text-[10px] px-2 py-0.2 rounded-full border font-medium ${badgeStyle}`}>
+                                              {actorVal}
+                                            </span>
+                                            <span className="text-[10px] text-slate-500 font-mono">
+                                              مرحله #{idx + 1}
+                                            </span>
+                                          </div>
+                                          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1" dir="ltr">
+                                            <Clock className="w-2.5 h-2.5 text-slate-500" />
+                                            {formatDateTimeFa(timeVal)}
+                                          </span>
+                                        </div>
+
+                                        <p className="text-xs text-slate-200 leading-relaxed font-sans select-text">
+                                          {eventText}
+                                        </p>
+
+                                        {logItem.file_id && (
+                                          <div className="mt-1 text-[10px] bg-slate-900 border border-slate-800 text-blue-300 px-2 py-0.5 rounded inline-flex items-center gap-1 font-mono">
+                                            <span>📎 پیوست:</span>
+                                            <span>{logItem.file_id}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>

@@ -407,10 +407,8 @@ def get_deal_invite_keyboard(invite_token: str, bot_username: str, deal_id: str)
     import urllib.parse
     import utils
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    clean_bot = utils.clean_bot_username(bot_username)
     clean_id = utils.normalize_deal_id(deal_id)
-    share_param = f"c_{clean_id}" if clean_id else invite_token
-    share_link = f"https://t.me/{clean_bot}?start={share_param}"
+    share_link = utils.generate_quick_contract_link(bot_username, clean_id)
     share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد معامله: #{clean_id}\nجهت بررسی و امضای دیجیتال کلیک فرمایید:"
     tg_share_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_text)}"
     

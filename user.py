@@ -2440,7 +2440,7 @@ def register_user_handlers(bot: TeleBot):
         amount = utils.safe_float(contract.get("amount", 0) if contract else payload.get("amount", 0))
         payer = (contract.get("commission_payer") if contract else None) or payload.get("commission_payer", "freelancer")
         comm, net, employer_pays = utils.calculate_commission(amount, payer=payer)
-        share_link = f"https://t.me/{bot_username}?start=c_{cid}"
+        share_link = utils.generate_quick_contract_link(bot_username, cid)
         
         final_msg = (
             f"✅ **معامله با موفقیت ایجاد و امضا شد**\n"
@@ -3623,6 +3623,51 @@ def register_user_handlers(bot: TeleBot):
     #     نمی‌شد؛ به همین دلیل کلیک روی این دکمه‌ها هیچ اتفاقی نمی‌انداخت.
     # ====================================================
 
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("contract_history_"))
+    def handle_show_contract_history(call: CallbackQuery):
+        cid = call.data.replace("contract_history_", "").strip()
+        user_id = call.from_user.id
+        contract = db.get_contract(cid)
+
+        if not contract:
+            bot.answer_callback_query(call.id, "❌ معامله مورد نظر یافت نشد.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id, "📜 در حال بارگذاری تاریخچه...")
+
+        history = db.get_contract_history(cid) or []
+        title = utils.escape_markdown(contract.get("title", "معامله میانجی"))
+        current_status = contract.get("status", "نامشخص")
+        
+        lines = [
+            f"📜 *تاریخچه تغییرات وضعیت و پرونده معامله (Status Logs)*",
+            f"🆔 کد قرارداد: `{cid}`",
+            f"📌 عنوان: *{title}*",
+            f"⚡ وضعیت فعلی: `{current_status}`",
+            "──────────────────"
+        ]
+
+        if not history:
+            lines.append("📭 هیچ تغییر وضعیتی فراتر از ثبت اولیه در دیتابیس ثبت نشده است.")
+        else:
+            for idx, item in enumerate(history, 1):
+                ts = item.get("timestamp") or item.get("ts") or item.get("created_at") or ""
+                ts_str = utils.convert_to_jalali(str(ts)) if ts else "---"
+                actor = item.get("actor") or (f"کاربر `{item.get('actor_id')}`" if item.get('actor_id') else "سیستم")
+                event = utils.escape_markdown(item.get("event") or item.get("action") or "تغییر وضعیت")
+                lines.append(f"🔹 *رویداد #{idx}* | 🕒 `{ts_str}`\n👤 *عامل:* {actor}\n📝 {event}\n")
+
+        msg_text = "\n".join(lines)
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("🔄 بروزرسانی تاریخچه", callback_data=f"contract_history_{cid}"),
+            InlineKeyboardButton("🔙 بازگشت به جزئیات معامله", callback_data=f"view_contract_terms:{cid}")
+        )
+        try:
+            bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception:
+            bot.send_message(call.message.chat.id, msg_text, reply_markup=markup)
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("view_contract_terms:"))
     def handle_view_contract_terms(call: CallbackQuery):
         cid = call.data.split(":")[1]
@@ -4469,7 +4514,7 @@ def register_user_handlers(bot: TeleBot):
             )
             
             bot_username = utils.clean_bot_username()
-            share_link = f"https://t.me/{bot_username}?start=c_{cid}"
+            share_link = utils.generate_quick_contract_link(bot_username, cid)
             is_admin = (user_id == getattr(config, 'ADMIN_ID', 0) or user_id in getattr(config, 'ADMIN_IDS', []))
             
             # واکشی آخرین اطلاعات معامله برای نمایش پیش‌نویس کامل
@@ -7627,8 +7672,7 @@ def register_user_handlers(bot: TeleBot):
     def _show_broadcaster_preview(bot: TeleBot, chat_id: int, user_id: int, state_data: dict):
         """نمایش پیش‌نمایش پست قبل از ارسال"""
         content_type = state_data.get("content_type")
-        bot_username = getattr(config, "BOT_USERNAME", "")
-        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        referral_link = utils.generate_ambassador_link(None, user_id)
         button_text = state_data.get("button_text", "🛡 ثبت معامله امن با میانجی")
         
         # ایجاد دکمهٔ رفرال
@@ -7694,8 +7738,7 @@ def register_user_handlers(bot: TeleBot):
         
         channel_id = state_data.get("channel_id")
         content_type = state_data.get("content_type")
-        bot_username = getattr(config, "BOT_USERNAME", "")
-        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        referral_link = utils.generate_ambassador_link(None, user_id)
         button_text = state_data.get("button_text", "🛡 ثبت معامله امن با میانجی")
         
         # ایجاد دکمهٔ رفرال

@@ -800,15 +800,19 @@ def get_contract_action_keyboard(contract_id: str, user_role: str, status: str, 
     if show_terms_button:
         markup.add(InlineKeyboardButton("📖 مشاهده متن کامل و تعهدات", callback_data=f"view_contract_terms:{contract_id}"))
     
-    markup.add(InlineKeyboardButton("📑 پیش‌نمایش و دریافت PDF", callback_data=f"get_pdf_{contract_id}"))
+    markup.add(
+        InlineKeyboardButton("📜 نمایش تاریخچه", callback_data=f"contract_history_{contract_id}"),
+        InlineKeyboardButton("📑 پیش‌نمایش PDF", callback_data=f"get_pdf_{contract_id}")
+    )
     markup.add(InlineKeyboardButton("🔙 بازگشت به لیست معاملات", callback_data="back_to_contracts_menu"))
     return markup
 
-def get_contract_created_inline(contract_id: str, share_link: str) -> InlineKeyboardMarkup:
+def get_contract_created_inline(contract_id: str, share_link: str = "") -> InlineKeyboardMarkup:
     """کیبورد بعد از ایجاد معامله برای ارسال لینک دعوت، پیش‌نمایش PDF و مشاهده جزئیات"""
     clean_id = utils.normalize_deal_id(contract_id)
-    share_msg = f"دعوت‌نامه رسمی قرارداد میانجی (کد معامله: {clean_id})"
-    share_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_msg)}"
+    valid_share_link = utils.generate_quick_contract_link(None, clean_id)
+    share_msg = f"🤝 دعوت‌نامه رسمی قرارداد اسکرو میانجی (کد معامله: {clean_id})"
+    share_url = f"https://t.me/share/url?url={urllib.parse.quote(valid_share_link)}&text={urllib.parse.quote(share_msg)}"
     
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
@@ -1475,11 +1479,10 @@ def get_smart_deal_revisions_inline() -> InlineKeyboardMarkup:
     return markup
 
 
-def get_smart_deal_invite_inline(invite_token: str, contract_id: str, bot_username: str) -> InlineKeyboardMarkup:
+def get_smart_deal_invite_inline(invite_token: str, contract_id: str, bot_username: str = "") -> InlineKeyboardMarkup:
     """دکمه شیشه‌ای ارسال دعوت‌نامه به طرف دوم"""
-    clean_bot = utils.clean_bot_username(bot_username)
     clean_id = utils.normalize_deal_id(contract_id)
-    share_link = f"https://t.me/{clean_bot}?start=c_{clean_id}"
+    share_link = utils.generate_quick_contract_link(bot_username, clean_id)
 
     share_text = f"🤝 دعوت‌نامه رسمی به قرارداد اسکرو میانجی\nکد قرارداد: #{clean_id}\nجهت بررسی مشخصات، مهلت تست و امضا کلیک فرمایید:"
     tg_url = f"https://t.me/share/url?url={urllib.parse.quote(share_link)}&text={urllib.parse.quote(share_text)}"

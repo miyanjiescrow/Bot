@@ -9,15 +9,17 @@ class Config:
     # ----------------------------------------------------
     # تنظیمات اصلی ربات تلگرام
     BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-    _raw_username = os.getenv("BOT_USERNAME", "mianji_ir_bot").strip()
+    _raw_username = os.getenv("BOT_USERNAME", "MianJi_ir_bot").strip()
     import re
     _raw_username = re.sub(r'^https?://', '', _raw_username, flags=re.IGNORECASE)
-    while re.match(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', _raw_username, flags=re.IGNORECASE):
-        _raw_username = re.sub(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', '', _raw_username, flags=re.IGNORECASE)
-    _raw_username = _raw_username.lstrip('@/').strip()
+    while re.search(r'(?:^|/)(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', _raw_username, flags=re.IGNORECASE):
+        _raw_username = re.sub(r'(?:^|/)(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', '/', _raw_username, flags=re.IGNORECASE)
+    _raw_username = _raw_username.strip('@/. ').split('?')[0].split('#')[0]
     if "/" in _raw_username:
-        _raw_username = _raw_username.split("/")[-1]
-    BOT_USERNAME = _raw_username.split("?")[0].strip() or "mianji_ir_bot"
+        _raw_username = _raw_username.split("/")[-1].strip()
+    _raw_username = re.sub(r'^(?:t\.me|telegram\.me|telegram\.dog)', '', _raw_username, flags=re.IGNORECASE).strip('/@. ')
+    _m = re.search(r'([A-Za-z0-9_]{5,32})', _raw_username)
+    BOT_USERNAME = _m.group(1) if _m else (_raw_username or "MianJi_ir_bot")
 
     
     def _safe_int(val, default=None):

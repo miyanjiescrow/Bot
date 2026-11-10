@@ -3,7 +3,7 @@ import random
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 try:
     from telebot import TeleBot
 except ImportError:
@@ -276,6 +276,8 @@ def validate_iranian_national_code(code: str) -> bool:
     s = sum(int(clean[i]) * (10 - i) for i in range(9))
     r = s % 11
     return (r < 2 and check == r) or (r >= 2 and check == 11 - r)
+
+validate_national_id = validate_iranian_national_code
 
 
 def sanitize_bank_input(text: str) -> str:
@@ -567,20 +569,33 @@ def calculate_commission(amount: float, user_id: Optional[int] = None, payer: st
 
 def clean_bot_username(raw: Optional[str] = None) -> str:
     """
-    استخراج نام کاربری تمیز و استاندارد ربات تلگرام بدون پیشوند t.me/، https://، @ یا اسلش.
-    جلوگیری قطعی از باگ تکرار دامین (مانند https://t.me/T.me/mianji_ir_bot).
+    استخراج تضمینی نام کاربری تمیز و بدون دامین ربات تلگرام.
+    طبق قوانین تلگرام نام کاربری فقط شامل حروف انگلیسی، اعداد و _ است (۵ تا ۳۲ کاراکتر).
+    هرگونه پیشوند https://، t.me/، T.me/، telegram.me/، @، اسلش یا نقطه را به‌طور کامل پاکسازی می‌کند
+    تا از باگ تکرار دامین (مانند https://t.me/T.me/mianji_ir_bot) به‌صورت ۱۰۰٪ جلوگیری شود.
     """
     if not raw:
-        raw = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "mianji_ir_bot"
+        raw = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "MianJi_ir_bot"
     s = str(raw).strip()
+    s = s.split('?')[0].split('#')[0].strip()
     s = re.sub(r'^https?://', '', s, flags=re.IGNORECASE)
-    while re.match(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', s, flags=re.IGNORECASE):
-        s = re.sub(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', '', s, flags=re.IGNORECASE)
-    s = s.lstrip('@/').strip()
+    
+    # حذف مکرر هرگونه آدرس t.me یا زیردامنه تلگرام
+    while re.search(r'(?:^|/)(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', s, flags=re.IGNORECASE):
+        s = re.sub(r'(?:^|/)(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/+', '/', s, flags=re.IGNORECASE)
+        
+    s = s.strip('/@. ')
     if '/' in s:
-        s = s.split('/')[-1]
-    s = s.split('?')[0].strip()
-    return s or "mianji_ir_bot"
+        s = s.split('/')[-1].strip()
+
+    s = re.sub(r'^(?:t\.me|telegram\.me|telegram\.dog)', '', s, flags=re.IGNORECASE).strip('/@. ')
+    
+    # واکشی شناسه اصلی الفبایی-عددی
+    match = re.search(r'([A-Za-z0-9_]{5,32})', s)
+    if match:
+        return match.group(1)
+        
+    return s or "MianJi_ir_bot"
 
 def get_bot_username(bot=None) -> str:
     """دریافت نام کاربری تمیز بدون @ یا t.me/ ربات تلگرام با تضمین اصالت و سازگاری"""
@@ -594,16 +609,20 @@ def get_bot_username(bot=None) -> str:
         except Exception:
             pass
     if not uname:
-        uname = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "mianji_ir_bot"
+        uname = getattr(config, 'BOT_USERNAME', '') or os.getenv("BOT_USERNAME", "") or "MianJi_ir_bot"
     return clean_bot_username(uname)
 
-def generate_quick_contract_link(bot_username: str, contract_id: str) -> str:
-    """تولید لینک اختصاصی امضای سریع قرارداد (Deep Link)"""
+def generate_quick_contract_link(bot_username: Optional[str] = None, contract_id: str = "") -> str:
+    """
+    تولید قطعی و بدون باگ لینک اختصاصی امضا و پذیرش قرارداد برای طرف دوم.
+    جلوگیری ۱۰۰٪ از تکرار t.me در لینک‌ها: https://t.me/{username}?start=c_{deal_id}
+    """
     clean_bot = clean_bot_username(bot_username)
     clean_id = normalize_deal_id(contract_id)
-    return f"https://t.me/{clean_bot}?start=c_{clean_id}"
+    param = clean_id if clean_id.startswith("c_") else f"c_{clean_id}"
+    return f"https://t.me/{clean_bot}?start={param}"
 
-def generate_ambassador_link(bot_username: str, ambassador_id: int) -> str:
+def generate_ambassador_link(bot_username: Optional[str] = None, ambassador_id: Union[int, str] = 0) -> str:
     """تولید لینک دعوت اختصاصی سفیر جهت انتشار در کانال (Deep Link ردیابی معرف)"""
     clean_bot = clean_bot_username(bot_username)
     return f"https://t.me/{clean_bot}?start=ref_{ambassador_id}"
@@ -630,8 +649,8 @@ def get_ambassador_tier(monthly_successful_deals: int) -> Dict[str, Any]:
     n = monthly_successful_deals or 0
     for threshold, key, label, bonus_pct, note in AMBASSADOR_TIERS:
         if n >= threshold:
-            return {"key": key, "label": label, "bonus_percent": bonus_pct, "settlement_note": note, "monthly_deals": n}
-    return {"key": "bronze", "label": "🥉 سفیر برنزی", "bonus_percent": 0.0, "settlement_note": "تسویه عادی (۲۴ ساعته)", "monthly_deals": n}
+            return {"key": key, "label": label, "bonus_pct": bonus_pct, "bonus_percent": bonus_pct, "settlement_note": note, "monthly_deals": n}
+    return {"key": "bronze", "label": "🥉 سفیر برنزی", "bonus_pct": 0.0, "bonus_percent": 0.0, "settlement_note": "تسویه عادی (۲۴ ساعته)", "monthly_deals": n}
 
 
 
@@ -1594,7 +1613,7 @@ def sanitize_contract_id(raw_id: str) -> str:
 def format_invitation_message(contract_id: str, bot_username: str = None) -> str:
     clean_id = normalize_deal_id(contract_id)
     clean_bot = clean_bot_username(bot_username)
-    share_link = f"https://t.me/{clean_bot}?start=c_{clean_id}"
+    share_link = generate_quick_contract_link(clean_bot, clean_id)
     return (
         f"🏛 **دعوت‌نامه رسمی قرارداد هوشمند اسکرو**\n"
         f"📋 **شناسه معامله:** `{clean_id}`\n\n"

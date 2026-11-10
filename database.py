@@ -1340,16 +1340,44 @@ def set_user_role(user_id: int, role: str) -> bool:
 
 
 def update_user_fields(user_id: int, fields: Dict[str, Any]) -> bool:
-    """بروزرسانی مستقیم و عمومی هر ترکیبی از ستون‌های جدول users (برای فیلدهای پنل سفیران و مشابه)"""
-    if not supabase or not fields:
+    """بروزرسانی مستقیم و عمومی ستون‌های جدول users با تضمین ذخیره در حافظه محلی SQLite و Supabase"""
+    if not fields:
         return False
     try:
-        supabase.table("users").update(fields).eq("id", user_id).execute()
-        _clear_user_cache(user_id)
+        user_id = int(user_id)
+        with db_lock:
+            if user_id not in _in_memory_users:
+                _in_memory_users[user_id] = {"id": user_id}
+            _in_memory_users[user_id].update(fields)
+            _save_user_to_sqlite(_in_memory_users[user_id])
+            _clear_user_cache(user_id)
+
+        if is_supabase_online and supabase:
+            try:
+                supabase.table("users").update(fields).eq("id", user_id).execute()
+            except Exception as e:
+                logger.debug(f"Notice background supabase user update: {e}")
         return True
     except Exception as e:
         logger.error(f"خطا در بروزرسانی فیلدهای کاربر {user_id} ({list(fields.keys())}): {e}")
         return False
+
+def save_user(user_dict: Dict[str, Any]) -> bool:
+    """ذخیره یا بروزرسانی جامع آبجکت کاربر در دیتابیس محلی SQLite و حافظه"""
+    if not user_dict or not user_dict.get("id"):
+        return False
+    return update_user_fields(int(user_dict["id"]), user_dict)
+
+def save_contract(contract_dict: Dict[str, Any]) -> bool:
+    """ذخیره یا بروزرسانی جامع قرارداد در حافظه و دیتابیس محلی SQLite"""
+    if not contract_dict or not contract_dict.get("contract_id"):
+        return False
+    cid = str(contract_dict["contract_id"])
+    return update_contract(cid, contract_dict)
+
+def update_contract_status(contract_id: str, new_status: str) -> bool:
+    """تغییر وضعیت رسمی قرارداد"""
+    return update_contract(contract_id, new_status)
 
 
 def set_impersonation(admin_id: int, target_user_id: Optional[int]) -> bool:
@@ -2517,6 +2545,32 @@ def get_user_transactions(user_id: int, limit: int = 10) -> List[Dict[str, Any]]
             txs = unique_txs[:limit]
 
     return txs
+
+def append_contract_deliverable(
+    contract_id: str, 
+    file_ids: List[str], 
+    description: str = "", 
+    submitted_by: Optional[int] = None
+) -> bool:
+    """ثبت فایل‌ها و اقلام تحویلی مجری برای بررسی کارفرما"""
+    c = get_contract(contract_id)
+    if not c:
+        return False
+    delivery_files = list(c.get("delivery_files") or [])
+    if isinstance(file_ids, list):
+        delivery_files.extend(file_ids)
+    elif file_ids:
+        delivery_files.append(str(file_ids))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    success = update_contract(contract_id, {
+        "delivery_files": delivery_files,
+        "delivery_notes": description,
+        "delivered_at": now_iso,
+        "status": "work_submitted"
+    })
+    if success:
+        append_contract_history(contract_id, f"📦 تحویل فایل‌ها و خروجی پروژه: {description}", actor_id=submitted_by)
+    return success
 
 
 # ====================================================

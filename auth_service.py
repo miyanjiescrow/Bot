@@ -206,3 +206,101 @@ def generate_digital_signature_hash(
 def is_authenticated(user_id: int) -> bool:
     """بررسی احراز هویت بدون نیاز به پسورد"""
     return is_user_registered(user_id)
+
+
+# ==============================================================================
+# ۵. مدیریت و اعتبارسنجی پین‌کد مالی (Financial PIN Security)
+# ==============================================================================
+
+def hash_financial_pin(pin: str) -> str:
+    """هش رمز دوم مالی با نمک اختصاصی و الگوریتم SHA-256"""
+    secret_salt = getattr(config, "SECURITY_SALT", "MiyanjiEscrowLegalSalt2026")
+    clean = str(pin).strip()
+    return hashlib.sha256(f"{clean}::{secret_salt}".encode("utf-8")).hexdigest()
+
+def has_financial_pin(user_id: int) -> bool:
+    """بررسی وجود پین مالی فعال برای کاربر"""
+    u = db.get_user(user_id)
+    return bool(u and u.get("financial_pin_hash"))
+
+def set_user_financial_pin(user_id: int, pin: str) -> Dict[str, Any]:
+    """ثبت یا تغییر پین‌کد مالی با اعتبارسنجی ارقام ناامن"""
+    u = db.get_user(user_id)
+    if not u:
+        return {"success": False, "message": "کاربر یافت نشد."}
+    
+    clean_pin = re.sub(r'\D', '', str(pin).strip())
+    if not re.fullmatch(r"^\d{4,6}$", clean_pin):
+        return {"success": False, "message": "پین مالی باید بین ۴ تا ۶ رقم عددی باشد."}
+
+    # رد ارقام کاملاً تکراری یا دنباله‌دار ناامن (مانند 1111، 1234، 9876)
+    if len(set(clean_pin)) == 1:
+        return {"success": False, "message": "استفاده از ارقام کاملاً تکراری مجاز نیست."}
+    if clean_pin in ["1234", "12345", "123456", "9876", "98765", "987654"]:
+        return {"success": False, "message": "استفاده از پین‌های قابل حدس مانند ۱۲۳۴ مجاز نیست."}
+
+    pin_hash = hash_financial_pin(clean_pin)
+    db.update_user_fields(user_id, {
+        "financial_pin_hash": pin_hash,
+        "has_financial_pin": True,
+        "pin_failed_attempts": 0,
+        "pin_locked_until": None
+    })
+    return {"success": True, "message": "پین مالی با موفقیت ثبت شد."}
+
+def verify_financial_pin(user_id: int, pin: str) -> Dict[str, Any]:
+    """بررسی پین مالی با اعمال محافظت ۳ بار تلاش ناموفق و قفل ۱۵ دقیقه‌ای"""
+    u = db.get_user(user_id)
+    if not u:
+        return {"success": False, "message": "کاربر یافت نشد."}
+
+    if not u.get("financial_pin_hash"):
+        return {"success": False, "message": "پین مالی هنوز تنظیم نشده است."}
+
+    # بررسی قفل زمانی
+    locked_until = u.get("pin_locked_until")
+    now_ts = time.time()
+    if locked_until:
+        try:
+            lock_exp = float(locked_until)
+        except (ValueError, TypeError):
+            lock_exp = 0.0
+        if now_ts < lock_exp:
+            mins_left = max(1, int((lock_exp - now_ts) / 60))
+            return {
+                "success": False, 
+                "locked": True, 
+                "remaining_attempts": 0, 
+                "message": f"⚠️ حساب مالی به دلیل تلاش‌های ناموفق تا {mins_left} دقیقه دیگر قفل است."
+            }
+        else:
+            # زمان قفل به پایان رسیده
+            db.update_user_fields(user_id, {"pin_locked_until": None, "pin_failed_attempts": 0})
+            u["pin_failed_attempts"] = 0
+
+    clean_pin = re.sub(r'\D', '', str(pin).strip())
+    input_hash = hash_financial_pin(clean_pin)
+    stored_hash = u.get("financial_pin_hash")
+
+    if hmac.compare_digest(input_hash, stored_hash):
+        # موفقیت: بازنشانی شمارنده تلاش‌های ناموفق
+        db.update_user_fields(user_id, {"pin_failed_attempts": 0, "pin_locked_until": None})
+        return {"success": True, "message": "پین مالی تایید شد."}
+    else:
+        attempts = int(u.get("pin_failed_attempts", 0)) + 1
+        max_attempts = 3
+        remaining = max(0, max_attempts - attempts)
+        updates = {"pin_failed_attempts": attempts}
+        locked = False
+        if attempts >= max_attempts:
+            # قفل ۱۵ دقیقه‌ای
+            lock_until_ts = now_ts + (15 * 60)
+            updates["pin_locked_until"] = lock_until_ts
+            locked = True
+        db.update_user_fields(user_id, updates)
+        return {
+            "success": False,
+            "locked": locked,
+            "remaining_attempts": remaining,
+            "message": f"رمز مالی اشتباه است. {remaining} فرصت باقی مانده است."
+        }

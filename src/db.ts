@@ -138,19 +138,23 @@ export function hashFinancialPin(pin: string): string {
  */
 export function cleanBotUsername(raw?: string | null): string {
   if (!raw) {
-    raw = (typeof process !== 'undefined' ? process.env?.BOT_USERNAME : '') || 'mianji_ir_bot';
+    raw = (typeof process !== 'undefined' ? process.env?.BOT_USERNAME : '') || 'MianJi_ir_bot';
   }
   let s = String(raw).trim();
+  s = s.replace(/^[?#].*$/, '').trim();
   s = s.replace(/^https?:\/\//i, '');
-  while (/^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/+/i.test(s)) {
-    s = s.replace(/^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/+/i, '');
+  while (/(?:^|\/)(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/+/i.test(s)) {
+    s = s.replace(/(?:^|\/)(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)\/+/i, '/');
   }
   s = s.replace(/^[@/]+/, '').trim();
   if (s.includes('/')) {
     s = s.split('/').pop() || s;
   }
-  s = s.split('?')[0].trim();
-  return s || 'mianji_ir_bot';
+  s = s.replace(/^(?:t\.me|telegram\.me|telegram\.dog)/i, '').trim();
+  s = s.replace(/[@/.]+/g, '').trim();
+  const match = s.match(/([A-Za-z0-9_]{5,32})/);
+  if (match) return match[1];
+  return s || 'MianJi_ir_bot';
 }
 
 export function makeTelegramLink(botUsername?: string | null, startParam?: string): string {
@@ -160,6 +164,7 @@ export function makeTelegramLink(botUsername?: string | null, startParam?: strin
     if (cleanP.startsWith('start=')) {
       cleanP = cleanP.slice(6);
     }
+    cleanP = cleanP.replace(/^(https?:\/\/)?(t\.me\/)+/i, '');
     return `https://t.me/${cleanBot}?start=${cleanP}`;
   }
   return `https://t.me/${cleanBot}`;

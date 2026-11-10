@@ -52,3 +52,16 @@ def normalize_phone_number(raw_phone: str) -> Optional[str]:
         return numeric_only
         
     return None
+
+def is_valid_iranian_phone(phone: str) -> bool:
+    """بررسی اعتبارسنجی شماره همراه ایرانی"""
+    return normalize_phone_number(phone) is not None
+
+def format_iranian_phone(phone: str, prefix_zero: bool = True) -> Optional[str]:
+    """فرمت‌دهی شماره موبایل ایرانی (پیش‌فرض با 09...)"""
+    norm = normalize_phone_number(phone)
+    if not norm:
+        return None
+    if prefix_zero:
+        return "0" + norm[2:]
+    return norm

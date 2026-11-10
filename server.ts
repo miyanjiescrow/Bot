@@ -1976,6 +1976,31 @@ app.get('/api/contracts/:id', (req: Request, res: Response) => {
   res.json(c);
 });
 
+// Get Contract Status Logs / History
+app.get('/api/contracts/:id/history', (req: Request, res: Response) => {
+  const c = getContract(req.params.id);
+  if (!c) {
+    return res.status(404).json({ error: 'قرارداد یا پیش‌نویس مورد نظر یافت نشد.' });
+  }
+  let history = Array.isArray(c.history) ? [...c.history] : [];
+  if (history.length === 0) {
+    history = [
+      {
+        event: `ثبت اولیه قرارداد در سامانه میانجی (وضعیت: ${c.status})`,
+        timestamp: c.created_at || new Date().toISOString(),
+        actor: c.buyer_fullname || 'کارفرما'
+      }
+    ];
+  }
+  res.json({
+    contract_id: c.contract_id,
+    title: c.title,
+    current_status: c.status,
+    total_logs: history.length,
+    history
+  });
+});
+
 // Create New Escrow Contract or Draft
 app.post('/api/contracts', async (req: Request, res: Response) => {
   try {
