@@ -6,6 +6,7 @@
 """
 
 import logging
+from typing import Optional, Dict, Any, List
 from telebot import TeleBot
 from telebot.types import (
     Message, 
@@ -35,9 +36,9 @@ def get_contact_share_keyboard() -> ReplyKeyboardMarkup:
     return markup
 
 
-def show_welcome_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = None):
+def show_welcome_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = None, user_id: Optional[int] = None):
     """
-    نمایش پیام رسمی خوش‌آمدگویی و درخواست تایید شماره تماس با تک‌دکمه
+    نمایش پیام رسمی خوش‌آمدگویی و درخواست تایید شماره تماس به همراه میانبر وب‌اپلیکیشن
     """
     if pending_contract_id:
         clean_cid = utils.normalize_deal_id(pending_contract_id)
@@ -59,11 +60,21 @@ def show_welcome_landing(bot: TeleBot, chat_id: int, pending_contract_id: str = 
         reply_markup=get_contact_share_keyboard(),
         parse_mode="Markdown"
     )
+    if user_id:
+        try:
+            bot.send_message(
+                chat_id,
+                "🌐 **همچنین می‌توانید مستقیماً وارد پنل تحت وب شوید:**",
+                reply_markup=kb.get_smart_panel_inline(user_id=user_id),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
 
 def show_main_dashboard(bot: TeleBot, chat_id: int, user_id: int):
     """
-    نمایش منوی اصلی ربات برای کاربران احراز هویت شده
+    نمایش منوی اصلی ربات برای کاربران احراز هویت شده به همراه دکمه ورود به وب‌اپلیکیشن هوشمند
     """
     user = db.get_user(user_id) or {}
     full_name = user.get("full_name") or f"کاربر {user_id}"
@@ -73,12 +84,24 @@ def show_main_dashboard(bot: TeleBot, chat_id: int, user_id: int):
     text = (
         f"🏠 **پنل کاربری میانجی | خوش آمدید {utils.escape_markdown(full_name)}**\n\n"
         f"📱 شماره تماس فعال: `{masked_phone}`\n"
-        f"🆔 شناسه یکتای تلگرام: `{user_id}`\n\n"
-        "از منوی زیر می‌توانید نسبت به ثبت معامله جدید، مدیریت قراردادها یا کیف پول اقدام فرمایید:"
+        f"🆔 شناسه یکتای تلگرام (User ID): `{user_id}`\n\n"
+        "🌐 **پنل هوشمند واسطه‌گری میانجی:**\n"
+        "جهت دسترسی به داشبورد کامل، نمودارها و مدیریت پیشرفته معاملات، دکمه «ورود به پنل هوشمند» را لمس کنید:"
     )
     is_admin = (user_id == getattr(config, 'OWNER_ID', None) or user_id in getattr(config, 'ADMIN_IDS', []))
-    markup = kb.get_main_menu(is_admin=is_admin, is_verified=True)
-    bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+    reply_markup = kb.get_main_menu(is_admin=is_admin, is_verified=True, user_id=user_id)
+    inline_markup = kb.get_smart_panel_inline(user_id=user_id)
+    
+    bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="Markdown")
+    try:
+        bot.send_message(
+            chat_id,
+            "🚀 **ورود به پنل هوشمند واسطه‌گری میانجی (Web App):**",
+            reply_markup=inline_markup,
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
 
 
 def show_user_profile(bot: TeleBot, chat_id: int, user_id: int):
@@ -120,11 +143,16 @@ def show_user_profile(bot: TeleBot, chat_id: int, user_id: int):
     )
 
     markup = InlineKeyboardMarkup(row_width=1)
-    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://miyanji.ir"
+    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app"
+    sep = "&" if "?" in web_app_url else "?"
+    target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
     
+    try:
+        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", web_app=kb.WebAppInfo(url=target_url)))
+    except Exception:
+        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", url=target_url))
     markup.add(
         InlineKeyboardButton("✏️ ویرایش مشخصات (نام و کد ملی)", callback_data="profile_edit_info"),
-        InlineKeyboardButton("🌐 ورود به Web App (نسخه وب)", url=web_app_url),
         InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="profile_back")
     )
 
@@ -269,7 +297,7 @@ def register_auth_handlers(bot: TeleBot):
                 # کاربر جدید یا بدون شماره تلفن -> نمایش پیام دقیق خوش‌آمدگویی و درخواست شماره با حفظ قرارداد معلق
                 st_data = {"pending_contract_id": pending_contract_id} if pending_contract_id else {}
                 db.set_user_state(user_id, "WAITING_CONTACT_SHARE", st_data)
-                show_welcome_landing(bot, message.chat.id, pending_contract_id)
+                show_welcome_landing(bot, message.chat.id, pending_contract_id, user_id=user_id)
 
         except Exception as e:
             logger.error(f"Error in start_handler: {e}", exc_info=True)

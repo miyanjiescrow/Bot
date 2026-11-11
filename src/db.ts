@@ -707,7 +707,8 @@ export function getUsers(): UserProfile[] {
 }
 
 export function getUser(userId: number): UserProfile | undefined {
-  return users.find(u => u.id === Number(userId));
+  const numId = Number(userId);
+  return users.find(u => u.id === numId || u.telegram_id === numId);
 }
 
 export function getCurrentUser(): UserProfile {
@@ -1131,6 +1132,7 @@ export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id
     try {
       await supabase.from('users').upsert({
         id: user.id,
+        telegram_id: user.id,
         full_name: user.full_name,
         phone_number: user.phone_number,
         role: user.role,

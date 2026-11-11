@@ -4,12 +4,49 @@ from typing import Optional, Union, Dict, Any, List
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from config import config
 
-def get_main_menu(is_admin: bool = False, is_verified: bool = False) -> ReplyKeyboardMarkup:
+try:
+    from telebot.types import WebAppInfo
+except (ImportError, AttributeError):
+    class WebAppInfo:
+        def __init__(self, url=None, **kwargs):
+            self.url = url
+
+def get_smart_panel_inline(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    """کیبورد شیشه‌ای جهت باز کردن مینی‌اپ وب و پنل هوشمند واسطه‌گری"""
+    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app")
+    if user_id:
+        sep = "&" if "?" in web_app_url else "?"
+        target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
+    else:
+        target_url = web_app_url
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    try:
+        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", web_app=WebAppInfo(url=target_url)))
+    except Exception:
+        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", url=target_url))
+    return markup
+
+def get_main_menu(is_admin: bool = False, is_verified: bool = False, user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
     """
-    منوی اصلی ربات با طراحی بهینه‌سازی‌شده و حذف بخش‌های غیرضروری.
+    منوی اصلی ربات شامل دکمه وب‌اپلیکیشن مینی‌اپ و میانبرهای اسکرو.
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
+    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app")
+    if user_id:
+        sep = "&" if "?" in web_app_url else "?"
+        target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
+    else:
+        target_url = web_app_url
+
+    # ردیف ویژه بالا: دکمه وب‌اپلیکیشن ورود به پنل هوشمند
+    try:
+        web_app_btn = KeyboardButton("🌐 ورود به پنل هوشمند", web_app=WebAppInfo(url=target_url))
+    except Exception:
+        web_app_btn = KeyboardButton("🌐 ورود به پنل هوشمند")
+    markup.row(web_app_btn)
+
     # ردیف ۱: معاملات
     markup.row(
         KeyboardButton("🤝 ثبت معامله جدید"),

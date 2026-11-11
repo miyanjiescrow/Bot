@@ -29,6 +29,10 @@ if 'telebot' not in sys.modules:
         def add(self, *args, **kwargs):
             return self
 
+    class WebAppInfo(DummyObj):
+        def __init__(self, url=None, **kwargs):
+            super().__init__(url=url, **kwargs)
+
     class InlineKeyboardMarkup(DummyObj):
         def __init__(self, row_width=1, **kwargs):
             super().__init__(row_width=row_width, **kwargs)
@@ -36,10 +40,13 @@ if 'telebot' not in sys.modules:
         def add(self, *buttons):
             self.keyboard.append(list(buttons))
             return self
+        def row(self, *buttons):
+            self.keyboard.append(list(buttons))
+            return self
 
     class InlineKeyboardButton(DummyObj):
-        def __init__(self, text, callback_data=None, url=None, **kwargs):
-            super().__init__(text=text, callback_data=callback_data, url=url, **kwargs)
+        def __init__(self, text, callback_data=None, url=None, web_app=None, **kwargs):
+            super().__init__(text=text, callback_data=callback_data, url=url, web_app=web_app, **kwargs)
 
     class ReplyKeyboardMarkup(DummyObj):
         def __init__(self, resize_keyboard=True, one_time_keyboard=False, **kwargs):
@@ -48,10 +55,13 @@ if 'telebot' not in sys.modules:
         def add(self, *buttons):
             self.keyboard.append(list(buttons))
             return self
+        def row(self, *buttons):
+            self.keyboard.append(list(buttons))
+            return self
 
     class KeyboardButton(DummyObj):
-        def __init__(self, text, request_contact=False, **kwargs):
-            super().__init__(text=text, request_contact=request_contact, **kwargs)
+        def __init__(self, text, request_contact=False, web_app=None, **kwargs):
+            super().__init__(text=text, request_contact=request_contact, web_app=web_app, **kwargs)
 
     class Contact(DummyObj):
         def __init__(self, phone_number, first_name="", user_id=None, **kwargs):
@@ -237,6 +247,7 @@ if 'telebot' not in sys.modules:
     tb_types.InlineKeyboardButton = InlineKeyboardButton
     tb_types.ReplyKeyboardMarkup = ReplyKeyboardMarkup
     tb_types.KeyboardButton = KeyboardButton
+    tb_types.WebAppInfo = WebAppInfo
     tb_types.ReplyKeyboardRemove = DummyObj
     tb_types.Contact = Contact
     tb_types.Chat = Chat

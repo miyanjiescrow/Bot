@@ -2125,6 +2125,7 @@ def ensure_user_exists(user_id: int) -> bool:
         fallback_phone = f"98900{abs(user_id) % 100000000:08d}"
         supabase.table("users").upsert({
             "id": user_id,
+            "telegram_id": user_id,
             "phone_number": fallback_phone,
             "full_name": "کاربر میانجی",
             "role": "user"
@@ -3440,7 +3441,7 @@ def ensure_user_exists_basic(user_id: int, username: str = ""):
     """اطمینان از وجود کاربر برای جلوگیری از خطای Foreign Key"""
     if not supabase: return
     try:
-        supabase.table("users").upsert({"id": user_id, "username": username}, on_conflict="id").execute()
+        supabase.table("users").upsert({"id": user_id, "telegram_id": user_id, "username": username}, on_conflict="id").execute()
     except Exception as e:
         logger.error(f"Error ensuring user {user_id}: {e}")
 
@@ -3475,6 +3476,7 @@ def register_or_update_user_by_phone(phone_number: str, full_name: str, telegram
                 uid = telegram_id if telegram_id else int(str(abs(hash(norm_phone)))[:10])
                 new_user = {
                     "id": uid,
+                    "telegram_id": uid,
                     "phone_number": norm_phone,
                     "full_name": full_name or "کاربر میانجی",
                     "username": username or "",

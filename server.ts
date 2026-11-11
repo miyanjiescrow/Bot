@@ -63,7 +63,7 @@ import {
   syncFromSupabase,
 } from './src/db';
 
-import { isSupabaseConfigured } from './src/lib/supabase';
+import { supabase, isSupabaseConfigured } from './src/lib/supabase';
 import { startBot, isValidTelegramToken } from './src/bot';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1721,23 +1721,51 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   });
 });
 
-// Telegram WebApp Authentication
-app.post('/api/auth/telegram', async (req: Request, res: Response) => {
-  const { tg_user_id, tg_username, tg_fullname } = req.body;
+// Telegram WebApp Authentication (POST & GET with Supabase Fallback)
+const handleTelegramAuth = async (req: Request, res: Response) => {
+  const tg_user_id = req.body?.tg_user_id || req.query?.tg_user_id || req.query?.user_id || req.query?.tg_id;
+  const tg_username = req.body?.tg_username || req.query?.tg_username || req.query?.username;
+  const tg_fullname = req.body?.tg_fullname || req.query?.tg_fullname || req.query?.fullname;
+  
   const tid = Number(tg_user_id) || 1802649782;
 
   let user = getUser(tid);
+  if (!user && isSupabaseConfigured() && supabase) {
+    try {
+      const { data, error } = await supabase.from('users').select('*').or(`id.eq.${tid},telegram_id.eq.${tid}`).limit(1);
+      if (!error && data && data.length > 0) {
+        const u = data[0];
+        user = await registerOrUpdateUser({
+          id: Number(u.id),
+          telegram_id: Number(u.telegram_id || u.id),
+          full_name: u.full_name || (tg_fullname || `کاربر ${tid}`),
+          phone_number: u.phone_number || '',
+          role: u.role || 'employer',
+          wallet_balance: Number(u.wallet_balance) || 0,
+          escrow_locked_balance: Number(u.escrow_locked_balance) || 0,
+          kyc_level: u.kyc_level || 'silver',
+          kyc_status: u.kyc_status || 'verified',
+          national_id: u.national_id || '',
+          sheba: u.sheba || '',
+          referral_code: u.referral_code || `REF-${tid}`
+        });
+      }
+    } catch (err: any) {
+      console.warn('Supabase fetch in handleTelegramAuth:', err.message);
+    }
+  }
+
   if (!user) {
     user = await registerOrUpdateUser({
       id: tid,
       telegram_id: tid,
-      full_name: tg_fullname || (tg_username ? `@${tg_username}` : 'کاربر تلگرام'),
+      full_name: tg_fullname || (tg_username ? `@${tg_username}` : `کاربر ${tid}`),
       phone_number: '09120000000',
       role: 'employer',
-      wallet_balance: 10000000,
+      wallet_balance: 0,
       escrow_locked_balance: 0,
-      kyc_level: 'silver',
-      kyc_status: 'verified'
+      kyc_level: 'basic',
+      kyc_status: 'unverified'
     });
   }
 
@@ -1747,7 +1775,10 @@ app.post('/api/auth/telegram', async (req: Request, res: Response) => {
     authenticated_via: 'Telegram WebApp',
     user
   });
-});
+};
+
+app.post('/api/auth/telegram', handleTelegramAuth);
+app.get('/api/auth/telegram', handleTelegramAuth);
 
 // ====================================================
 // ۴. مسیرهای کیف پول و تراکنش‌ها (Wallet API)

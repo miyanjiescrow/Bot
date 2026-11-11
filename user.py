@@ -292,7 +292,7 @@ def _get_main_menu_for_user(user_id: int, is_admin: bool = False):
     admin_flag = is_admin or is_admin_user(user_id)
     user_info = db.get_user(user_id)
     is_verified = user_info.get("is_verified", False) if user_info else False
-    return kb.get_main_menu(admin_flag, is_verified)
+    return kb.get_main_menu(admin_flag, is_verified, user_id=user_id)
 
 
 def _get_contract_category_logic(status: str) -> str:
@@ -498,6 +498,23 @@ def register_user_handlers(bot: TeleBot):
             reply_markup=_get_main_menu_for_user(user_id, is_admin)
         )
 
+    @bot.message_handler(func=lambda msg: msg.text in [
+        "🌐 ورود به پنل هوشمند", "ورود به پنل هوشمند", "پنل هوشمند",
+        "🌐 پنل هوشمند", "وب اپلیکیشن", "مینی اپ", "/webapp", "/panel"
+    ])
+    def show_smart_panel_handler(message: Message):
+        user_id = message.from_user.id if message.from_user else message.chat.id
+        db.clear_user_state(user_id)
+        markup = kb.get_smart_panel_inline(user_id=user_id)
+        bot.send_message(
+            message.chat.id,
+            "🌐 **ورود به پنل هوشمند واسطه‌گری میانجی (Web App)**\n\n"
+            f"👤 شناسه کاربری تلگرام شما: `{user_id}`\n\n"
+            "جهت ورود خودکار به وب‌اپلیکیشن، مشاهده و مدیریت قراردادها، تراکنش‌ها و کیف پول امن اسکرو، روی دکمه زیر کلیک نمایید:",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+
     def _send_unified_payment_instructions(bot: TeleBot, chat_id: int, user_id: int, amount: float, payment_type: str, related_id: str, milestone_idx: int = None):
         """
         [HELPER] نمایش شماره کارت و دستورالعمل پرداخت با طراحی واکنش‌گرا و رفع قطعی فریز شدن ربات
@@ -690,6 +707,9 @@ def register_user_handlers(bot: TeleBot):
 
         # ۲. بررسی کلیک روی دکمه‌های منوی اصلی (جلوگیری قطعی از فریز شدن در صورت تغییر نظر کاربر)
         main_menu_triggers = {
+            "🌐 ورود به پنل هوشمند": lambda m: show_smart_panel_handler(m),
+            "ورود به پنل هوشمند": lambda m: show_smart_panel_handler(m),
+            "پنل هوشمند": lambda m: show_smart_panel_handler(m),
             "💳 کیف پول و اعتبار": lambda m: show_wallet(m),
             "کیف پول و اعتبار 💳": lambda m: show_wallet(m),
             "🤝 ثبت معامله جدید": lambda m: start_new_contract(m),

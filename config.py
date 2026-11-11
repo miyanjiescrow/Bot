@@ -85,8 +85,10 @@ class Config:
     
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "miyanji-docs").strip()
     
-    # آدرس اصلی اپلیکیشن برای لینک‌های خارجی
-    APP_URL = os.getenv("APP_URL", "https://ais-dev-mbuzgdihdia3eyzieisxcm-497526016591.europe-west3.run.app").strip()
+    # آدرس اصلی وب‌اپلیکیشن واسطه‌گری میانجی (Shared App) جهت اتصال مستقیم مینی‌اپ تلگرام
+    SHARED_APP_URL = "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app"
+    APP_URL = os.getenv("APP_URL", SHARED_APP_URL).strip()
+    WEB_APP_URL = os.getenv("WEB_APP_URL", SHARED_APP_URL).strip()
 
     # ----------------------------------------------------
     # تنظیمات سرور (Render/Heroku require dynamic port)

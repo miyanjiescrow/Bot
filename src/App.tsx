@@ -359,6 +359,43 @@ const App = () => {
     }
   };
 
+  // Telegram WebApp Auto-Authentication & Sync
+  useEffect(() => {
+    try {
+      const tg = (window as any).Telegram?.WebApp;
+      if (tg) {
+        tg.ready?.();
+        tg.expand?.();
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const urlUserId = params.get('user_id') || params.get('tg_id');
+      const tgUser = tg?.initDataUnsafe?.user;
+
+      const targetUserId = tgUser?.id || (urlUserId ? Number(urlUserId) : null);
+      if (targetUserId) {
+        fetch('/api/auth/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tg_user_id: targetUserId,
+            tg_username: tgUser?.username || params.get('username') || '',
+            tg_fullname: tgUser ? `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim() : (params.get('fullname') || '')
+          })
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (data?.user) {
+              fetchBotData();
+            }
+          })
+          .catch(err => console.warn('Telegram WebApp auto-auth note:', err));
+      }
+    } catch (e) {
+      console.warn('Telegram init note:', e);
+    }
+  }, []);
+
   useEffect(() => {
     fetchBotData();
     const interval = setInterval(fetchBotData, 6000);
