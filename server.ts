@@ -54,6 +54,10 @@ import {
   bindAndVerifySheba,
   sendPhoneOtp,
   verifyPhoneOtp,
+  createAndStorePhoneOtp,
+  verifyPhoneOtpAsync,
+  getUserAsync,
+  getUserByPhoneAsync,
   getSecurityAuditLogs,
   normalizeIranianPhone,
   getPendingKycUsers,
@@ -61,10 +65,19 @@ import {
   cleanBotUsername,
   makeTelegramLink,
   syncFromSupabase,
+  syncFromFirestore,
 } from './src/db';
 
 import { supabase, isSupabaseConfigured } from './src/lib/supabase';
-import { startBot, isValidTelegramToken } from './src/bot';
+import {
+  isFirebaseConfigured,
+  FIREBASE_PROJECT_ID,
+  FIREBASE_DATABASE_ID,
+  getFirebaseInitError,
+  verifyTelegramInitData,
+  createFirebaseCustomToken,
+} from './src/lib/firebaseAdmin';
+import { startBot, isValidTelegramToken, sendTelegramOtpToUser } from './src/bot';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -193,6 +206,10 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
     },
     supabase_configured: isSupabaseConfigured(),
     supabase_url: process.env.SUPABASE_URL ? 'متصل (Supabase Cloud)' : 'پایگاه داده محلی WAL و حافظه پایدار',
+    firebase_configured: isFirebaseConfigured(),
+    firebase_project_id: FIREBASE_PROJECT_ID,
+    firebase_database_id: FIREBASE_DATABASE_ID,
+    firebase_error: getFirebaseInitError(),
     pid: botPid,
     stats,
     active_modules: [
@@ -208,14 +225,17 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
   });
 });
 
-// Manual/Automatic Supabase DB Sync endpoint
+// Manual/Automatic Firestore & Supabase DB Sync endpoint
 app.post('/api/db/sync', async (req: Request, res: Response) => {
   try {
-    const stats = await syncFromSupabase();
+    const [sbStats, fbStats] = await Promise.all([
+      syncFromSupabase(),
+      syncFromFirestore(),
+    ]);
     res.json({
       success: true,
-      message: `همگام‌سازی موفق با Supabase: ${stats.usersCount} کاربر، ${stats.contractsCount} قرارداد و ${stats.txsCount} تراکنش بازیابی شدند.`,
-      stats
+      message: `همگام‌سازی موفق انجام شد. فایربیس: ${fbStats.usersCount} کاربر و ${fbStats.dealsCount} معامله | سوپابیس: ${sbStats.usersCount} کاربر و ${sbStats.contractsCount} قرارداد.`,
+      stats: { ...sbStats, firestore: fbStats }
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1721,15 +1741,59 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   });
 });
 
-// Telegram WebApp Authentication (POST & GET with Supabase Fallback)
+// Telegram WebApp Authentication (initData HMAC verification + Firebase Custom Token)
 const handleTelegramAuth = async (req: Request, res: Response) => {
-  const tg_user_id = req.body?.tg_user_id || req.query?.tg_user_id || req.query?.user_id || req.query?.tg_id;
-  const tg_username = req.body?.tg_username || req.query?.tg_username || req.query?.username;
-  const tg_fullname = req.body?.tg_fullname || req.query?.tg_fullname || req.query?.fullname;
-  
+  const rawInitData =
+    (req.body?.initData as string) ||
+    (req.query?.initData as string) ||
+    (req.headers['x-telegram-init-data'] as string) ||
+    '';
+
+  let tg_user_id = req.body?.tg_user_id || req.query?.tg_user_id || req.query?.user_id || req.query?.tg_id;
+  let tg_username = req.body?.tg_username || req.query?.tg_username || req.query?.username;
+  let tg_fullname = req.body?.tg_fullname || req.query?.tg_fullname || req.query?.fullname;
+  let initDataVerified = false;
+
+  if (rawInitData) {
+    const token = (process.env.BOT_TOKEN || '').trim();
+    if (isValidTelegramToken(token)) {
+      const check = verifyTelegramInitData(rawInitData, token);
+      if (!check.valid || !check.user?.id) {
+        return res.status(401).json({
+          success: false,
+          error: check.error || 'امضای initData تلگرام نامعتبر است.',
+        });
+      }
+      initDataVerified = true;
+      tg_user_id = check.user.id;
+      tg_username = check.user.username || tg_username;
+      tg_fullname =
+        [check.user.first_name, check.user.last_name].filter(Boolean).join(' ').trim() ||
+        tg_fullname;
+    } else {
+      // Fallback parse when BOT_TOKEN is not set locally
+      try {
+        const params = new URLSearchParams(rawInitData);
+        const uStr = params.get('user');
+        if (uStr) {
+          const parsedU = JSON.parse(uStr);
+          if (parsedU?.id) {
+            tg_user_id = parsedU.id;
+            tg_username = parsedU.username || tg_username;
+            tg_fullname =
+              [parsedU.first_name, parsedU.last_name].filter(Boolean).join(' ').trim() ||
+              tg_fullname;
+          }
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+  }
+
   const tid = Number(tg_user_id) || 1802649782;
 
-  let user = getUser(tid);
+  let user = await getUserAsync(tid);
   if (!user && isSupabaseConfigured() && supabase) {
     try {
       const { data, error } = await supabase.from('users').select('*').or(`id.eq.${tid},telegram_id.eq.${tid}`).limit(1);
@@ -1759,26 +1823,144 @@ const handleTelegramAuth = async (req: Request, res: Response) => {
     user = await registerOrUpdateUser({
       id: tid,
       telegram_id: tid,
+      username: tg_username ? String(tg_username) : '',
       full_name: tg_fullname || (tg_username ? `@${tg_username}` : `کاربر ${tid}`),
-      phone_number: '09120000000',
+      phone_number: '',
       role: 'employer',
       wallet_balance: 0,
       escrow_locked_balance: 0,
       kyc_level: 'basic',
-      kyc_status: 'unverified'
+      kyc_status: 'pending'
     });
   }
+
+  const customToken = await createFirebaseCustomToken(String(user.id), {
+    telegram_id: Number(user.telegram_id || user.id),
+    phone_number: user.phone_number || '',
+    via: 'telegram_mini_app',
+  });
 
   setCurrentUserId(user.id);
   res.json({
     success: true,
     authenticated_via: 'Telegram WebApp',
+    init_data_verified: initDataVerified,
+    custom_token: customToken,
     user
   });
 };
 
 app.post('/api/auth/telegram', handleTelegramAuth);
 app.get('/api/auth/telegram', handleTelegramAuth);
+
+// ====================================================
+// ۳.۵ ارسال و تایید کد ۶ رقمی ورود سایت از طریق ربات تلگرام (Telegram OTP)
+// ====================================================
+
+function isOtpSecretAuthorized(req: Request): boolean {
+  const configuredSecret = (process.env.OTP_API_SECRET || '').trim();
+  if (!configuredSecret) return true;
+
+  const headerSecret = (req.headers['x-otp-secret'] as string) || '';
+  const authHeader = (req.headers.authorization as string) || '';
+  const bearerSecret = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : '';
+  const bodySecret = typeof req.body?.api_secret === 'string' ? req.body.api_secret : '';
+
+  return (
+    headerSecret === configuredSecret ||
+    bearerSecret === configuredSecret ||
+    bodySecret === configuredSecret
+  );
+}
+
+// Website requests 6-digit OTP -> Bot looks up user in Firestore `users` by phone & sends OTP to Telegram chat
+app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
+  if (!isOtpSecretAuthorized(req)) {
+    return res.status(401).json({
+      success: false,
+      error: 'کلید امنیتی OTP_API_SECRET نامعتبر یا ارسال نشده است.',
+    });
+  }
+
+  const rawPhone = String(req.body?.phone_number || req.body?.phone || '').trim();
+  const normalizedPhone = normalizeIranianPhone(rawPhone);
+  if (!normalizedPhone || normalizedPhone.length < 10) {
+    return res.status(400).json({
+      success: false,
+      error: 'شماره موبایل وارد شده معتبر نیست.',
+    });
+  }
+
+  const user = await getUserByPhoneAsync(normalizedPhone);
+  if (!user || !(user.telegram_id || user.id)) {
+    return res.status(404).json({
+      success: false,
+      error:
+        'شماره موبایل شما هنوز در ربات تلگرام میانجی ثبت نشده است. لطفاً ابتدا در ربات دستور /start را زده و دکمه «ارسال شماره تماس» را لمس کنید.',
+    });
+  }
+
+  const targetTelegramId = Number(user.telegram_id || user.id);
+  const otpRecord = await createAndStorePhoneOtp(normalizedPhone, 'web_login', targetTelegramId);
+  const delivery = await sendTelegramOtpToUser(targetTelegramId, otpRecord.debugCode, normalizedPhone);
+
+  return res.json({
+    success: true,
+    message: delivery.sent
+      ? 'کد تایید ۶ رقمی به چت تلگرام شما ارسال شد.'
+      : 'کد تایید ۶ رقمی ایجاد شد (ربات تلگرام در محیط لوکال غیرفعال است).',
+    delivered_via: delivery.sent ? 'telegram' : 'pending_bot_token',
+    telegram_id: targetTelegramId,
+    expires_in: otpRecord.expiresIn,
+    ...(process.env.NODE_ENV !== 'production' ? { debug_code: otpRecord.debugCode } : {}),
+  });
+});
+
+// Verify 6-digit OTP and issue Firebase Custom Token for website login
+app.post('/api/auth/verify-otp', async (req: Request, res: Response) => {
+  const rawPhone = String(req.body?.phone_number || req.body?.phone || '').trim();
+  const rawCode = String(req.body?.code || req.body?.otp || '').trim();
+
+  const normalizedPhone = normalizeIranianPhone(rawPhone);
+  if (!normalizedPhone || !rawCode) {
+    return res.status(400).json({
+      success: false,
+      error: 'شماره موبایل و کد ۶ رقمی الزامی هستند.',
+    });
+  }
+
+  const result = await verifyPhoneOtpAsync(normalizedPhone, rawCode);
+  if (!result.valid) {
+    return res.status(400).json({
+      success: false,
+      error: result.message,
+    });
+  }
+
+  const user = await getUserByPhoneAsync(normalizedPhone);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      error: 'حساب کاربری یافت نشد.',
+    });
+  }
+
+  const customToken = await createFirebaseCustomToken(String(user.id), {
+    telegram_id: Number(user.telegram_id || user.id),
+    phone_number: user.phone_number,
+    via: 'telegram_otp',
+  });
+
+  setCurrentUserId(user.id);
+  return res.json({
+    success: true,
+    message: 'ورود با کد تایید تلگرامی موفقیت‌آمیز بود.',
+    custom_token: customToken,
+    user,
+  });
+});
 
 // ====================================================
 // ۴. مسیرهای کیف پول و تراکنش‌ها (Wallet API)
@@ -1996,6 +2178,44 @@ app.get('/api/contracts', (req: Request, res: Response) => {
     userId: userId ? Number(userId) : undefined
   });
   res.json(list);
+});
+
+// Unified `deals` alias routes synchronized with Firestore `deals` collection
+app.get('/api/deals', (req: Request, res: Response) => {
+  const { status, userId } = req.query;
+  const list = getContracts({
+    status: status as string,
+    userId: userId ? Number(userId) : undefined,
+  });
+  res.json(
+    list.map((c) => ({
+      id: c.contract_id,
+      contract_id: c.contract_id,
+      title: c.title,
+      buyer_id: c.buyer_id ?? null,
+      seller_id: c.seller_id ?? null,
+      amount: c.amount,
+      status: c.status,
+      created_at: c.created_at,
+    }))
+  );
+});
+
+app.post('/api/deals', async (req: Request, res: Response) => {
+  try {
+    const newContract = await createContract(req.body || {});
+    res.status(201).json({
+      id: newContract.contract_id,
+      contract_id: newContract.contract_id,
+      buyer_id: newContract.buyer_id ?? null,
+      seller_id: newContract.seller_id ?? null,
+      amount: newContract.amount,
+      status: newContract.status,
+      contract: newContract,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Get Single Contract by ID

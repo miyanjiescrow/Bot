@@ -6,6 +6,19 @@
 
 import crypto from 'crypto';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
+import {
+  isFirebaseConfigured,
+  upsertFirestoreUser,
+  getFirestoreUserById,
+  getFirestoreUserByPhone,
+  upsertFirestoreDeal,
+  deleteFirestoreDeal,
+  saveFirestoreOtp,
+  getFirestoreOtp,
+  deleteFirestoreOtp,
+  fetchAllFirestoreUsers,
+  fetchAllFirestoreDeals,
+} from './lib/firebaseAdmin';
 import { 
   UserProfile, 
   Contract, 
@@ -784,6 +797,56 @@ export function getUserByPhone(phoneNumber: string): UserProfile | undefined {
   return users.find(u => normalizeIranianPhone(u.phone_number) === norm);
 }
 
+function mapFirestoreRecordToUser(fUser: Record<string, any>): UserProfile {
+  const uid = Number(fUser.id || fUser.telegram_id);
+  return {
+    id: uid,
+    telegram_id: Number(fUser.telegram_id || uid),
+    username: fUser.username || '',
+    full_name: fUser.full_name || `کاربر ${uid}`,
+    phone_number: fUser.phone_number ? normalizeIranianPhone(String(fUser.phone_number)) : '',
+    role: (fUser.role as any) || 'employer',
+    wallet_balance: Number(fUser.wallet_balance || 0),
+    escrow_locked_balance: Number(fUser.escrow_locked_balance || 0),
+    kyc_level: (fUser.kyc_level as any) || (fUser.kyc_status === 'verified' ? 'gold' : 'basic'),
+    kyc_status: (fUser.kyc_status as any) || 'pending',
+    national_id: fUser.national_id || '',
+    sheba: fUser.sheba || '',
+    referral_code: fUser.referral_code || `REF-${uid}`,
+    is_verified: fUser.kyc_status === 'verified' || Boolean(fUser.is_verified),
+    created_at: fUser.created_at || new Date().toISOString(),
+  };
+}
+
+export async function getUserAsync(userId: number): Promise<UserProfile | undefined> {
+  const local = getUser(userId);
+  if (local) return local;
+  if (!isFirebaseConfigured()) return undefined;
+  const fUser = await getFirestoreUserById(Number(userId));
+  if (!fUser) return undefined;
+  const mapped = mapFirestoreRecordToUser(fUser);
+  users.push(mapped);
+  return mapped;
+}
+
+export async function getUserByPhoneAsync(phoneNumber: string): Promise<UserProfile | undefined> {
+  const norm = normalizeIranianPhone(phoneNumber);
+  if (!norm) return undefined;
+  const local = getUserByPhone(norm);
+  if (local) return local;
+  if (!isFirebaseConfigured()) return undefined;
+  const fUser = await getFirestoreUserByPhone(norm);
+  if (!fUser) return undefined;
+  const mapped = mapFirestoreRecordToUser(fUser);
+  const existingIdx = users.findIndex(u => u.id === mapped.id);
+  if (existingIdx !== -1) {
+    users[existingIdx] = { ...users[existingIdx], ...mapped };
+    return users[existingIdx];
+  }
+  users.push(mapped);
+  return mapped;
+}
+
 export function getOrCreateUserByPhone(
   phoneNumber: string,
   telegramId?: number,
@@ -1030,6 +1093,51 @@ export function sendPhoneOtp(
   };
 }
 
+export async function createAndStorePhoneOtp(
+  phone: string,
+  purpose: string = 'web_login',
+  telegramId?: number
+): Promise<{ success: boolean; message: string; debugCode: string; expiresIn: number }> {
+  const norm = normalizeIranianPhone(phone);
+  if (!norm) return { success: false, message: 'شماره تلفن همراه نامعتبر است.', debugCode: '', expiresIn: 0 };
+
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresIn = 300;
+  const expiresAt = Date.now() + expiresIn * 1000;
+  _phoneOtpStore.set(norm, {
+    code,
+    expires_at: expiresAt,
+    attempts: 0,
+    purpose
+  });
+
+  if (isFirebaseConfigured()) {
+    await saveFirestoreOtp(norm, {
+      code,
+      expires_at: expiresAt,
+      attempts: 0,
+      purpose,
+      telegram_id: telegramId
+    });
+  }
+
+  addSecurityAuditLog({
+    phone_number: norm,
+    user_id: telegramId || getUserByPhone(norm)?.id || 0,
+    event: `ارسال کد ۶ رقمی ورود از طریق ربات تلگرام`,
+    category: 'otp_sent',
+    status: 'success',
+    details: `کد تایید ۶ رقمی به تلگرام متصل به شماره ${norm.slice(0, 4)}***${norm.slice(-4)} ارسال شد.`
+  });
+
+  return {
+    success: true,
+    message: `کد تایید ۶ رقمی از طریق ربات تلگرام ارسال شد. (مهلت: ۵ دقیقه)`,
+    debugCode: code,
+    expiresIn
+  };
+}
+
 export function verifyPhoneOtp(
   phone: string,
   code: string,
@@ -1065,6 +1173,70 @@ export function verifyPhoneOtp(
     }
     return { valid: false, message: `کد وارد شده صحیح نمی‌باشد. (${4 - stored.attempts} تلاش باقی‌مانده)` };
   }
+}
+
+export async function verifyPhoneOtpAsync(
+  phone: string,
+  code: string
+): Promise<{ valid: boolean; message: string }> {
+  const norm = normalizeIranianPhone(phone);
+  if (!norm) {
+    return { valid: false, message: 'شماره تلفن همراه نامعتبر است.' };
+  }
+
+  let stored = _phoneOtpStore.get(norm);
+  if (!stored && isFirebaseConfigured()) {
+    const fOtp = await getFirestoreOtp(norm);
+    if (fOtp) {
+      stored = {
+        code: fOtp.code,
+        expires_at: Number(fOtp.expires_at),
+        attempts: Number(fOtp.attempts || 0),
+        purpose: fOtp.purpose || 'web_login'
+      };
+      _phoneOtpStore.set(norm, stored);
+    }
+  }
+
+  if (!stored) {
+    return { valid: false, message: 'کد تایید برای این شماره صادر نشده یا منقضی گردیده است.' };
+  }
+
+  if (Date.now() > stored.expires_at) {
+    _phoneOtpStore.delete(norm);
+    if (isFirebaseConfigured()) await deleteFirestoreOtp(norm);
+    return { valid: false, message: 'کد تایید منقضی شده است. لطفاً مجدداً درخواست ارسال کد نمایید.' };
+  }
+
+  const cleanEntered = code.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
+  if (cleanEntered === stored.code) {
+    _phoneOtpStore.delete(norm);
+    if (isFirebaseConfigured()) await deleteFirestoreOtp(norm);
+    addSecurityAuditLog({
+      phone_number: norm,
+      user_id: getUserByPhone(norm)?.id || 0,
+      event: `تایید موفقیت‌آمیز کد ۶ رقمی تلگرامی (OTP)`,
+      category: 'otp_verified',
+      status: 'success'
+    });
+    return { valid: true, message: 'کد تایید با موفقیت احراز شد.' };
+  }
+
+  stored.attempts += 1;
+  if (stored.attempts >= 4) {
+    _phoneOtpStore.delete(norm);
+    if (isFirebaseConfigured()) await deleteFirestoreOtp(norm);
+    return { valid: false, message: 'به دلیل بیش از ۴ تلاش ناموفق، کد تایید باطل شد.' };
+  }
+  if (isFirebaseConfigured()) {
+    await saveFirestoreOtp(norm, {
+      code: stored.code,
+      expires_at: stored.expires_at,
+      attempts: stored.attempts,
+      purpose: stored.purpose
+    });
+  }
+  return { valid: false, message: `کد وارد شده صحیح نمی‌باشد. (${4 - stored.attempts} تلاش باقی‌مانده)` };
 }
 
 export function resetFinancialPinWithOtp(
@@ -1108,23 +1280,34 @@ export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id
   let user: UserProfile;
   
   if (index !== -1) {
-    user = { ...users[index], ...userData };
+    const existing = users[index];
+    user = {
+      ...existing,
+      ...userData,
+      kyc_status: existing.kyc_status === 'verified' ? 'verified' : (userData.kyc_status || existing.kyc_status),
+    };
     users[index] = user;
   } else {
     user = {
       id: Number(userData.id),
+      telegram_id: userData.telegram_id ? Number(userData.telegram_id) : Number(userData.id),
       full_name: userData.full_name || `کاربر ${userData.id}`,
-      phone_number: userData.phone_number || '09120000000',
+      phone_number: userData.phone_number !== undefined ? userData.phone_number : '',
       role: userData.role || 'employer',
-      wallet_balance: userData.wallet_balance || 0,
-      escrow_locked_balance: userData.escrow_locked_balance || 0,
+      wallet_balance: userData.wallet_balance ?? 0,
+      escrow_locked_balance: userData.escrow_locked_balance ?? 0,
       kyc_level: userData.kyc_level || 'basic',
-      kyc_status: userData.kyc_status || 'unverified',
+      kyc_status: userData.kyc_status || 'pending',
       referral_code: userData.referral_code || `REF-${Math.floor(10000 + Math.random() * 90000)}`,
       created_at: new Date().toISOString(),
       ...userData
     };
     users.push(user);
+  }
+
+  // همگام‌سازی با Firebase Firestore
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreUser(user);
   }
 
   // ثبت یا به‌روزرسانی در Supabase در صورت اتصال
@@ -1176,6 +1359,10 @@ export async function submitKyc(
   user.is_verified = true;
   user.kyc_submitted_at = new Date().toISOString();
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreUser(user);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('users').update({
@@ -1211,6 +1398,10 @@ export async function updateUserKycStatus(userId: number, status: 'verified' | '
     user.kyc_level = 'gold';
   } else {
     user.is_verified = false;
+  }
+
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreUser(user);
   }
 
   if (isSupabaseConfigured() && supabase) {
@@ -1333,6 +1524,11 @@ export async function createContract(data: Partial<Contract> & { as_draft?: bool
 
   contracts.unshift(newContract);
 
+  // همگام‌سازی در کالکشن deals فایربیس
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(newContract);
+  }
+
   // ثبت در Supabase
   if (isSupabaseConfigured() && supabase) {
     try {
@@ -1379,6 +1575,10 @@ export async function updateContract(contractId: string, updates: Partial<Contra
 
   contracts[index] = updated;
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(updated);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('contracts').update(updates).eq('contract_id', existing.contract_id);
@@ -1394,6 +1594,10 @@ export async function deleteContract(contractId: string): Promise<boolean> {
   const initialLen = contracts.length;
   contracts = contracts.filter(c => c.contract_id !== contractId && c.id !== contractId);
   const deleted = contracts.length < initialLen;
+
+  if (deleted && isFirebaseConfigured()) {
+    await deleteFirestoreDeal(contractId);
+  }
 
   if (deleted && isSupabaseConfigured() && supabase) {
     try {
@@ -1492,6 +1696,10 @@ export async function signContract(
     signature_hash: sigHash
   });
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(c);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('contracts').update({
@@ -1548,6 +1756,11 @@ export async function payContractEscrow(contractId: string, userId: number): Pro
   };
   transactions.unshift(tx);
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(c);
+    await upsertFirestoreUser(user);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('contracts').update({ status: 'active', paid_at: now, history: c.history }).eq('contract_id', c.contract_id);
@@ -1577,6 +1790,10 @@ export async function deliverContract(contractId: string, deliverables: { notes:
     timestamp: now,
     actor: 'مجری'
   });
+
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(c);
+  }
 
   if (isSupabaseConfigured() && supabase) {
     try {
@@ -1647,6 +1864,12 @@ export async function approveContract(contractId: string): Promise<{ success: bo
     created_at: now
   });
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(c);
+    if (buyer) await upsertFirestoreUser(buyer);
+    if (seller) await upsertFirestoreUser(seller);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('contracts').update({ status: 'completed', history: c.history }).eq('contract_id', c.contract_id);
@@ -1690,6 +1913,11 @@ export async function cancelContract(contractId: string): Promise<{ success: boo
     actor: 'سیستم اسکرو'
   });
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(c);
+    if (buyer) await upsertFirestoreUser(buyer);
+  }
+
   return { success: true, contract: c };
 }
 
@@ -1724,6 +1952,10 @@ export async function depositWallet(
     created_at: new Date().toISOString()
   };
   transactions.unshift(tx);
+
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreUser(user);
+  }
 
   if (isSupabaseConfigured() && supabase) {
     try {
@@ -1821,6 +2053,10 @@ export async function withdrawWallet(
     details: `شناسه پیگیری پایا: ${tx.ref_id}`
   });
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreUser(user);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('users').update({ wallet_balance: user.wallet_balance }).eq('id', user.id);
@@ -1896,6 +2132,10 @@ export async function createDispute(data: {
 
   disputes.unshift(newDispute);
 
+  if (isFirebaseConfigured()) {
+    await upsertFirestoreDeal(c);
+  }
+
   if (isSupabaseConfigured() && supabase) {
     try {
       await supabase.from('disputes').insert(newDispute);
@@ -1963,6 +2203,9 @@ export async function resolveDispute(
       timestamp: now,
       actor: 'داوری حقوقی'
     });
+    if (isFirebaseConfigured()) {
+      await upsertFirestoreDeal(c);
+    }
   }
 
   return d;
@@ -2211,7 +2454,81 @@ export async function syncFromSupabase(): Promise<{ usersCount: number; contract
   return { usersCount, contractsCount, txsCount };
 }
 
-// اجرای همگام‌سازی اولیه در صورت اتصال Supabase
+export async function syncFromFirestore(): Promise<{ usersCount: number; dealsCount: number }> {
+  if (!isFirebaseConfigured()) {
+    return { usersCount: 0, dealsCount: 0 };
+  }
+
+  let usersCount = 0;
+  let dealsCount = 0;
+
+  try {
+    console.log('🔥 [FIRESTORE_SYNC] Fetching shared records from Firebase Firestore...');
+    const fUsers = await fetchAllFirestoreUsers();
+    for (const u of fUsers) {
+      const mapped = mapFirestoreRecordToUser(u);
+      if (!mapped.id || Number.isNaN(mapped.id)) continue;
+      const idx = users.findIndex(existing => existing.id === mapped.id);
+      if (idx !== -1) {
+        users[idx] = { ...users[idx], ...mapped };
+      } else {
+        users.push(mapped);
+      }
+      usersCount++;
+    }
+
+    const fDeals = await fetchAllFirestoreDeals();
+    for (const d of fDeals) {
+      const cid = String(d.contract_id || d.id || '');
+      if (!cid) continue;
+      const idx = contracts.findIndex(existing => existing.contract_id === cid || existing.id === cid);
+      const formattedDeal: Contract = {
+        id: String(d.id || cid),
+        contract_id: cid,
+        title: d.title || `معامله ${cid}`,
+        amount: Number(d.amount || 0),
+        category: d.category || 'GEN',
+        deadline: Number(d.deadline || 7),
+        description: d.description || '',
+        free_edits: Number(d.free_edits ?? 2),
+        free_edits_left: Number(d.free_edits_left ?? 2),
+        free_edits_total: Number(d.free_edits_total ?? 2),
+        commission_payer: d.commission_payer || 'split_50_50',
+        creator_id: Number(d.creator_id || d.buyer_id || d.seller_id || 0),
+        created_by: Number(d.creator_id || d.buyer_id || d.seller_id || 0),
+        status: d.status || 'pending_party_b',
+        buyer_id: d.buyer_id ? Number(d.buyer_id) : undefined,
+        buyer_fullname: d.buyer_fullname || undefined,
+        buyer_phone: d.buyer_phone || undefined,
+        seller_id: d.seller_id ? Number(d.seller_id) : undefined,
+        seller_fullname: d.seller_fullname || undefined,
+        seller_phone: d.seller_phone || undefined,
+        invite_token: d.invite_token || undefined,
+        escrow_deposit_status: d.escrow_deposit_status || 'unpaid',
+        history: Array.isArray(d.history) ? d.history : [],
+        created_at: d.created_at || new Date().toISOString()
+      };
+      if (idx !== -1) {
+        contracts[idx] = { ...contracts[idx], ...formattedDeal };
+      } else {
+        contracts.unshift(formattedDeal);
+      }
+      dealsCount++;
+    }
+
+    console.log(`✅ [FIRESTORE_SYNC] Synced ${usersCount} users and ${dealsCount} deals from Firestore.`);
+  } catch (err: any) {
+    console.warn('⚠️ [FIRESTORE_SYNC] Warning:', err?.message || err);
+  }
+
+  return { usersCount, dealsCount };
+}
+
+// اجرای همگام‌سازی اولیه در صورت اتصال Supabase یا Firebase Firestore
 if (isSupabaseConfigured()) {
   syncFromSupabase().catch(e => console.warn('Supabase initial sync error:', e.message));
 }
+if (isFirebaseConfigured()) {
+  syncFromFirestore().catch(e => console.warn('Firestore initial sync error:', e.message));
+}
+
