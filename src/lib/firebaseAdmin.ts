@@ -213,6 +213,7 @@ export async function createFirebaseCustomToken(
 export interface FirestoreUserRecord {
   id: number;
   telegram_id: number;
+  chat_id: number;
   phone_number: string;
   full_name: string;
   username?: string;
@@ -248,6 +249,7 @@ export async function upsertFirestoreUser(
     const payload: FirestoreUserRecord = {
       id: Number(user.id),
       telegram_id: Number(user.telegram_id || user.id),
+      chat_id: Number(user.chat_id || existingData.chat_id || user.telegram_id || user.id),
       phone_number: user.phone_number ?? existingData.phone_number ?? '',
       full_name: user.full_name || existingData.full_name || `کاربر ${user.id}`,
       username: user.username ?? existingData.username ?? '',

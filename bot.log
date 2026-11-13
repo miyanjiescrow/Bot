@@ -22,3 +22,16 @@
 [2026-11-13T12:21:00.492Z] ℹ️ Telegram Bot Token (BOT_TOKEN) is not configured or is a placeholder. Standing by for real token in environment variables.
 [2026-11-13T12:21:03.036Z] OTP queued for telegram_id=1802649782 phone=09123456789
 [2026-11-13T12:21:08.993Z] OTP queued for telegram_id=1802649782 phone=09123456789
+[2026-11-13T14:40:13.321Z] 🚀 Initializing Miyanji Escrow Telegraf runtime in Node.js 22...
+[2026-11-13T14:40:13.322Z] ℹ️ Telegram Bot Token (BOT_TOKEN) is not configured or is a placeholder. Standing by for real token in environment variables.
+[2026-11-13T14:41:43.689Z] 🚀 Initializing Miyanji Escrow Telegraf runtime in Node.js 22...
+[2026-11-13T14:41:43.690Z] ℹ️ Telegram Bot Token (BOT_TOKEN) is not configured or is a placeholder. Standing by for real token in environment variables.
+[2026-11-13T14:41:44.772Z] Outbound message queued for chat_id=1802649782 parse_mode=MarkdownV2
+[2026-11-13T14:41:44.791Z] Outbound message queued for chat_id=1802649782 parse_mode=MarkdownV2
+[2026-11-13T14:41:44.807Z] Outbound message queued for chat_id=1802649782 parse_mode=MarkdownV2
+[2026-11-13T14:43:57.611Z] 🚀 Initializing Miyanji Escrow Telegraf runtime in Node.js 22...
+[2026-11-13T14:43:57.611Z] ℹ️ Telegram Bot Token (BOT_TOKEN) is not configured or is a placeholder. Standing by for real token in environment variables.
+[2026-11-13T14:46:56.018Z] 🚀 Initializing Miyanji Escrow Telegraf runtime in Node.js 22...
+[2026-11-13T14:46:56.019Z] ℹ️ Telegram Bot Token (BOT_TOKEN) is not configured or is a placeholder. Standing by for real token in environment variables.
+[2026-11-13T14:47:02.630Z] Outbound message queued for chat_id=391827461 parse_mode=MarkdownV2
+[2026-11-13T14:47:02.672Z] Outbound message queued for chat_id=1802649782 parse_mode=MarkdownV2

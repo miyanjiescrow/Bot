@@ -50,6 +50,7 @@ export interface Deliverables {
 export interface UserProfile {
   id: number;
   telegram_id?: number;
+  chat_id?: number;
   username?: string;
   full_name: string;
   phone_number: string;

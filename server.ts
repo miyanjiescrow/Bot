@@ -77,7 +77,14 @@ import {
   verifyTelegramInitData,
   createFirebaseCustomToken,
 } from './src/lib/firebaseAdmin';
-import { startBot, isValidTelegramToken, sendTelegramOtpToUser } from './src/bot';
+import {
+  startBot,
+  isValidTelegramToken,
+  sendTelegramOtpToUser,
+  sendTelegramMessage,
+  escapeMarkdownV2,
+  WEB_APP_URL,
+} from './src/bot';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -192,17 +199,18 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
 
   res.json({
     status: 'online',
-    runtime: 'Node.js 22 + Telegraf (با پشتیبانی از سورس پایتون ۳.۱۰)',
+    runtime: 'Node.js 22 + Telegraf',
     bot_username: cleanBotUsername(process.env.BOT_USERNAME),
     bot_token_configured: isTokenSet,
+    web_app_url: WEB_APP_URL,
 
     diagnostics: {
       has_token: isTokenSet,
       token_message: isTokenSet
         ? '✅ توکن ربات تلگرام در متغیرهای محیطی ثبت شده است.'
         : '⚠️ متغیر BOT_TOKEN در تنظیمات سرور ثبت نشده است. تلگرام بدون توکن به پیام‌ها پاسخ نمی‌دهد.',
-      python_note: 'محیط هاست فعلی کانتینر Node.js 22 است؛ برای اجرای محلی یا مستقل پایتون، پکیج‌های requirements.txt باید با pip نصب شوند.',
-      active_engine: isTokenSet ? 'Telegraf Node.js (اتصال مستقیم به تلگرام)' : 'Web Simulator Console (شبیه‌ساز مستقل وب)'
+      python_note: 'موتور Telegraf در Node.js 22 به صورت مستقیم و بدون تداخل فعال است.',
+      active_engine: isTokenSet ? 'Telegraf Node.js (اتصال مستقیم به تلگرام)' : 'در انتظار تنظیم BOT_TOKEN'
     },
     supabase_configured: isSupabaseConfigured(),
     supabase_url: process.env.SUPABASE_URL ? 'متصل (Supabase Cloud)' : 'پایگاه داده محلی WAL و حافظه پایدار',
@@ -1875,7 +1883,7 @@ function isOtpSecretAuthorized(req: Request): boolean {
   );
 }
 
-// Website requests 6-digit OTP -> Bot looks up user in Firestore `users` by phone & sends OTP to Telegram chat
+// Website requests 5-digit or 6-digit OTP -> Bot looks up user in Firestore `users` by phone (or uses provided chat_id) & sends MarkdownV2 OTP to Telegram chat
 app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
   if (!isOtpSecretAuthorized(req)) {
     return res.status(401).json({
@@ -1885,38 +1893,142 @@ app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
   }
 
   const rawPhone = String(req.body?.phone_number || req.body?.phone || '').trim();
-  const normalizedPhone = normalizeIranianPhone(rawPhone);
-  if (!normalizedPhone || normalizedPhone.length < 10) {
+  const providedChatId = req.body?.chat_id || req.body?.telegram_id;
+  const providedCode = String(req.body?.otp || req.body?.code || '').trim();
+  const digits = Number(req.body?.digits) === 5 || providedCode.length === 5 ? 5 : 6;
+  const normalizedPhone = rawPhone ? normalizeIranianPhone(rawPhone) : '';
+
+  if (!normalizedPhone && !providedChatId) {
     return res.status(400).json({
       success: false,
-      error: 'شماره موبایل وارد شده معتبر نیست.',
+      error: 'شماره موبایل یا شناسه چت (chat_id) الزامی است.',
     });
   }
 
-  const user = await getUserByPhoneAsync(normalizedPhone);
-  if (!user || !(user.telegram_id || user.id)) {
-    return res.status(404).json({
-      success: false,
-      error:
-        'شماره موبایل شما هنوز در ربات تلگرام میانجی ثبت نشده است. لطفاً ابتدا در ربات دستور /start را زده و دکمه «ارسال شماره تماس» را لمس کنید.',
-    });
+  let targetChatId = providedChatId ? Number(providedChatId) : 0;
+  if (!targetChatId && normalizedPhone) {
+    if (normalizedPhone.length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'شماره موبایل وارد شده معتبر نیست.',
+      });
+    }
+    const user = await getUserByPhoneAsync(normalizedPhone);
+    if (!user || !(user.chat_id || user.telegram_id || user.id)) {
+      return res.status(404).json({
+        success: false,
+        error:
+          'شماره موبایل شما هنوز در ربات تلگرام میانجی ثبت نشده است. لطفاً ابتدا در ربات دستور /start را زده و دکمه «ارسال شماره تماس» را لمس کنید.',
+      });
+    }
+    targetChatId = Number(user.chat_id || user.telegram_id || user.id);
   }
 
-  const targetTelegramId = Number(user.telegram_id || user.id);
-  const otpRecord = await createAndStorePhoneOtp(normalizedPhone, 'web_login', targetTelegramId);
-  const delivery = await sendTelegramOtpToUser(targetTelegramId, otpRecord.debugCode, normalizedPhone);
+  let otpCode = providedCode;
+  let expiresIn = 300;
+  if (normalizedPhone) {
+    const otpRecord = await createAndStorePhoneOtp(normalizedPhone, 'web_login', targetChatId, {
+      digits,
+      customCode: providedCode || undefined,
+    });
+    otpCode = otpRecord.debugCode;
+    expiresIn = otpRecord.expiresIn;
+  } else if (!otpCode) {
+    const min = digits === 5 ? 10000 : 100000;
+    const span = digits === 5 ? 90000 : 900000;
+    otpCode = Math.floor(min + Math.random() * span).toString();
+  }
+
+  const delivery = await sendTelegramOtpToUser(targetChatId, otpCode, normalizedPhone);
 
   return res.json({
     success: true,
     message: delivery.sent
-      ? 'کد تایید ۶ رقمی به چت تلگرام شما ارسال شد.'
-      : 'کد تایید ۶ رقمی ایجاد شد (ربات تلگرام در محیط لوکال غیرفعال است).',
+      ? `کد تایید ${otpCode.length} رقمی با فرمت MarkdownV2 به چت تلگرام ارسال شد.`
+      : 'کد تایید ایجاد شد (BOT_TOKEN در محیط لوکال تنظیم نشده است).',
     delivered_via: delivery.sent ? 'telegram' : 'pending_bot_token',
-    telegram_id: targetTelegramId,
-    expires_in: otpRecord.expiresIn,
-    ...(process.env.NODE_ENV !== 'production' ? { debug_code: otpRecord.debugCode } : {}),
+    parse_mode: 'MarkdownV2',
+    chat_id: targetChatId,
+    telegram_id: targetChatId,
+    expires_in: expiresIn,
+    ...(process.env.NODE_ENV !== 'production' ? { debug_code: otpCode } : {}),
   });
 });
+
+// Direct Bot Send-Message Endpoint for Website (supports chat_id / phone_number + MarkdownV2 + 5/6-digit OTP)
+const handleBotSendMessage = async (req: Request, res: Response) => {
+  if (!isOtpSecretAuthorized(req)) {
+    return res.status(401).json({
+      success: false,
+      error: 'کلید امنیتی OTP_API_SECRET نامعتبر یا ارسال نشده است.',
+    });
+  }
+
+  const rawChatId = req.body?.chat_id || req.body?.telegram_id || req.body?.user_id;
+  const rawPhone = String(req.body?.phone_number || req.body?.phone || '').trim();
+  const otpCode = String(req.body?.otp || req.body?.code || '').trim();
+  const rawText = String(req.body?.text || req.body?.message || '').trim();
+  const parseMode = (req.body?.parse_mode as 'MarkdownV2' | 'HTML' | 'Markdown' | null) || 'MarkdownV2';
+  const escapeMarkdown = Boolean(req.body?.escape_markdown);
+
+  let targetChatId = rawChatId ? Number(rawChatId) : 0;
+  const normalizedPhone = rawPhone ? normalizeIranianPhone(rawPhone) : '';
+
+  if (!targetChatId && normalizedPhone) {
+    const user = await getUserByPhoneAsync(normalizedPhone);
+    if (user) {
+      targetChatId = Number(user.chat_id || user.telegram_id || user.id);
+    }
+  }
+
+  if (!targetChatId || Number.isNaN(targetChatId)) {
+    return res.status(404).json({
+      success: false,
+      error: 'شناسه چت کاربر (chat_id) یافت نشد. کاربر ابتدا باید ربات را /start کند.',
+    });
+  }
+
+  if (otpCode && !rawText) {
+    const delivery = await sendTelegramOtpToUser(targetChatId, otpCode, normalizedPhone);
+    return res.json({
+      success: true,
+      delivered: delivery.sent,
+      chat_id: targetChatId,
+      parse_mode: 'MarkdownV2',
+      message_id: delivery.message_id || null,
+      reason: delivery.reason || null,
+    });
+  }
+
+  if (!rawText) {
+    return res.status(400).json({
+      success: false,
+      error: 'متن پیام (text / message) یا کد تایید (otp / code) الزامی است.',
+    });
+  }
+
+  const finalMessage =
+    parseMode === 'MarkdownV2' && escapeMarkdown ? escapeMarkdownV2(rawText) : rawText;
+
+  const delivery = await sendTelegramMessage({
+    chatId: targetChatId,
+    text: finalMessage,
+    parseMode,
+  });
+
+  return res.json({
+    success: true,
+    delivered: delivery.sent,
+    chat_id: targetChatId,
+    parse_mode: delivery.parse_mode || parseMode,
+    message_id: delivery.message_id || null,
+    reason: delivery.reason || null,
+  });
+};
+
+app.post('/api/bot/send-message', handleBotSendMessage);
+app.post('/api/telegram/send-message', handleBotSendMessage);
+app.post('/api/send-message', handleBotSendMessage);
 
 // Verify 6-digit OTP and issue Firebase Custom Token for website login
 app.post('/api/auth/verify-otp', async (req: Request, res: Response) => {

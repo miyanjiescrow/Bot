@@ -802,6 +802,7 @@ function mapFirestoreRecordToUser(fUser: Record<string, any>): UserProfile {
   return {
     id: uid,
     telegram_id: Number(fUser.telegram_id || uid),
+    chat_id: Number(fUser.chat_id || fUser.telegram_id || uid),
     username: fUser.username || '',
     full_name: fUser.full_name || `کاربر ${uid}`,
     phone_number: fUser.phone_number ? normalizeIranianPhone(String(fUser.phone_number)) : '',
@@ -1096,12 +1097,16 @@ export function sendPhoneOtp(
 export async function createAndStorePhoneOtp(
   phone: string,
   purpose: string = 'web_login',
-  telegramId?: number
+  telegramId?: number,
+  options?: { digits?: number; customCode?: string }
 ): Promise<{ success: boolean; message: string; debugCode: string; expiresIn: number }> {
   const norm = normalizeIranianPhone(phone);
   if (!norm) return { success: false, message: 'شماره تلفن همراه نامعتبر است.', debugCode: '', expiresIn: 0 };
 
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const digits = options?.digits === 5 ? 5 : 6;
+  const min = digits === 5 ? 10000 : 100000;
+  const span = digits === 5 ? 90000 : 900000;
+  const code = options?.customCode?.trim() || Math.floor(min + Math.random() * span).toString();
   const expiresIn = 300;
   const expiresAt = Date.now() + expiresIn * 1000;
   _phoneOtpStore.set(norm, {
@@ -1121,18 +1126,19 @@ export async function createAndStorePhoneOtp(
     });
   }
 
+  const digitLabel = `${code.length} رقمی`;
   addSecurityAuditLog({
     phone_number: norm,
     user_id: telegramId || getUserByPhone(norm)?.id || 0,
-    event: `ارسال کد ۶ رقمی ورود از طریق ربات تلگرام`,
+    event: `ارسال کد ${digitLabel} ورود از طریق ربات تلگرام`,
     category: 'otp_sent',
     status: 'success',
-    details: `کد تایید ۶ رقمی به تلگرام متصل به شماره ${norm.slice(0, 4)}***${norm.slice(-4)} ارسال شد.`
+    details: `کد تایید ${digitLabel} به تلگرام متصل به شماره ${norm.slice(0, 4)}***${norm.slice(-4)} ارسال شد.`
   });
 
   return {
     success: true,
-    message: `کد تایید ۶ رقمی از طریق ربات تلگرام ارسال شد. (مهلت: ۵ دقیقه)`,
+    message: `کد تایید ${digitLabel} از طریق ربات تلگرام ارسال شد. (مهلت: ۵ دقیقه)`,
     debugCode: code,
     expiresIn
   };
@@ -1291,6 +1297,7 @@ export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id
     user = {
       id: Number(userData.id),
       telegram_id: userData.telegram_id ? Number(userData.telegram_id) : Number(userData.id),
+      chat_id: userData.chat_id ? Number(userData.chat_id) : Number(userData.telegram_id || userData.id),
       full_name: userData.full_name || `کاربر ${userData.id}`,
       phone_number: userData.phone_number !== undefined ? userData.phone_number : '',
       role: userData.role || 'employer',

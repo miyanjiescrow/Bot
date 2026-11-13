@@ -7,10 +7,8 @@ import {
   Wallet,
   ShieldCheck,
   RefreshCw,
-  Play,
   CheckCircle2,
   AlertTriangle,
-  Send,
   Download,
   Users,
   Scale,
@@ -46,8 +44,13 @@ interface BotStatus {
   runtime: string;
   bot_username: string;
   bot_token_configured: boolean;
+  web_app_url?: string;
   supabase_configured: boolean;
   supabase_url: string;
+  firebase_configured?: boolean;
+  firebase_project_id?: string;
+  firebase_database_id?: string;
+  firebase_error?: string | null;
   active_modules?: string[];
   recent_logs?: string;
   diagnostics?: {
@@ -67,82 +70,8 @@ interface BotStatus {
   };
 }
 
-const FormattedTelegramMessage: React.FC<{ text: string; isUser: boolean }> = ({ text, isUser }) => {
-  if (isUser) {
-    return <span className="whitespace-pre-wrap">{text}</span>;
-  }
-
-  // Parse lines into normal text vs Telegram blockquote (> ...)
-  const lines = text.split('\n');
-  const blocks: Array<{ type: 'quote' | 'normal'; lines: string[] }> = [];
-  let currentBlock: { type: 'quote' | 'normal'; lines: string[] } | null = null;
-
-  for (const line of lines) {
-    const isQuote = line.trim().startsWith('>');
-    const cleanedLine = isQuote ? line.trim().replace(/^>\s*/, '') : line;
-
-    if (!currentBlock || currentBlock.type !== (isQuote ? 'quote' : 'normal')) {
-      if (currentBlock) blocks.push(currentBlock);
-      currentBlock = { type: isQuote ? 'quote' : 'normal', lines: [cleanedLine] };
-    } else {
-      currentBlock.lines.push(cleanedLine);
-    }
-  }
-  if (currentBlock) blocks.push(currentBlock);
-
-  const renderInline = (str: string) => {
-    // Match bold, code, and links
-    const parts = str.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-    return parts.map((part, idx) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={idx} className="font-bold text-white">{part.slice(2, -2)}</strong>;
-      }
-      if (part.startsWith('`') && part.endsWith('`')) {
-        return (
-          <code key={idx} className="bg-slate-900/90 text-blue-300 font-mono text-[10px] px-1.5 py-0.5 rounded border border-slate-700/70 mx-0.5 inline-block">
-            {part.slice(1, -1)}
-          </code>
-        );
-      }
-      return part;
-    });
-  };
-
-  return (
-    <div className="space-y-1.5 text-xs leading-relaxed">
-      {blocks.map((block, bIdx) => {
-        if (block.type === 'quote') {
-          return (
-            <div
-              key={bIdx}
-              className="bg-blue-950/40 border-r-2 border-blue-400 rounded-lg pr-3 pl-2.5 py-1.5 my-1 text-slate-200 text-[11px] leading-relaxed shadow-inner"
-            >
-              {block.lines.map((l, lIdx) => (
-                <div key={lIdx} className="min-h-[1.2rem]">
-                  {renderInline(l)}
-                </div>
-              ))}
-            </div>
-          );
-        }
-
-        return (
-          <div key={bIdx} className="whitespace-pre-wrap">
-            {block.lines.map((l, lIdx) => (
-              <React.Fragment key={lIdx}>
-                {renderInline(l)}
-                {lIdx < block.lines.length - 1 && '\n'}
-              </React.Fragment>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
 const App = () => {
-  const [activeTab, setActiveTab] = useState<'simulator' | 'contracts' | 'admin_kyc' | 'wallet' | 'logs' | 'database' | 'python_code' | 'security'>('simulator');
+  const [activeTab, setActiveTab] = useState<'status' | 'contracts' | 'admin_kyc' | 'wallet' | 'logs' | 'database' | 'python_code' | 'security'>('status');
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [contracts, setContracts] = useState<any[]>([]);
@@ -277,20 +206,6 @@ const App = () => {
     }
   };
 
-  // Terminal Simulator State
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'bot'; text: string; keyboard?: string[][] }>>([
-    {
-      sender: 'bot',
-      text: '🤖 سلام! به ربات تلگرام واسطه‌گری امن و ثبت قراردادهای میانجی (Miyanji Escrow) خوش آمدید.\nپلتفرم بر پایه پایتون ۳.۱۰ و دیتابیس یکپارچه سوپابیس اجرا می‌شود.',
-      keyboard: [
-        ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
-        ['💳 کیف پول و اعتبار', '💎 پنل سفیران'],
-        ['🪪 بررسی کدهای ملی', '🎧 پشتیبانی و راهنمای استفاده 📖']
-      ]
-    }
-  ]);
-  const [customInput, setCustomInput] = useState('');
-  const [isSending, setIsSending] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
 
   const fetchBotData = async () => {
@@ -401,40 +316,6 @@ const App = () => {
     const interval = setInterval(fetchBotData, 6000);
     return () => clearInterval(interval);
   }, []);
-
-  const handleSendMessage = async (textToSend?: string) => {
-    const text = (textToSend || customInput).trim();
-    if (!text || isSending) return;
-
-    setChatMessages(prev => [...prev, { sender: 'user', text }]);
-    setCustomInput('');
-    setIsSending(true);
-
-    try {
-      const res = await fetch('/api/bot/simulate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setChatMessages(prev => [
-          ...prev,
-          { sender: 'bot', text: data.reply, keyboard: data.keyboard }
-        ]);
-        // Refresh contracts in background
-        fetch('/api/contracts').then(r => r.json()).then(setContracts).catch(() => {});
-      }
-    } catch {
-      setChatMessages(prev => [
-        ...prev,
-        { sender: 'bot', text: '⚠️ ارتباط با هندلر ربات برقرار نشد.' }
-      ]);
-    } finally {
-      setIsSending(false);
-    }
-  };
 
   const handleRestartBot = async () => {
     setLoading(true);
@@ -891,12 +772,12 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                   title="کلیک برای مشاهده مرکز عیب‌یابی و وضعیت اتصال"
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${botStatus?.bot_token_configured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-                  <span>{botStatus?.bot_token_configured ? 'ربات تلگرام متصل است' : 'شبیه‌ساز فعال | منتظر BOT_TOKEN'}</span>
+                  <span>{botStatus?.bot_token_configured ? 'ربات تلگرام متصل است' : 'آماده اتصال | منتظر BOT_TOKEN'}</span>
                   <HelpCircle className="w-3 h-3 text-amber-400/80" />
                 </button>
               </div>
               <p className="text-xs text-slate-400">
-                سامانه هوشمند واسطه‌گری امن و قراردادهای اسکرو | شبیه‌ساز بلادرنگ وب + هسته Telegraf & Python
+                سامانه هوشمند واسطه‌گری امن و قراردادهای اسکرو | درگاه ربات تلگرام (Telegraf) + فایربیس و وب‌سایت میانجی
               </p>
             </div>
           </div>
@@ -906,7 +787,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
               onClick={handleRestartBot}
               disabled={loading}
               className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
-              title="راه‌اندازی مجدد سرویس پایتون"
+              title="راه‌اندازی مجدد سرویس ربات"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>ریستارت سرویس</span>
@@ -931,15 +812,15 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
         {/* Navigation Tabs */}
         <div className="flex flex-wrap items-center gap-1.5 bg-slate-900 p-1.5 rounded-2xl border border-slate-800">
           <button
-            onClick={() => setActiveTab('simulator')}
+            onClick={() => setActiveTab('status')}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
-              activeTab === 'simulator'
+              activeTab === 'status'
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
             }`}
           >
             <Bot className="w-4 h-4 text-emerald-400" />
-            کنسول و شبیه‌ساز هوشمند ربات تلگرام
+            وضعیت اتصال ربات و سایت
           </button>
 
           <button
@@ -1051,20 +932,20 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                       ? 'bg-emerald-500/20 text-emerald-300'
                       : 'bg-amber-500/20 text-amber-300'
                   }`}>
-                    {botStatus?.bot_token_configured ? 'اتصال تلگرام فعال است' : 'شبیه‌ساز فعال | منتظر BOT_TOKEN'}
+                    {botStatus?.bot_token_configured ? 'اتصال تلگرام فعال است' : 'آماده اتصال | منتظر BOT_TOKEN'}
                   </span>
                 </h2>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   {botStatus?.bot_token_configured
-                    ? 'ربات متصل است و پیام‌های تلگرام به صورت زنده توسط موتور اختصاصی پردازش می‌شوند.'
-                    : 'علت عدم پاسخگویی در تلگرام: متغیر BOT_TOKEN در سرور تنظیم نشده و محیط هاست فعلی Node.js است.'}
+                    ? 'ربات متصل است و پیام‌های تلگرام به صورت زنده توسط موتور Telegraf پردازش می‌شوند.'
+                    : 'متغیر BOT_TOKEN در سرور تنظیم نشده؛ پس از ثبت توکن در محیط هاست، ربات بلافاصله به تلگرام متصل می‌شود.'}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-medium">
-                {showDiagnostics ? 'بستن راهنما' : 'مشاهده علل و راهکارها'}
+                {showDiagnostics ? 'بستن راهنما' : 'مشاهده وضعیت فنی'}
                 {showDiagnostics ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               </span>
             </div>
@@ -1078,185 +959,171 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                   <span>۱. توکن تلگرام (BOT_TOKEN)</span>
                 </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  ربات تلگرام برای ارتباط با سرورهای تلگرام نیازمند یک توکن اختصاصی است.
+                  ربات تلگرام از متغیر محیطی <code className="text-blue-300 font-mono">BOT_TOKEN</code> برای اتصال مستقیم به سرورهای تلگرام و ارسال OTP استفاده می‌کند.
                 </p>
-                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-slate-400 font-mono space-y-1 border border-slate-800/80">
-                  <p className="text-amber-300 font-sans">نحوه دریافت توکن:</p>
-                  <p>۱. مراجعه به <span className="text-blue-400">@BotFather</span> در تلگرام</p>
-                  <p>۲. ارسال دستور <code className="text-emerald-400">/newbot</code> و دریافت توکن</p>
-                  <p>۳. قرار دادن در متغیر محیطی سرور:</p>
-                  <code className="text-blue-300 block">BOT_TOKEN=123456:ABC...</code>
+                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-slate-400 font-mono border border-slate-800/80">
+                  {botStatus?.bot_token_configured ? '✓ BOT_TOKEN فعال و متصل است' : 'BOT_TOKEN=123456:ABC...'}
                 </div>
               </div>
 
               <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
                 <div className="flex items-center gap-2 text-blue-400 font-bold">
-                  <Terminal className="w-4 h-4" />
-                  <span>۲. ران‌تایم هاست (Node.js vs Python)</span>
+                  <Database className="w-4 h-4" />
+                  <span>۲. همگام‌سازی Firebase Firestore</span>
                 </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  این کانتینر ابری بر بستر <strong>Node.js 22</strong> اجرا می‌شود و پکیج منیجر pip پایتون در آن موجود نیست.
+                  پروژه: <code className="text-emerald-300 font-mono">{botStatus?.firebase_project_id || 'mianji-3639d'}</code>
                 </p>
-                <p className="text-slate-400 text-[11px] leading-relaxed">
-                  به همین دلیل موتور موازی با <strong>Telegraf</strong> درون Node.js پیاده‌سازی شده که به محض افزودن BOT_TOKEN بدون نیاز به پایتون کار می‌کند.
-                </p>
-                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-emerald-400 border border-slate-800/80">
-                  ✓ موتور Node.js Telegraf کاملاً آماده دریافت توکن است.
+                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-emerald-400 border border-slate-800/80 truncate font-mono" title={botStatus?.firebase_database_id}>
+                  DB: {botStatus?.firebase_database_id || 'ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73'}
                 </div>
               </div>
 
               <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
                 <div className="flex items-center gap-2 text-emerald-400 font-bold">
                   <Bot className="w-4 h-4" />
-                  <span>۳. راه‌حل‌های فوری و دردسترس</span>
+                  <span>۳. ران‌تایم و اندپوینت وب‌سایت</span>
                 </div>
-                <div className="space-y-2">
-                  <button
-                    onClick={() => setActiveTab('simulator')}
-                    className="w-full text-right bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 p-2 rounded-lg text-[11px] transition"
-                  >
-                    🚀 <strong>تست آنی در شبیه‌ساز وب:</strong>
-                    <span className="block text-[10px] text-slate-300 mt-0.5">تمام سناریوهای قرارداد، اسکرو، OTP و PDF بدون نیاز به تلگرام فعال است.</span>
-                  </button>
-
-                  <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-slate-400 border border-slate-800/80">
-                    <p className="text-slate-300 font-sans mb-1 font-bold">اجرای سورس پایتون در VPS شخصی:</p>
-                    <code className="text-purple-300 block font-mono">pip install -r requirements.txt</code>
-                    <code className="text-purple-300 block font-mono">python3 main.py</code>
-                  </div>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  موتور <strong>Telegraf (Node.js 22)</strong> متصل به وب‌سایت و مسیرهای ارسال OTP با فرمت MarkdownV2 فعال است.
+                </p>
+                <div className="text-[10px] bg-slate-950 p-2 rounded-lg text-slate-400 font-mono border border-slate-800/80 truncate">
+                  /api/auth/send-otp • /api/bot/send-message
                 </div>
               </div>
             </div>
           )}
         </div>
 
-        {/* Tab: Telegram Simulator */}
-        {activeTab === 'simulator' && (
+        {/* Tab: Live Bot, Website & Firebase Integration Status */}
+        {activeTab === 'status' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1">
-            <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col h-[600px] overflow-hidden shadow-xl">
-              <div className="bg-slate-800/80 px-4 py-3 border-b border-slate-700/60 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-                    MJ
+            <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5 shadow-xl">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400">
+                    <Bot className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
-                      میانجی | ربات تلگرام اسکرو و قرارداد
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      وضعیت عملیاتی ربات تلگرام و اتصال به وب‌سایت میانجی
+                      <span className={`w-2 h-2 rounded-full ${botStatus?.bot_token_configured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
                     </h3>
-                    <p className="text-[10px] text-slate-400 font-mono">bot @{(botStatus?.bot_username || 'mianji_ir_bot').replace(/^(https?:\/\/)?(t\.me\/|telegram\.me\/)?@?/i, '').replace(/\/.*$/, '').trim() || 'mianji_ir_bot'}</p>
-
+                    <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                      @{(botStatus?.bot_username || 'mianji_ir_bot').replace(/^(https?:\/\/)?(t\.me\/|telegram\.me\/)?@?/i, '').replace(/\/.*$/, '').trim() || 'mianji_ir_bot'} • {botStatus?.runtime || 'Node.js 22 + Telegraf'}
+                    </p>
                   </div>
                 </div>
-                <span className="text-[10px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded">
-                  پایتون ۳.۱۰ (pyTelegramBotAPI)
-                </span>
-              </div>
 
-              <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-slate-950/60">
-                {chatMessages.map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`flex flex-col ${msg.sender === 'user' ? 'items-start' : 'items-end'}`}
-                  >
-                    <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed ${
-                        msg.sender === 'user'
-                          ? 'bg-blue-600 text-white rounded-br-none'
-                          : 'bg-slate-800 text-slate-100 border border-slate-700/70 rounded-bl-none shadow-md'
-                      }`}
-                    >
-                      <FormattedTelegramMessage text={msg.text} isUser={msg.sender === 'user'} />
-                    </div>
-
-                    {msg.keyboard && msg.keyboard.length > 0 && (
-                      <div className="mt-2 grid grid-cols-2 gap-1.5 w-[85%]">
-                        {msg.keyboard.flat().map((btnText, bIdx) => (
-                          <button
-                            key={bIdx}
-                            onClick={() => handleSendMessage(btnText)}
-                            className="bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 border border-slate-700/80 rounded-xl px-3 py-2 text-[11px] font-medium text-center transition truncate shadow-sm"
-                          >
-                            {btnText}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2">
-                <input
-                  type="text"
-                  value={customInput}
-                  onChange={e => setCustomInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
-                  placeholder="دستور یا پیام خود را تایپ کنید (مثلاً ثبت معامله جدید یا /start)..."
-                  className="flex-1 bg-slate-950 border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                />
                 <button
-                  onClick={() => handleSendMessage()}
-                  disabled={isSending || !customInput.trim()}
-                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white p-2.5 rounded-xl transition"
+                  onClick={handleSyncDatabase}
+                  disabled={syncingDb}
+                  className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-3.5 py-2 rounded-xl font-medium transition"
                 >
-                  <Send className="w-4 h-4" />
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncingDb ? 'animate-spin' : ''}`} />
+                  <span>{syncingDb ? 'درحال همگام‌سازی...' : 'همگام‌سازی با فایربیس'}</span>
                 </button>
+              </div>
+
+              {syncStatusMsg && (
+                <div className={`p-3 rounded-xl text-xs font-medium ${syncStatusMsg.type === 'success' ? 'bg-emerald-950/60 border border-emerald-500/30 text-emerald-300' : 'bg-rose-950/60 border border-rose-500/30 text-rose-300'}`}>
+                  {syncStatusMsg.text}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Key className="w-4 h-4 text-amber-400" />
+                      وضعیت موتور Telegraf (BOT_TOKEN)
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${botStatus?.bot_token_configured ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}>
+                      {botStatus?.bot_token_configured ? 'متصل و فعال' : 'در انتظار BOT_TOKEN'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    دریافت دستور <code className="text-blue-300">/start</code> و شماره تماس کاربر، ذخیره <code className="text-blue-300">chat_id</code> و ارسال کد تایید با فرمت <code className="text-emerald-300">MarkdownV2</code> به صورت مستقیم فعال است.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Database className="w-4 h-4 text-emerald-400" />
+                      دیتابیس مشترک فایربیس (Firestore)
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${botStatus?.firebase_configured ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}>
+                      {botStatus?.firebase_configured ? 'متصل به Firestore' : 'نیازمند Service Account'}
+                    </span>
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-400 space-y-1">
+                    <div className="truncate">Project: <span className="text-slate-200">{botStatus?.firebase_project_id || 'mianji-3639d'}</span></div>
+                    <div className="truncate" title={botStatus?.firebase_database_id}>DB ID: <span className="text-slate-200">{botStatus?.firebase_database_id || 'ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73'}</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <ExternalLink className="w-4 h-4 text-blue-400" />
+                    آدرس متصل وب‌سایت میانجی (Mini App)
+                  </h4>
+                  <a
+                    href={botStatus?.web_app_url || 'https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app'}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-blue-400 hover:text-blue-300 font-mono truncate max-w-full"
+                  >
+                    {botStatus?.web_app_url || 'https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app'}
+                  </a>
+                </div>
+
+                <div className="border-t border-slate-800 pt-3">
+                  <p className="text-[11px] text-slate-400 mb-2">چیدمان فعلی کیبورد اصلی ربات تلگرام (دکمه سایت در ردیف پایینی زیر راهنما):</p>
+                  <div className="grid grid-cols-2 gap-2 max-w-md">
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">🤝 ثبت معامله جدید</div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">📜 لیست معاملات من</div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">💳 کیف پول و اعتبار</div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">💎 پنل سفیران</div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">🪪 بررسی کدهای ملی</div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">🎧 پشتیبانی و راهنمای استفاده 📖</div>
+                    <div className="col-span-2 bg-blue-600/20 border border-blue-500/40 rounded-lg py-2 px-3 text-center text-[11px] font-bold text-blue-300">
+                      🌐 ورود به وب‌سایت میانجی (WebApp)
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* Quick Actions Panel */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
               <h3 className="text-xs font-bold text-white flex items-center gap-2">
-                <Bot className="w-4 h-4 text-blue-400" />
-                تست سریع سناریوهای فریلنسری
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                اندپوینت‌های هماهنگ با وب‌سایت
               </h3>
 
-              <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
-                {[
-                  { label: '🤝 ثبت معامله جدید (روند هوشمند با نقل‌قول)', cmd: '🤝 ثبت معامله جدید' },
-                  { label: '🔍 پیگیری امن با شناسه قرارداد (ضد فیشینگ)', cmd: 'DEV-842-190' },
-                  { label: '💳 واریز و قفل وجه در صندوق امانت', cmd: '💳 واریز وجه به صندوق امانت (DEV-842-190)' },
-                  { label: '📦 تحویل فایل‌ها و خروجی پروژه', cmd: '📦 تحویل فایل‌ها و خروجی پروژه (DEV-842-190)' },
-                  { label: '✅ تایید نهایی و آزادسازی وجه به مجری', cmd: '✅ تایید نهایی و آزادسازی وجه به مجری (DEV-842-190)' },
-                  { label: '🔄 درخواست اصلاحیه و ویرایش پروژه', cmd: '🔄 درخواست اصلاحیه و ویرایش (DEV-842-190)' },
-                  { label: '⚖️ ثبت اختلاف و ارجاع به داوری حقوقی', cmd: '⚖️ ثبت اختلاف و ارجاع به داوری (DEV-842-190)' },
-                  { label: '📄 دریافت سند رسمی PDF با گواهی دیجیتال', cmd: '📄 دانلود سند رسمی PDF (DEV-842-190)' },
-                  { label: '📜 لیست معاملات من', cmd: '📜 لیست معاملات من' },
-                  { label: '💳 کیف پول و شارژ حساب', cmd: '💳 کیف پول و اعتبار' },
-                  { label: '💸 درخواست تسویه (با پین مالی)', cmd: '💸 درخواست تسویه و برداشت' },
-                  { label: '🔐 تنظیم یا تغییر پین امنیتی مالی', cmd: '🔐 تنظیم/تغییر پین مالی' },
-                  { label: '🛡 مرکز امنیت و هویت کاربری', cmd: '🛡 مرکز امنیت و هویت' },
-                  { label: '🪪 بررسی و تعیین تکلیف کدهای ملی (ادمین)', cmd: '🪪 بررسی کدهای ملی' },
-                  { label: '💎 پنل سفیران و معرف', cmd: '💎 پنل سفیران' }
-                ].map((item, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleSendMessage(item.cmd)}
-                    className="w-full text-right bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white px-3 py-2 rounded-xl text-xs font-medium border border-slate-700/60 transition flex items-center justify-between"
-                  >
-                    <span className="truncate">{item.label}</span>
-                    <Play className="w-3 h-3 text-slate-500 shrink-0 mr-1" />
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-auto pt-3 border-t border-slate-800">
-                <h4 className="text-[11px] font-bold text-slate-400 mb-2">فیلدهای اختیاری فعال در هسته ربات:</h4>
-                <ul className="text-[11px] text-slate-300 space-y-1.5">
-                  <li className="flex items-center gap-1.5 text-emerald-400">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    مهلت بررسی و تست (Inspection Period)
-                  </li>
-                  <li className="flex items-center gap-1.5 text-purple-400">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    اصلاحیه/ویرایش رایگان (Free Revisions)
-                  </li>
-                  <li className="flex items-center gap-1.5 text-blue-400">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    تولید لینک یکتای دعوت (deal_token)
-                  </li>
-                </ul>
+              <div className="space-y-2 text-[11px]">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <div className="font-mono text-emerald-400 font-bold">POST /api/auth/send-otp</div>
+                  <p className="text-slate-400 mt-1">ارسال کد تایید ۵ یا ۶ رقمی با فرمت MarkdownV2 به چت تلگرام کاربر.</p>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <div className="font-mono text-emerald-400 font-bold">POST /api/bot/send-message</div>
+                  <p className="text-slate-400 mt-1">دریافت مستقیم درخواست ارسال پیام و اعلان از سمت سایت با شناسه chat_id.</p>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <div className="font-mono text-blue-400 font-bold">POST /api/auth/verify-otp</div>
+                  <p className="text-slate-400 mt-1">اعتبارسنجی کد و صدور Custom Token فایربیس برای ورود یکپارچه.</p>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <div className="font-mono text-blue-400 font-bold">POST /api/auth/telegram</div>
+                  <p className="text-slate-400 mt-1">احراز هویت امضای initData مینی‌اپ تلگرام.</p>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <div className="font-mono text-purple-400 font-bold">GET / POST /api/deals</div>
+                  <p className="text-slate-400 mt-1">همگام‌سازی معاملات اسکرو بین ربات، سایت و Firestore.</p>
+                </div>
               </div>
             </div>
           </div>
