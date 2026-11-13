@@ -25,11 +25,16 @@ import {
   makeTelegramLink,
   registerOrUpdateUser,
   normalizeIranianPhone,
+  createAndStorePhoneOtp,
 } from './db';
 
 export const WEB_APP_URL =
   (process.env.WEB_APP_URL || '').trim() ||
-  'https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app';
+  'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app';
+
+export const WEBSITE_REGISTER_WEBHOOK_URL =
+  (process.env.WEBSITE_REGISTER_WEBHOOK_URL || '').trim() ||
+  'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -83,14 +88,20 @@ export function buildMainReplyKeyboard() {
     ['🤝 ثبت معامله جدید', '📜 لیست معاملات من'],
     ['💳 کیف پول و اعتبار', '💎 پنل سفیران'],
     ['🪪 بررسی کدهای ملی', '🎧 پشتیبانی و راهنمای استفاده 📖'],
-    [Markup.button.webApp('🌐 ورود به وب‌سایت میانجی', WEB_APP_URL)],
+    ['🔐 دریافت کد ورود به سایت', Markup.button.webApp('ورود به پنل میانجی 🌐', WEB_APP_URL)],
   ]).resize();
+}
+
+export function buildMiniAppInlineKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.webApp('ورود به پنل میانجی 🌐', WEB_APP_URL)],
+  ]);
 }
 
 export function buildContactRequestKeyboard() {
   return Markup.keyboard([
     [Markup.button.contactRequest('📱 ارسال و تایید شماره تماس')],
-    [Markup.button.webApp('🌐 ورود به وب‌سایت میانجی', WEB_APP_URL)],
+    [Markup.button.webApp('ورود به پنل میانجی 🌐', WEB_APP_URL)],
   ]).resize();
 }
 
@@ -825,17 +836,45 @@ export async function sendTelegramOtpToUser(
 
   const message =
     `🔐 *کد تایید ورود به وب‌سایت میانجی*\n\n` +
-    `کد ${escapeMarkdownV2(digitLabel)} شما:\n` +
+    `کد ${escapeMarkdownV2(digitLabel)} ورود شما:\n` +
     `\`${escapeMarkdownV2(cleanCode)}\`\n\n` +
     phoneLine +
     `⏱ اعتبار کد: ۵ دقیقه\n\n` +
-    `⚠️ _این کد محرمانه است؛ آن را در اختیار دیگران قرار ندهید\\._`;
+    `⚠️ *هشدار امنیتی:* _این کد محرمانه است؛ به هیچ عنوان آن را در اختیار دیگران قرار ندهید\\._`;
 
   return sendTelegramMessage({
     chatId,
     text: message,
     parseMode: 'MarkdownV2',
   });
+}
+
+export async function notifyWebsiteUserRegistered(params: {
+  telegramId: string | number;
+  phone: string;
+  fullName: string;
+}): Promise<{ ok: boolean; status?: number; error?: string }> {
+  const url = WEBSITE_REGISTER_WEBHOOK_URL;
+  if (!url) return { ok: false, error: 'WEBSITE_REGISTER_WEBHOOK_URL not set' };
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        telegramId: String(params.telegramId),
+        phone: params.phone,
+        fullName: params.fullName,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    appendBotLog(`🔗 Direct webhook sync (${url}) -> HTTP ${res.status} for tg_id=${params.telegramId}`);
+    return { ok: res.ok, status: res.status };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    appendBotLog(`⚠️ Direct webhook sync warning (${url}): ${errMsg}`);
+    return { ok: false, error: errMsg };
+  }
 }
 
 function escapeHtml(str: string): string {
@@ -1011,18 +1050,58 @@ export function startBot() {
           `✅ Contact registered in Firestore users/${telegramId} chat_id=${chatId} phone=${savedUser.phone_number}`
         );
 
+        await notifyWebsiteUserRegistered({
+          telegramId: String(telegramId),
+          phone: savedUser.phone_number,
+          fullName: savedUser.full_name,
+        });
+
         await replyTelegramFormatted(
           ctx,
           `✅ **ثبت‌نام و اتصال حساب شما با موفقیت انجام شد!**\n\n` +
             `👤 نام: ${savedUser.full_name}\n` +
             `📱 شماره موبایل: \`${savedUser.phone_number}\`\n` +
             `🆔 شناسه تلگرام: \`${savedUser.id}\`\n` +
-            `🪪 وضعیت احراز هویت: ${savedUser.kyc_status === 'verified' ? 'تایید شده ✅' : 'در انتظار احراز هویت (pending)'}\n\n` +
-            `اکنون می‌توانید با دکمه **«🌐 ورود به وب‌سایت میانجی»** در پایین کیبورد وارد سایت شوید یا در سایت شماره خود را وارد کرده و کد تایید را همین‌جا دریافت کنید.`,
+            `🪪 وضعیت احراز هویت: ${savedUser.kyc_status === 'verified' ? 'تایید شده ✅' : 'در انتظار احراز هویت (pending)'}`,
           buildMainReplyKeyboard()
+        );
+
+        await replyTelegramFormatted(
+          ctx,
+          `🎉 به پنل هوشمند **میانجی** خوش آمدید!\n\nبرای ورود مستقیم و امن به وب‌اپ و مدیریت معاملات خود، دکمه زیر را لمس کنید:`,
+          buildMiniAppInlineKeyboard()
         );
       } catch (err: any) {
         appendBotLog(`⚠️ Error in bot.on('contact'): ${err?.message || err}`);
+      }
+    });
+
+    const handleOtpRequestInBot = async (ctx: any) => {
+      const telegramId = ctx.from.id;
+      const chatId = Number(ctx.chat?.id || telegramId);
+      const user = await getUserAsync(telegramId);
+
+      if (!user || !isRealPhone(user.phone_number)) {
+        await replyTelegramFormatted(
+          ctx,
+          '📱 برای دریافت کد ورود به سایت، ابتدا لازم است شماره تماس خود را از طریق دکمه زیر تایید کنید:',
+          buildContactRequestKeyboard()
+        );
+        return;
+      }
+
+      const otpRecord = await createAndStorePhoneOtp(user.phone_number, 'web_login', chatId, {
+        digits: 6,
+      });
+
+      await sendTelegramOtpToUser(chatId, otpRecord.debugCode, user.phone_number);
+    };
+
+    bot.command('otp', async (ctx) => {
+      try {
+        await handleOtpRequestInBot(ctx);
+      } catch (err: any) {
+        appendBotLog(`⚠️ Error in bot.command('otp'): ${err?.message || err}`);
       }
     });
 
@@ -1030,8 +1109,8 @@ export function startBot() {
       try {
         await replyTelegramFormatted(
           ctx,
-          '🌐 برای ورود امن و خودکار به وب‌سایت میانجی، دکمه **«🌐 ورود به وب‌سایت میانجی»** را در پایین کیبورد لمس کنید:',
-          buildMainReplyKeyboard()
+          '🌐 برای ورود امن و خودکار به پنل وب‌سایت میانجی روی دکمه زیر کلیک کنید:',
+          buildMiniAppInlineKeyboard()
         );
       } catch (err: any) {
         appendBotLog(`⚠️ Error in bot.command('webapp'): ${err?.message || err}`);
@@ -1049,12 +1128,21 @@ export function startBot() {
 
     bot.on('text', async (ctx) => {
       try {
-        const text = ctx.message.text;
-        if (text.includes('ورود به سایت') || text.includes('مینی‌اپ') || text.includes('وب‌سایت')) {
+        const text = ctx.message.text.trim();
+        if (
+          text.includes('دریافت کد ورود') ||
+          text.includes('کد ورود') ||
+          text === 'دریافت کد' ||
+          text === 'کد تایید'
+        ) {
+          await handleOtpRequestInBot(ctx);
+          return;
+        }
+        if (text.includes('ورود به سایت') || text.includes('ورود به پنل') || text.includes('مینی‌اپ') || text.includes('وب‌سایت')) {
           await replyTelegramFormatted(
             ctx,
-            '🌐 برای ورود خودکار به سایت میانجی (بدون نیاز به OTP)، دکمه **«🌐 ورود به وب‌سایت میانجی»** در پایین کیبورد را لمس کنید:',
-            buildMainReplyKeyboard()
+            '🌐 برای ورود مستقیم و امن به پنل میانجی روی دکمه زیر بزنید:',
+            buildMiniAppInlineKeyboard()
           );
           return;
         }

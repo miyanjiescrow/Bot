@@ -7,12 +7,13 @@
 import fs from 'fs';
 import crypto from 'crypto';
 import { initializeApp, cert, getApps, App, ServiceAccount } from 'firebase-admin/app';
-import { getFirestore, Firestore } from 'firebase-admin/firestore';
+import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth, Auth } from 'firebase-admin/auth';
 import type { Contract, UserProfile } from '../types';
 
 export const DEFAULT_FIREBASE_PROJECT_ID = 'mianji-3639d';
 export const DEFAULT_FIREBASE_DATABASE_ID = 'ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73';
+export const DEFAULT_FIREBASE_API_KEY = 'AIzaSyDPLvDhCVsyBgteXD8mZLzYoNnA9nIA5RQ';
 
 export const FIREBASE_PROJECT_ID =
   (process.env.FIREBASE_PROJECT_ID || '').trim() || DEFAULT_FIREBASE_PROJECT_ID;
@@ -211,7 +212,7 @@ export async function createFirebaseCustomToken(
 // ====================================================
 
 export interface FirestoreUserRecord {
-  id: number;
+  id: string | number;
   telegram_id: number;
   chat_id: number;
   phone_number: string;
@@ -228,10 +229,11 @@ export interface FirestoreUserRecord {
   is_verified?: boolean;
   created_at?: string;
   updated_at?: string;
+  updatedAt?: unknown;
 }
 
 export async function upsertFirestoreUser(
-  user: Partial<UserProfile> & { id: number }
+  user: Partial<UserProfile> & { id: number | string }
 ): Promise<boolean> {
   if (!firestoreDb) return false;
 
@@ -246,12 +248,12 @@ export async function upsertFirestoreUser(
         ? 'verified'
         : user.kyc_status || existingData.kyc_status || 'pending';
 
-    const payload: FirestoreUserRecord = {
-      id: Number(user.id),
+    const payload: Record<string, any> = {
+      id: docId,
       telegram_id: Number(user.telegram_id || user.id),
       chat_id: Number(user.chat_id || existingData.chat_id || user.telegram_id || user.id),
       phone_number: user.phone_number ?? existingData.phone_number ?? '',
-      full_name: user.full_name || existingData.full_name || `کاربر ${user.id}`,
+      full_name: user.full_name || existingData.full_name || 'کاربر میانجی',
       username: user.username ?? existingData.username ?? '',
       kyc_status: resolvedKycStatus,
       kyc_level: user.kyc_level || existingData.kyc_level || 'basic',
@@ -266,11 +268,12 @@ export async function upsertFirestoreUser(
       role: user.role || existingData.role || 'employer',
       national_id: user.national_id ?? existingData.national_id ?? '',
       sheba: user.sheba ?? existingData.sheba ?? '',
-      referral_code: user.referral_code || existingData.referral_code || `REF-${user.id}`,
+      referral_code: user.referral_code || existingData.referral_code || `REF-${docId}`,
       is_verified:
         resolvedKycStatus === 'verified' ? true : Boolean(user.is_verified ?? existingData.is_verified),
       created_at: existingData.created_at || user.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      updatedAt: FieldValue.serverTimestamp(),
     };
 
     await ref.set(payload, { merge: true });

@@ -1,6 +1,6 @@
 /**
- * Miyanji Smart Escrow Platform - Server & Python Bot Gateway
- * Powers the Python Telegram Bot runtime, Supabase Synchronization, and Status API
+ * Miyanji Smart Escrow Platform - Server & Telegram Bot Gateway
+ * Powers the Telegraf Bot runtime, Firebase Firestore Synchronization, and Status API
  */
 
 import express, { Request, Response } from 'express';
@@ -64,11 +64,9 @@ import {
   updateUserKycStatus,
   cleanBotUsername,
   makeTelegramLink,
-  syncFromSupabase,
   syncFromFirestore,
 } from './src/db';
 
-import { supabase, isSupabaseConfigured } from './src/lib/supabase';
 import {
   isFirebaseConfigured,
   FIREBASE_PROJECT_ID,
@@ -84,6 +82,7 @@ import {
   sendTelegramMessage,
   escapeMarkdownV2,
   WEB_APP_URL,
+  WEBSITE_REGISTER_WEBHOOK_URL,
 } from './src/bot';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -212,12 +211,11 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
       python_note: 'موتور Telegraf در Node.js 22 به صورت مستقیم و بدون تداخل فعال است.',
       active_engine: isTokenSet ? 'Telegraf Node.js (اتصال مستقیم به تلگرام)' : 'در انتظار تنظیم BOT_TOKEN'
     },
-    supabase_configured: isSupabaseConfigured(),
-    supabase_url: process.env.SUPABASE_URL ? 'متصل (Supabase Cloud)' : 'پایگاه داده محلی WAL و حافظه پایدار',
     firebase_configured: isFirebaseConfigured(),
     firebase_project_id: FIREBASE_PROJECT_ID,
     firebase_database_id: FIREBASE_DATABASE_ID,
     firebase_error: getFirebaseInitError(),
+    webhook_url: WEBSITE_REGISTER_WEBHOOK_URL,
     pid: botPid,
     stats,
     active_modules: [
@@ -233,20 +231,47 @@ app.get('/api/bot/status', (req: Request, res: Response) => {
   });
 });
 
-// Manual/Automatic Firestore & Supabase DB Sync endpoint
+// Manual/Automatic Firestore DB Sync endpoint
 app.post('/api/db/sync', async (req: Request, res: Response) => {
   try {
-    const [sbStats, fbStats] = await Promise.all([
-      syncFromSupabase(),
-      syncFromFirestore(),
-    ]);
+    const fbStats = await syncFromFirestore();
     res.json({
       success: true,
-      message: `همگام‌سازی موفق انجام شد. فایربیس: ${fbStats.usersCount} کاربر و ${fbStats.dealsCount} معامله | سوپابیس: ${sbStats.usersCount} کاربر و ${sbStats.contractsCount} قرارداد.`,
-      stats: { ...sbStats, firestore: fbStats }
+      message: `همگام‌سازی موفق با Firebase Firestore انجام شد (${fbStats.usersCount} کاربر و ${fbStats.dealsCount} معامله).`,
+      stats: { firestore: fbStats }
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Bot user registration webhook receiver (compatible with { telegramId, phone, fullName })
+app.post('/api/bot/register-user', async (req: Request, res: Response) => {
+  try {
+    const telegramId = Number(req.body?.telegramId || req.body?.telegram_id || req.body?.id);
+    const rawPhone = String(req.body?.phone || req.body?.phone_number || '').trim();
+    const fullName = String(req.body?.fullName || req.body?.full_name || '').trim() || 'کاربر میانجی';
+
+    if (!telegramId || Number.isNaN(telegramId)) {
+      return res.status(400).json({ success: false, error: 'telegramId نامعتبر است.' });
+    }
+
+    const cleanPhone = rawPhone ? normalizeIranianPhone(rawPhone) : '';
+    const existing = await getUserAsync(telegramId);
+    const user = await registerOrUpdateUser({
+      id: telegramId,
+      telegram_id: telegramId,
+      chat_id: Number(req.body?.chat_id || existing?.chat_id || telegramId),
+      phone_number: cleanPhone || existing?.phone_number || '',
+      full_name: fullName,
+      kyc_status: existing?.kyc_status === 'verified' ? 'verified' : 'pending',
+      wallet_balance: existing?.wallet_balance ?? 0,
+      escrow_locked_balance: existing?.escrow_locked_balance ?? 0,
+    });
+
+    return res.json({ success: true, user });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1802,30 +1827,6 @@ const handleTelegramAuth = async (req: Request, res: Response) => {
   const tid = Number(tg_user_id) || 1802649782;
 
   let user = await getUserAsync(tid);
-  if (!user && isSupabaseConfigured() && supabase) {
-    try {
-      const { data, error } = await supabase.from('users').select('*').or(`id.eq.${tid},telegram_id.eq.${tid}`).limit(1);
-      if (!error && data && data.length > 0) {
-        const u = data[0];
-        user = await registerOrUpdateUser({
-          id: Number(u.id),
-          telegram_id: Number(u.telegram_id || u.id),
-          full_name: u.full_name || (tg_fullname || `کاربر ${tid}`),
-          phone_number: u.phone_number || '',
-          role: u.role || 'employer',
-          wallet_balance: Number(u.wallet_balance) || 0,
-          escrow_locked_balance: Number(u.escrow_locked_balance) || 0,
-          kyc_level: u.kyc_level || 'silver',
-          kyc_status: u.kyc_status || 'verified',
-          national_id: u.national_id || '',
-          sheba: u.sheba || '',
-          referral_code: u.referral_code || `REF-${tid}`
-        });
-      }
-    } catch (err: any) {
-      console.warn('Supabase fetch in handleTelegramAuth:', err.message);
-    }
-  }
 
   if (!user) {
     user = await registerOrUpdateUser({

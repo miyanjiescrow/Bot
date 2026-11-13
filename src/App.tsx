@@ -45,8 +45,7 @@ interface BotStatus {
   bot_username: string;
   bot_token_configured: boolean;
   web_app_url?: string;
-  supabase_configured: boolean;
-  supabase_url: string;
+  webhook_url?: string;
   firebase_configured?: boolean;
   firebase_project_id?: string;
   firebase_database_id?: string;
@@ -192,7 +191,7 @@ const App = () => {
         await fetchBotData();
       } else {
         setSyncStatusMsg({
-          text: data.error || 'خطا در برقراری ارتباط با Supabase.',
+          text: data.error || 'خطا در برقراری ارتباط با Firebase Firestore.',
           type: 'error'
         });
       }
@@ -461,294 +460,65 @@ const App = () => {
     }
   };
 
-  const sqlSchemaCode = `-- =============================================================================
--- سامانه هوشمند واسطه‌گری امن و اسکرو میانجی (Miyanji Escrow Platform)
--- اسکریپت رسمی، جامع و بدون خطای پایگاه داده در Supabase / PostgreSQL
--- =============================================================================
-
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-CREATE OR REPLACE FUNCTION public.update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = now();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- ۱. جدول کاربران سیستم (احراز هویت پایدار تلگرام و وب)
-CREATE TABLE IF NOT EXISTS public.users (
-    id BIGINT PRIMARY KEY,
-    telegram_id BIGINT NULL,
-    telegram_username VARCHAR(100) NULL,
-    username VARCHAR(100) NULL,
-    phone_number VARCHAR(30) NULL,
-    full_name VARCHAR(150) NOT NULL DEFAULT 'کاربر میانجی',
-    national_id VARCHAR(10) NULL,
-    role VARCHAR(30) NOT NULL DEFAULT 'user',
-    wallet_balance NUMERIC(15, 2) NOT NULL DEFAULT 0.0,
-    escrow_locked_balance NUMERIC(15, 2) NOT NULL DEFAULT 0.0,
-    kyc_level VARCHAR(20) NOT NULL DEFAULT 'basic',
-    kyc_status VARCHAR(30) NOT NULL DEFAULT 'unverified',
-    kyc_reject_reason TEXT NULL,
-    kyc_submitted_at TIMESTAMPTZ NULL,
-    kyc_verified_at TIMESTAMPTZ NULL,
-    is_verified BOOLEAN NOT NULL DEFAULT false,
-    sheba VARCHAR(34) NULL,
-    sheba_owner_name VARCHAR(150) NULL,
-    financial_pin_hash TEXT NULL,
-    referral_code VARCHAR(32) NULL,
-    invited_by BIGINT NULL,
-    payment_cards JSONB DEFAULT '[]'::jsonb,
-    is_blacklisted BOOLEAN NOT NULL DEFAULT false,
-    is_terms_accepted BOOLEAN NOT NULL DEFAULT true,
-    terms_accepted_at TIMESTAMPTZ NULL,
-    impersonated_by BIGINT NULL,
-    password_hash TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- ستون‌های تکمیلی کاربران جهت سازگاری جداول قدیمی
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS telegram_id BIGINT NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(100) NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username VARCHAR(100) NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30) NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS national_id VARCHAR(10) NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(15, 2) DEFAULT 0.0;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS escrow_locked_balance NUMERIC(15, 2) DEFAULT 0.0;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS kyc_level VARCHAR(20) DEFAULT 'basic';
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS kyc_status VARCHAR(30) DEFAULT 'unverified';
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS kyc_reject_reason TEXT NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sheba VARCHAR(34) NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sheba_owner_name VARCHAR(150) NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS financial_pin_hash TEXT NULL;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS payment_cards JSONB DEFAULT '[]'::jsonb;
-
-CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON public.users(telegram_id);
-CREATE INDEX IF NOT EXISTS idx_users_phone ON public.users(phone_number);
-CREATE INDEX IF NOT EXISTS idx_users_national_id ON public.users(national_id);
-CREATE INDEX IF NOT EXISTS idx_users_kyc_status ON public.users(kyc_status);
-
-DROP TRIGGER IF EXISTS trigger_users_updated_at ON public.users;
-CREATE TRIGGER trigger_users_updated_at
-    BEFORE UPDATE ON public.users
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
--- ۲. جدول معاملات و قراردادهای اسکرو (contracts)
-CREATE TABLE IF NOT EXISTS public.contracts (
-    id UUID DEFAULT gen_random_uuid(),
-    contract_id VARCHAR(32) PRIMARY KEY,
-    invite_token VARCHAR(64) NULL,
-    title VARCHAR(255) NOT NULL DEFAULT 'معامله هوشمند میانجی',
-    category VARCHAR(50) NOT NULL DEFAULT 'GEN',
-    amount NUMERIC(15, 2) NOT NULL DEFAULT 0 CHECK (amount >= 0),
-    commission_payer VARCHAR(30) NOT NULL DEFAULT 'split_50_50',
-    commission_rate NUMERIC(5, 2) NOT NULL DEFAULT 5.0,
-    commission_amount NUMERIC(15, 2) NOT NULL DEFAULT 0,
-    creator_id BIGINT NULL,
-    creator_role VARCHAR(20) NOT NULL DEFAULT 'employer',
-    buyer_id BIGINT NULL,
-    buyer_fullname VARCHAR(150) NULL,
-    buyer_phone VARCHAR(30) NULL,
-    buyer_alt_phone VARCHAR(30) NULL,
-    buyer_national_id VARCHAR(10) NULL,
-    buyer_signed_at TIMESTAMPTZ NULL,
-    buyer_otp_verified BOOLEAN NOT NULL DEFAULT false,
-    buyer_otp_code VARCHAR(20) NULL,
-    buyer_ip VARCHAR(50) NULL,
-    buyer_role VARCHAR(30) DEFAULT 'employer',
-    buyer_signature_hash VARCHAR(128) NULL,
-    seller_id BIGINT NULL,
-    seller_fullname VARCHAR(150) NULL,
-    seller_phone VARCHAR(30) NULL,
-    seller_alt_phone VARCHAR(30) NULL,
-    seller_national_id VARCHAR(10) NULL,
-    seller_signed_at TIMESTAMPTZ NULL,
-    seller_otp_verified BOOLEAN NOT NULL DEFAULT false,
-    seller_otp_code VARCHAR(20) NULL,
-    seller_ip VARCHAR(50) NULL,
-    seller_role VARCHAR(30) DEFAULT 'freelancer',
-    seller_signature_hash VARCHAR(128) NULL,
-    arbitrator_id BIGINT NULL,
-    deadline INT NOT NULL DEFAULT 7,
-    deadline_days INT NOT NULL DEFAULT 7,
-    has_inspection_period BOOLEAN NOT NULL DEFAULT false,
-    inspection_period_hours INT NOT NULL DEFAULT 0,
-    has_free_revisions BOOLEAN NOT NULL DEFAULT true,
-    free_revisions_count INT NOT NULL DEFAULT 2,
-    free_edits INT NOT NULL DEFAULT 2,
-    free_edits_left INT NOT NULL DEFAULT 2,
-    free_edits_total INT NOT NULL DEFAULT 2,
-    staged_payment BOOLEAN NOT NULL DEFAULT false,
-    recurring BOOLEAN NOT NULL DEFAULT false,
-    description TEXT NULL,
-    deliverables JSONB DEFAULT '{}'::jsonb,
-    milestones JSONB DEFAULT '[]'::jsonb,
-    status VARCHAR(40) NOT NULL DEFAULT 'draft',
-    escrow_deposit_status VARCHAR(30) NOT NULL DEFAULT 'unpaid',
-    cancel_requested_by BIGINT NULL,
-    paid_at TIMESTAMPTZ NULL,
-    completed_at TIMESTAMPTZ NULL,
-    history JSONB DEFAULT '[]'::jsonb,
-    created_by BIGINT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- ستون‌های تکمیلی قراردادها
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS contract_id VARCHAR(32);
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS invite_token VARCHAR(64) NULL;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS deadline INT DEFAULT 7;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS free_edits INT DEFAULT 2;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS free_edits_left INT DEFAULT 2;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS free_edits_total INT DEFAULT 2;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS cancel_requested_by BIGINT NULL;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS buyer_alt_phone VARCHAR(30) NULL;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS seller_alt_phone VARCHAR(30) NULL;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS buyer_otp_verified BOOLEAN DEFAULT false;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS seller_otp_verified BOOLEAN DEFAULT false;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS buyer_otp_code VARCHAR(20) NULL;
-ALTER TABLE public.contracts ADD COLUMN IF NOT EXISTS seller_otp_code VARCHAR(20) NULL;
-
-CREATE INDEX IF NOT EXISTS idx_contracts_creator ON public.contracts(creator_id);
-CREATE INDEX IF NOT EXISTS idx_contracts_buyer ON public.contracts(buyer_id);
-CREATE INDEX IF NOT EXISTS idx_contracts_seller ON public.contracts(seller_id);
-CREATE INDEX IF NOT EXISTS idx_contracts_status ON public.contracts(status);
-CREATE INDEX IF NOT EXISTS idx_contracts_invite ON public.contracts(invite_token);
-CREATE INDEX IF NOT EXISTS idx_contracts_contract_id ON public.contracts(contract_id);
-
-DROP TRIGGER IF EXISTS trigger_contracts_updated_at ON public.contracts;
-CREATE TRIGGER trigger_contracts_updated_at
-    BEFORE UPDATE ON public.contracts
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
--- ۳. جدول امضاهای الکترونیک غیرقابل انکار (signatures)
-CREATE TABLE IF NOT EXISTS public.signatures (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contract_id VARCHAR(32) NOT NULL,
-    telegram_id BIGINT NOT NULL,
-    telegram_username VARCHAR(100) NULL,
-    full_name VARCHAR(150) NOT NULL,
-    national_id VARCHAR(10) NOT NULL,
-    phone_number VARCHAR(30) NOT NULL,
-    role VARCHAR(30) NOT NULL,
-    signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    otp_code_hash VARCHAR(128) NULL,
-    otp_verified BOOLEAN NOT NULL DEFAULT true,
-    client_ip VARCHAR(50) NULL,
-    verification_method VARCHAR(50) NOT NULL DEFAULT 'telegram_contact_sms_otp',
-    signature_hash VARCHAR(128) NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'valid',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_signatures_contract ON public.signatures(contract_id);
-CREATE INDEX IF NOT EXISTS idx_signatures_telegram ON public.signatures(telegram_id);
-CREATE INDEX IF NOT EXISTS idx_signatures_hash ON public.signatures(signature_hash);
-
--- ۴. سایر جداول سیستم (transactions, withdrawal_requests, ambassadors, user_states)
-CREATE TABLE IF NOT EXISTS public.transactions (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    contract_id VARCHAR(32) NULL,
-    type VARCHAR(40) NOT NULL,
-    amount NUMERIC(15, 2) NOT NULL,
-    title VARCHAR(255) NOT NULL DEFAULT 'تراکنش مالی میانجی',
-    description TEXT NULL,
-    tracking_code VARCHAR(64) NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'completed',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_transactions_user ON public.transactions(user_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_contract ON public.transactions(contract_id);
-
--- حل قطعی خطای relation kind (ERROR 42809) در Supabase بدون ایجاد خطا یا حذف داده‌ها
-DO $$ 
-DECLARE 
-    r_kind CHAR;
-BEGIN
-    SELECT relkind INTO r_kind 
-    FROM pg_class c 
-    JOIN pg_namespace n ON n.oid = c.relnamespace 
-    WHERE n.nspname = 'public' AND c.relname = 'deals';
-    
-    IF r_kind = 'r' OR r_kind = 'p' THEN
-        BEGIN
-            EXECUTE 'INSERT INTO public.contracts SELECT * FROM public.deals ON CONFLICT (contract_id) DO NOTHING';
-        EXCEPTION WHEN OTHERS THEN NULL;
-        END;
-        EXECUTE 'DROP TABLE public.deals CASCADE';
-    ELSIF r_kind = 'v' OR r_kind = 'm' THEN
-        EXECUTE 'DROP VIEW public.deals CASCADE';
-    END IF;
-EXCEPTION WHEN OTHERS THEN NULL;
-END $$;
-
-CREATE OR REPLACE VIEW public.deals AS SELECT * FROM public.contracts;
-
-DO $$ 
-DECLARE 
-    r_kind CHAR;
-BEGIN
-    SELECT relkind INTO r_kind 
-    FROM pg_class c 
-    JOIN pg_namespace n ON n.oid = c.relnamespace 
-    WHERE n.nspname = 'public' AND c.relname = 'wallet_transactions';
-    
-    IF r_kind = 'r' OR r_kind = 'p' THEN
-        BEGIN
-            EXECUTE 'INSERT INTO public.transactions SELECT * FROM public.wallet_transactions ON CONFLICT DO NOTHING';
-        EXCEPTION WHEN OTHERS THEN NULL;
-        END;
-        EXECUTE 'DROP TABLE public.wallet_transactions CASCADE';
-    ELSIF r_kind = 'v' OR r_kind = 'm' THEN
-        EXECUTE 'DROP VIEW public.wallet_transactions CASCADE';
-    END IF;
-EXCEPTION WHEN OTHERS THEN NULL;
-END $$;
-
-CREATE OR REPLACE VIEW public.wallet_transactions AS SELECT * FROM public.transactions;
-
-CREATE TABLE IF NOT EXISTS public.withdrawal_requests (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    amount NUMERIC(15, 2) NOT NULL,
-    sheba VARCHAR(34) NOT NULL,
-    sheba_owner_name VARCHAR(150) NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'pending',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.ambassadors (
-    id BIGSERIAL PRIMARY KEY,
-    telegram_id BIGINT UNIQUE,
-    user_id BIGINT NULL,
-    commission_rate NUMERIC(5, 2) DEFAULT 10.0,
-    tier_level VARCHAR(30) DEFAULT 'Bronze',
-    is_active BOOLEAN DEFAULT true,
-    total_referrals INT DEFAULT 0,
-    total_earnings NUMERIC(15, 2) DEFAULT 0.0,
-    withdrawable_balance NUMERIC(15, 2) DEFAULT 0.0,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.user_states (
-    id BIGINT PRIMARY KEY,
-    user_id BIGINT NULL,
-    state TEXT NOT NULL DEFAULT 'START',
-    data JSONB NOT NULL DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- مجوزها و دسترسی‌های بدون محدودیت برای کلاینت‌ها و وب
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;`;
+  const firestoreSchemaCode = JSON.stringify(
+    {
+      firebase: {
+        projectId: 'mianji-3639d',
+        databaseId: 'ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73',
+        webAppUrl: 'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app',
+        registerWebhookUrl: 'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user'
+      },
+      collections: {
+        users: {
+          documentId: 'String(telegram_id)',
+          fields: {
+            id: 'String(user.id)',
+            phone_number: '09057586655',
+            full_name: 'کاربر میانجی',
+            kyc_status: 'pending | verified | rejected',
+            wallet_balance: 0,
+            escrow_locked_balance: 0,
+            updatedAt: 'SERVER_TIMESTAMP'
+          }
+        },
+        deals: {
+          documentId: 'contract_id (e.g. MNJ-1042)',
+          fields: {
+            contract_id: 'string',
+            title: 'string',
+            amount: 'number',
+            status: 'draft | active | funded | delivered | completed | disputed | cancelled',
+            buyer_id: 'string | number | null',
+            seller_id: 'string | number | null',
+            updatedAt: 'SERVER_TIMESTAMP'
+          }
+        },
+        otp_codes: {
+          documentId: 'clean_phone (e.g. 09057586655)',
+          fields: {
+            phone: 'string',
+            code: '5-digit OTP string',
+            telegram_id: 'string',
+            used: 'boolean',
+            expiresAt: 'timestamp',
+            updatedAt: 'SERVER_TIMESTAMP'
+          }
+        }
+      },
+      webhookSync: {
+        method: 'POST',
+        url: 'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user',
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          telegramId: 'String(user.id)',
+          phone: 'clean_phone',
+          fullName: 'user.full_name'
+        }
+      }
+    },
+    null,
+    2
+  );
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans" dir="rtl">
@@ -856,7 +626,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
             }`}
           >
             <Database className="w-4 h-4" />
-            اسکیمای Supabase SQL
+            دیتابیس فایربیس (Firestore)
           </button>
 
           <button
@@ -1071,12 +841,12 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                     آدرس متصل وب‌سایت میانجی (Mini App)
                   </h4>
                   <a
-                    href={botStatus?.web_app_url || 'https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app'}
+                    href={botStatus?.web_app_url || 'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app'}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] text-blue-400 hover:text-blue-300 font-mono truncate max-w-full"
                   >
-                    {botStatus?.web_app_url || 'https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app'}
+                    {botStatus?.web_app_url || 'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app'}
                   </a>
                 </div>
 
@@ -1089,8 +859,11 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                     <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">💎 پنل سفیران</div>
                     <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">🪪 بررسی کدهای ملی</div>
                     <div className="bg-slate-900 border border-slate-800 rounded-lg py-2 px-3 text-center text-[11px] text-slate-300">🎧 پشتیبانی و راهنمای استفاده 📖</div>
-                    <div className="col-span-2 bg-blue-600/20 border border-blue-500/40 rounded-lg py-2 px-3 text-center text-[11px] font-bold text-blue-300">
-                      🌐 ورود به وب‌سایت میانجی (WebApp)
+                    <div className="bg-emerald-600/15 border border-emerald-500/30 rounded-lg py-2 px-3 text-center text-[11px] font-medium text-emerald-300">
+                      🔐 دریافت کد ورود به سایت
+                    </div>
+                    <div className="bg-blue-600/20 border border-blue-500/40 rounded-lg py-2 px-3 text-center text-[11px] font-bold text-blue-300">
+                      ورود به پنل میانجی 🌐
                     </div>
                   </div>
                 </div>
@@ -1532,19 +1305,18 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
           </div>
         )}
 
-        {/* Tab: Supabase SQL Schema & Persistence */}
+        {/* Tab: Firebase Firestore & Webhook Sync */}
         {activeTab === 'database' && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
-            {/* Persistence & Ephemeral Disk Notice */}
             <div className="bg-blue-950/40 border border-blue-500/30 rounded-xl p-4 space-y-3">
               <div className="flex items-start gap-3">
                 <ShieldCheck className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" />
                 <div className="space-y-1">
                   <h4 className="text-sm font-bold text-white">
-                    چرا با هر بار دیپلوی اطلاعات پاک می‌شد و چگونه برای همیشه پایدار می‌ماند؟
+                    اتصال مستقیم ربات تلگرام و وب‌سایت میانجی به Firebase Firestore
                   </h4>
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    سرورهای ابری (مانند Render، Heroku، Cloud Run یا داکر) دارای دیسک موقت (<span className="text-blue-300 font-mono">Ephemeral Storage</span>) هستند. در هر بار دیپلوی یا به‌روزرسانی کد، کانتینر قبلی به طور کامل نابود شده و ایمیج جدید اجرا می‌شود؛ بنابراین دیتابیس محلی موقت (<span className="text-amber-300 font-mono">miyanji_fsm.db</span>) پاک می‌گردد.
+                    دیتابیس سوپابیس حذف گردید و تمام کاربران، کدهای OTP و قراردادهای اسکرو مستقیماً در پایگاه داده مشترک <span className="text-emerald-300 font-mono">Firebase Firestore</span> ذخیره می‌شوند و همزمان پس از اشتراک‌گذاری شماره تماس به وب‌هوک وب‌سایت ارسال می‌گردند.
                   </p>
                 </div>
               </div>
@@ -1553,20 +1325,22 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                 <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800 space-y-1">
                   <div className="font-bold text-emerald-400 flex items-center gap-1.5">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>راهکار استاندارد ۱: اتصال به Supabase Cloud</span>
+                    <span>پروژه و دیتابیس فایربیس</span>
                   </div>
-                  <p className="text-slate-400 text-[11px] leading-relaxed">
-                    با ثبت متغیرهای <code className="text-blue-300 font-mono">SUPABASE_URL</code> و <code className="text-blue-300 font-mono">SUPABASE_KEY</code> در پنل هاست، تمام کاربران، قراردادها و تراکنش‌ها در سرور دیتابیس ابری ذخیره شده و پس از صدها دیپلوی نیز خودکار بازیابی می‌شوند.
+                  <p className="text-slate-400 text-[11px] font-mono leading-relaxed break-all">
+                    Project ID: {botStatus?.firebase_project_id || 'mianji-3639d'}
+                    <br />
+                    Database ID: {botStatus?.firebase_database_id || 'ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73'}
                   </p>
                 </div>
 
                 <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800 space-y-1">
-                  <div className="font-bold text-amber-400 flex items-center gap-1.5">
+                  <div className="font-bold text-blue-400 flex items-center gap-1.5">
                     <Database className="w-3.5 h-3.5" />
-                    <span>راهکار استاندارد ۲: دیسک پایدار (Render Persistent Disk)</span>
+                    <span>همگام‌سازی آنی وب‌هوک (Webhook Sync)</span>
                   </div>
-                  <p className="text-slate-400 text-[11px] leading-relaxed">
-                    در پنل Render در بخش Disks، یک دیسک پایدار روی مسیر <code className="text-amber-300 font-mono">/var/data</code> اضافه کرده و متغیر <code className="text-amber-300 font-mono">PERSISTENT_DATA_PATH=/var/data</code> را ست کنید تا فایل دیتابیس در سخت‌افزار مستقل ذخیره شود.
+                  <p className="text-slate-400 text-[11px] font-mono leading-relaxed break-all">
+                    POST {botStatus?.webhook_url || 'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user'}
                   </p>
                 </div>
               </div>
@@ -1575,18 +1349,18 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
             {/* Live Connection Status & Sync Action */}
             <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800">
               <div className="flex items-center gap-3">
-                <div className={`w-3 h-3 rounded-full ${botStatus?.supabase_configured ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                <div className={`w-3 h-3 rounded-full ${botStatus?.firebase_configured ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
                 <div>
                   <div className="text-xs font-bold text-white flex items-center gap-2">
                     <span>وضعیت اتصال پایگاه داده:</span>
-                    <span className={botStatus?.supabase_configured ? 'text-emerald-400' : 'text-amber-400'}>
-                      {botStatus?.supabase_configured ? 'متصل به Supabase Cloud (پایداری دائمی)' : 'پایگاه داده محلی SQLite (نیازمند تنظیم متغیرهای Supabase)'}
+                    <span className={botStatus?.firebase_configured ? 'text-emerald-400' : 'text-amber-400'}>
+                      {botStatus?.firebase_configured ? 'متصل به Firebase Firestore (پایداری دائمی)' : 'نیازمند ثبت FIREBASE_SERVICE_ACCOUNT_JSON در محیط سرور'}
                     </span>
                   </div>
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    {botStatus?.supabase_configured
-                      ? 'همگام‌سازی ابری فعال است؛ پس از هر دیپلوی اطلاعات خودکار بازیابی می‌شوند.'
-                      : 'جهت جلوگیری از پاک شدن اطلاعات هنگام دیپلوی، متغیرهای SUPABASE_URL و SUPABASE_KEY را در تنظیمات هاست وارد نمایید.'}
+                    {botStatus?.firebase_configured
+                      ? 'کالکشن‌های users، deals و otp_codes مستقیماً با وب‌سایت همگام هستند.'
+                      : 'جهت فعال‌سازی همگام‌سازی ابری با Firestore، کلید Service Account فایربیس را در متغیر محیطی سرور ثبت کنید.'}
                   </div>
                 </div>
               </div>
@@ -1598,7 +1372,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
                   className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-3.5 py-2 rounded-lg font-medium transition"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${syncingDb ? 'animate-spin' : ''}`} />
-                  <span>{syncingDb ? 'درحال بازیابی...' : '🔄 همگام‌سازی و بازیابی لحظه‌ای از دیتابیس ابری'}</span>
+                  <span>{syncingDb ? 'درحال بازیابی...' : '🔄 همگام‌سازی و بازیابی لحظه‌ای از Firestore'}</span>
                 </button>
               </div>
             </div>
@@ -1609,34 +1383,34 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
               </div>
             )}
 
-            {/* SQL Script Section */}
+            {/* Firestore Schema Section */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
                     <FileCode2 className="w-4 h-4 text-blue-400" />
-                    اسکریپت ساخت جداول دیتابیس (فایل supabase_schema.sql)
+                    ساختار کالکشن‌های مشترک Firebase Firestore
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    این اسکریپت را یکبار در بخش SQL Editor در داشبورد Supabase اجرا نمایید تا تمامی جداول و ستون‌ها با موفقیت ساخته شوند.
+                    سند کاربران در کالکشن <code className="text-emerald-300 font-mono">users</code> با شناسه <code className="text-emerald-300 font-mono">telegram_id</code> و زمان <code className="text-emerald-300 font-mono">SERVER_TIMESTAMP</code> ثبت می‌شود.
                   </p>
                 </div>
 
                 <button
                   onClick={() => {
-                    navigator.clipboard.writeText(sqlSchemaCode);
+                    navigator.clipboard.writeText(firestoreSchemaCode);
                     setCopiedSql(true);
                     setTimeout(() => setCopiedSql(false), 2000);
                   }}
                   className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-2 rounded-lg transition"
                 >
                   {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedSql ? 'کپی شد' : 'کپی اسکریپت کامل SQL'}</span>
+                  <span>{copiedSql ? 'کپی شد' : 'کپی ساختار JSON'}</span>
                 </button>
               </div>
 
               <pre className="bg-black/90 p-4 rounded-xl font-mono text-[11px] text-blue-300 overflow-x-auto leading-relaxed border border-slate-800 max-h-[350px]" dir="ltr">
-                {sqlSchemaCode}
+                {firestoreSchemaCode}
               </pre>
             </div>
           </div>
@@ -1694,7 +1468,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
                 <h5 className="font-bold text-xs text-emerald-400 mb-1">۴. مدیریت حالت‌ها و اسکرو (deal_wizard.py)</h5>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  ماشین وضعیت تلگرام (FSM) با پشتیبانی از مهلت تست اختیاری، اصلاحیه رایگان، لینک اختصاصی دعوت و ادغام یکپارچه با Supabase PostgreSQL.
+                  ماشین وضعیت تلگرام (FSM) با پشتیبانی از مهلت تست اختیاری، اصلاحیه رایگان، لینک اختصاصی دعوت و ادغام یکپارچه با Firebase Firestore.
                 </p>
               </div>
             </div>
@@ -2198,7 +1972,7 @@ GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-950 px-4 py-3 text-center text-xs text-slate-500">
-        سامانه هوشمند واسطه‌گری امن میانجی (Miyanji Escrow) — توسعه‌یافته با Python 3.10، Supabase و Telegraf/TeleBot
+        سامانه هوشمند واسطه‌گری امن میانجی (Miyanji Escrow) — متصل به Firebase Firestore و ربات Telegraf
       </footer>
     </div>
   );
