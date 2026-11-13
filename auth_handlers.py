@@ -143,14 +143,14 @@ def show_user_profile(bot: TeleBot, chat_id: int, user_id: int):
     )
 
     markup = InlineKeyboardMarkup(row_width=1)
-    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app"
+    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app"
     sep = "&" if "?" in web_app_url else "?"
     target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
     
     try:
-        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", web_app=kb.WebAppInfo(url=target_url)))
+        markup.add(InlineKeyboardButton("ورود به پنل میانجی 🌐", web_app=kb.WebAppInfo(url=target_url)))
     except Exception:
-        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", url=target_url))
+        markup.add(InlineKeyboardButton("ورود به پنل میانجی 🌐", url=target_url))
     markup.add(
         InlineKeyboardButton("✏️ ویرایش مشخصات (نام و کد ملی)", callback_data="profile_edit_info"),
         InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="profile_back")

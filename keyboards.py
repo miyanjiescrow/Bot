@@ -13,7 +13,7 @@ except (ImportError, AttributeError):
 
 def get_smart_panel_inline(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     """کیبورد شیشه‌ای جهت باز کردن مینی‌اپ وب و پنل هوشمند واسطه‌گری"""
-    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app")
+    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app")
     if user_id:
         sep = "&" if "?" in web_app_url else "?"
         target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
@@ -22,9 +22,9 @@ def get_smart_panel_inline(user_id: Optional[int] = None) -> InlineKeyboardMarku
 
     markup = InlineKeyboardMarkup(row_width=1)
     try:
-        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", web_app=WebAppInfo(url=target_url)))
+        markup.add(InlineKeyboardButton("ورود به پنل میانجی 🌐", web_app=WebAppInfo(url=target_url)))
     except Exception:
-        markup.add(InlineKeyboardButton("🌐 ورود به پنل هوشمند (Web App)", url=target_url))
+        markup.add(InlineKeyboardButton("ورود به پنل میانجی 🌐", url=target_url))
     return markup
 
 def get_main_menu(is_admin: bool = False, is_verified: bool = False, user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
@@ -33,19 +33,12 @@ def get_main_menu(is_admin: bool = False, is_verified: bool = False, user_id: Op
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
-    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-sjpdhc35u4s3tgx6r4p3hb-497526016591.europe-west3.run.app")
+    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app")
     if user_id:
         sep = "&" if "?" in web_app_url else "?"
         target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
     else:
         target_url = web_app_url
-
-    # ردیف ویژه بالا: دکمه وب‌اپلیکیشن ورود به پنل هوشمند
-    try:
-        web_app_btn = KeyboardButton("🌐 ورود به پنل هوشمند", web_app=WebAppInfo(url=target_url))
-    except Exception:
-        web_app_btn = KeyboardButton("🌐 ورود به پنل هوشمند")
-    markup.row(web_app_btn)
 
     # ردیف ۱: معاملات
     markup.row(
@@ -61,6 +54,13 @@ def get_main_menu(is_admin: bool = False, is_verified: bool = False, user_id: Op
     
     # ردیف ۳: راهنما و پشتیبانی
     markup.row(KeyboardButton("🎧 پشتیبانی و راهنمای استفاده 📖"))
+
+    # ردیف پایین: دکمه وب‌اپلیکیشن ورود به پنل هوشمند
+    try:
+        web_app_btn = KeyboardButton("ورود به پنل میانجی 🌐", web_app=WebAppInfo(url=target_url))
+    except Exception:
+        web_app_btn = KeyboardButton("ورود به پنل میانجی 🌐")
+    markup.row(web_app_btn)
     
     if is_admin:
         markup.row(

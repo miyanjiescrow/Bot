@@ -1173,11 +1173,24 @@ export function startBot() {
       });
 
     bot.launch({ dropPendingUpdates: true })
-      .then(() => {
+      .then(async () => {
         const cleanBot = cleanBotUsername(process.env.BOT_USERNAME);
         const msg = `✅ Miyanji Telegram Bot connected and polling active for @${cleanBot}`;
         console.log(`[Miyanji Bot] ${msg}`);
         appendBotLog(msg);
+
+        try {
+          await bot?.telegram.setChatMenuButton({
+            menuButton: {
+              type: 'web_app',
+              text: 'ورود به پنل میانجی 🌐',
+              web_app: { url: WEB_APP_URL },
+            },
+          });
+          appendBotLog(`🌐 Chat menu button synced to ${WEB_APP_URL}`);
+        } catch (menuErr: any) {
+          appendBotLog(`⚠️ Could not sync chat menu button: ${menuErr?.message || menuErr}`);
+        }
       })
       .catch((err: any) => {
         const errMsg = `⚠️ Failed to launch Telegram Bot polling: ${err?.message || err}`;
