@@ -73,7 +73,18 @@ function parseServiceAccountFromEnv(): ServiceAccount | null {
     }
   }
 
-  const parsed = JSON.parse(jsonText) as Record<string, any>;
+  let parsed: Record<string, any>;
+  try {
+    parsed = JSON.parse(jsonText) as Record<string, any>;
+  } catch {
+    // Recover if dashboard env var turned \n inside private_key into actual line breaks
+    const sanitized = jsonText.replace(/\r?\n/g, (match, offset, full) => {
+      const before = full.slice(0, offset);
+      const quoteCount = (before.match(/(?<!\\)"/g) || []).length;
+      return quoteCount % 2 === 1 ? '\\n' : match;
+    });
+    parsed = JSON.parse(sanitized) as Record<string, any>;
+  }
   if (typeof parsed.private_key === 'string') {
     parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
   }

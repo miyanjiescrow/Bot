@@ -29,12 +29,32 @@ import {
 } from './db';
 
 export const WEB_APP_URL =
-  (process.env.WEB_APP_URL || '').trim() ||
+  (process.env.WEB_APP_URL || process.env.WEBAPP_URL || '').trim() ||
   'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app';
+
+export const APP_URL = (process.env.APP_URL || '').trim();
 
 export const WEBSITE_REGISTER_WEBHOOK_URL =
   (process.env.WEBSITE_REGISTER_WEBHOOK_URL || '').trim() ||
   'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user';
+
+function parseEnvInt(value: string | undefined, fallback: number | null = null): number | null {
+  if (!value) return fallback;
+  const cleaned = String(value).split('#')[0].trim();
+  if (!cleaned) return fallback;
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+export const BOT_ENV_CONFIG = {
+  ADMIN_ID: parseEnvInt(process.env.ADMIN_ID, 1802649782),
+  OWNER_ID: parseEnvInt(process.env.OWNER_ID, parseEnvInt(process.env.ADMIN_ID, 1802649782)),
+  MJ_ADMIN: parseEnvInt(process.env.MJ_ADMIN, null),
+  MJCHNL: parseEnvInt(process.env.MJCHNL, null),
+  MJNOTE: parseEnvInt(process.env.MJNOTE, parseEnvInt(process.env.ARCHIVE_CHANNEL_ID, null)),
+  APP_URL,
+  WEB_APP_URL,
+};
 
 
 const __filename = fileURLToPath(import.meta.url);
