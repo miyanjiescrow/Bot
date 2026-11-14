@@ -132,10 +132,13 @@ export function setCurrentUserId(id: number): void {
 // تابع استانداردسازی شماره تلفن همراه ایران (ملاک اصلی هویت اکانت‌ها)
 export function normalizeIranianPhone(phone: string): string {
   if (!phone) return '';
-  let clean = phone.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
-  clean = clean.replace(/[\s\-\(\)\+]/g, '');
+  let clean = String(phone)
+    .trim()
+    .replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString())
+    .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .replace(/\D/g, '');
   if (clean.startsWith('0098')) clean = clean.substring(4);
-  else if (clean.startsWith('98')) clean = clean.substring(2);
+  else if (clean.startsWith('98') && clean.length >= 12) clean = clean.substring(2);
   if (!clean.startsWith('0') && clean.length === 10) clean = '0' + clean;
   return clean;
 }
@@ -1258,16 +1261,26 @@ export function resetFinancialPinWithOtp(
   return { success: true, message: 'پین‌کد مالی با تایید پیامکی با موفقیت بازنشانی گردید.' };
 }
 
-export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id: number }): Promise<UserProfile> {
+export async function registerOrUpdateUser(
+  userData: Partial<UserProfile> & { id: number },
+  options?: { preserveExistingBalances?: boolean }
+): Promise<UserProfile> {
   const index = users.findIndex(u => u.id === Number(userData.id));
   let user: UserProfile;
   
   if (index !== -1) {
     const existing = users[index];
+    const preserve = Boolean(options?.preserveExistingBalances);
     user = {
       ...existing,
       ...userData,
-      kyc_status: existing.kyc_status === 'verified' ? 'verified' : (userData.kyc_status || existing.kyc_status),
+      role: preserve ? (existing.role || userData.role || 'user') : (userData.role || existing.role || 'user'),
+      wallet_balance: preserve ? existing.wallet_balance : (userData.wallet_balance ?? existing.wallet_balance),
+      escrow_locked_balance: preserve ? existing.escrow_locked_balance : (userData.escrow_locked_balance ?? existing.escrow_locked_balance),
+      kyc_status: existing.kyc_status === 'verified' || userData.kyc_status === 'verified'
+        ? 'verified'
+        : (userData.kyc_status || existing.kyc_status),
+      is_verified: existing.is_verified || userData.kyc_status === 'verified' || Boolean(userData.is_verified),
     };
     users[index] = user;
   } else {
@@ -1277,7 +1290,7 @@ export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id
       chat_id: userData.chat_id ? Number(userData.chat_id) : Number(userData.telegram_id || userData.id),
       full_name: userData.full_name || `کاربر ${userData.id}`,
       phone_number: userData.phone_number !== undefined ? userData.phone_number : '',
-      role: userData.role || 'employer',
+      role: userData.role || 'user',
       wallet_balance: userData.wallet_balance ?? 0,
       escrow_locked_balance: userData.escrow_locked_balance ?? 0,
       kyc_level: userData.kyc_level || 'basic',
@@ -1291,7 +1304,7 @@ export async function registerOrUpdateUser(userData: Partial<UserProfile> & { id
 
   // همگام‌سازی مستقیم با Firebase Firestore
   if (isFirebaseConfigured()) {
-    await upsertFirestoreUser(user);
+    await upsertFirestoreUser(user, options);
   }
 
   return user;

@@ -143,7 +143,7 @@ def show_user_profile(bot: TeleBot, chat_id: int, user_id: int):
     )
 
     markup = InlineKeyboardMarkup(row_width=1)
-    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app"
+    web_app_url = getattr(config, 'WEB_APP_URL', None) or "https://a-c4hy.onrender.com"
     sep = "&" if "?" in web_app_url else "?"
     target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
     

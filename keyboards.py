@@ -13,7 +13,7 @@ except (ImportError, AttributeError):
 
 def get_smart_panel_inline(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     """کیبورد شیشه‌ای جهت باز کردن مینی‌اپ وب و پنل هوشمند واسطه‌گری"""
-    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app")
+    web_app_url = getattr(config, "WEB_APP_URL", "https://a-c4hy.onrender.com")
     if user_id:
         sep = "&" if "?" in web_app_url else "?"
         target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"
@@ -33,7 +33,7 @@ def get_main_menu(is_admin: bool = False, is_verified: bool = False, user_id: Op
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
-    web_app_url = getattr(config, "WEB_APP_URL", "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app")
+    web_app_url = getattr(config, "WEB_APP_URL", "https://a-c4hy.onrender.com")
     if user_id:
         sep = "&" if "?" in web_app_url else "?"
         target_url = f"{web_app_url}{sep}user_id={user_id}&tg_id={user_id}"

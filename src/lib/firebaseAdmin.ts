@@ -244,7 +244,8 @@ export interface FirestoreUserRecord {
 }
 
 export async function upsertFirestoreUser(
-  user: Partial<UserProfile> & { id: number | string }
+  user: Partial<UserProfile> & { id: number | string },
+  options?: { preserveExistingBalances?: boolean }
 ): Promise<boolean> {
   if (!firestoreDb) return false;
 
@@ -255,9 +256,23 @@ export async function upsertFirestoreUser(
     const existingData = existingSnap.exists ? existingSnap.data() || {} : {};
 
     const resolvedKycStatus =
-      existingData.kyc_status === 'verified'
+      existingData.kyc_status === 'verified' || user.kyc_status === 'verified'
         ? 'verified'
         : user.kyc_status || existingData.kyc_status || 'pending';
+
+    const shouldPreserveBalances = Boolean(options?.preserveExistingBalances && existingSnap.exists);
+
+    const resolvedWalletBalance = shouldPreserveBalances
+      ? Number(existingData.wallet_balance ?? 0)
+      : typeof user.wallet_balance === 'number'
+        ? user.wallet_balance
+        : Number(existingData.wallet_balance ?? 0);
+
+    const resolvedEscrowBalance = shouldPreserveBalances
+      ? Number(existingData.escrow_locked_balance ?? 0)
+      : typeof user.escrow_locked_balance === 'number'
+        ? user.escrow_locked_balance
+        : Number(existingData.escrow_locked_balance ?? 0);
 
     const payload: Record<string, any> = {
       id: docId,
@@ -268,15 +283,9 @@ export async function upsertFirestoreUser(
       username: user.username ?? existingData.username ?? '',
       kyc_status: resolvedKycStatus,
       kyc_level: user.kyc_level || existingData.kyc_level || 'basic',
-      wallet_balance:
-        typeof user.wallet_balance === 'number'
-          ? user.wallet_balance
-          : Number(existingData.wallet_balance ?? 0),
-      escrow_locked_balance:
-        typeof user.escrow_locked_balance === 'number'
-          ? user.escrow_locked_balance
-          : Number(existingData.escrow_locked_balance ?? 0),
-      role: user.role || existingData.role || 'employer',
+      wallet_balance: resolvedWalletBalance,
+      escrow_locked_balance: resolvedEscrowBalance,
+      role: existingData.role || user.role || 'user',
       national_id: user.national_id ?? existingData.national_id ?? '',
       sheba: user.sheba ?? existingData.sheba ?? '',
       referral_code: user.referral_code || existingData.referral_code || `REF-${docId}`,

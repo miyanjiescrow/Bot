@@ -28,15 +28,17 @@ import {
   createAndStorePhoneOtp,
 } from './db';
 
+export const DEFAULT_WEB_APP_URL = 'https://a-c4hy.onrender.com';
+
 export const WEB_APP_URL =
-  (process.env.WEB_APP_URL || process.env.WEBAPP_URL || '').trim() ||
-  'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app';
+  (process.env.WEB_APP_URL || process.env.WEBAPP_URL || '').trim().replace(/\/+$/, '') ||
+  DEFAULT_WEB_APP_URL;
 
 export const APP_URL = (process.env.APP_URL || '').trim();
 
 export const WEBSITE_REGISTER_WEBHOOK_URL =
   (process.env.WEBSITE_REGISTER_WEBHOOK_URL || '').trim() ||
-  'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user';
+  `${WEB_APP_URL}/api/bot/register-user`;
 
 function parseEnvInt(value: string | undefined, fallback: number | null = null): number | null {
   if (!value) return fallback;
@@ -886,7 +888,7 @@ export async function notifyWebsiteUserRegistered(params: {
         phone: params.phone,
         fullName: params.fullName,
       }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(5000),
     });
     appendBotLog(`🔗 Direct webhook sync (${url}) -> HTTP ${res.status} for tg_id=${params.telegramId}`);
     return { ok: res.ok, status: res.status };
@@ -984,18 +986,19 @@ export function startBot() {
 
         const existing = await getUserAsync(telegramId);
 
-        // ثبت یا همگام‌سازی اولیه کاربر در Firestore (کالکشن users با Doc ID = telegram_id)
-        const user = await registerOrUpdateUser({
-          id: telegramId,
-          telegram_id: telegramId,
-          chat_id: chatId,
-          username,
-          full_name: fullName,
-          phone_number: existing?.phone_number || '',
-          kyc_status: existing?.kyc_status === 'verified' ? 'verified' : existing?.kyc_status || 'pending',
-          wallet_balance: existing?.wallet_balance ?? 0,
-          escrow_locked_balance: existing?.escrow_locked_balance ?? 0,
-        });
+        // ثبت یا همگام‌سازی اولیه کاربر در Firestore (کالکشن users با Doc ID = telegram_id بدون بازنویسی موجودی)
+        const user = await registerOrUpdateUser(
+          {
+            id: telegramId,
+            telegram_id: telegramId,
+            chat_id: chatId,
+            username,
+            full_name: fullName,
+            phone_number: existing?.phone_number || '',
+            kyc_status: existing?.kyc_status === 'verified' ? 'verified' : existing?.kyc_status || 'pending',
+          },
+          { preserveExistingBalances: true }
+        );
 
         if (payload) {
           const res = handleSimulatorMessage(`/start ${payload}`, telegramId);
@@ -1054,41 +1057,44 @@ export function startBot() {
 
         const existing = await getUserAsync(telegramId);
 
-        const savedUser = await registerOrUpdateUser({
-          id: telegramId,
-          telegram_id: telegramId,
-          chat_id: chatId,
-          username: ctx.from.username || existing?.username || '',
-          full_name: fullName,
-          phone_number: normalizedPhone,
-          kyc_status: existing?.kyc_status === 'verified' ? 'verified' : 'pending',
-          wallet_balance: existing?.wallet_balance ?? 0,
-          escrow_locked_balance: existing?.escrow_locked_balance ?? 0,
-        });
+        const savedUser = await registerOrUpdateUser(
+          {
+            id: telegramId,
+            telegram_id: telegramId,
+            chat_id: chatId,
+            username: ctx.from.username || existing?.username || '',
+            full_name: fullName,
+            phone_number: normalizedPhone,
+            kyc_status: 'verified',
+            is_verified: true,
+          },
+          { preserveExistingBalances: true }
+        );
 
         appendBotLog(
           `✅ Contact registered in Firestore users/${telegramId} chat_id=${chatId} phone=${savedUser.phone_number}`
         );
 
-        await notifyWebsiteUserRegistered({
+        // همگام‌سازی غیرمسدودکننده با اندپوینت وب‌اپلیکیشن میانجی
+        void notifyWebsiteUserRegistered({
           telegramId: String(telegramId),
           phone: savedUser.phone_number,
           fullName: savedUser.full_name,
-        });
+        }).catch(() => {});
 
         await replyTelegramFormatted(
           ctx,
-          `✅ **ثبت‌نام و اتصال حساب شما با موفقیت انجام شد!**\n\n` +
+          `✅ **شماره شما ثبت شد؛ حالا می‌توانید در سایت کد ورود را دریافت کنید.**\n\n` +
             `👤 نام: ${savedUser.full_name}\n` +
             `📱 شماره موبایل: \`${savedUser.phone_number}\`\n` +
             `🆔 شناسه تلگرام: \`${savedUser.id}\`\n` +
-            `🪪 وضعیت احراز هویت: ${savedUser.kyc_status === 'verified' ? 'تایید شده ✅' : 'در انتظار احراز هویت (pending)'}`,
+            `🪪 وضعیت تایید شماره: تایید شده ✅`,
           buildMainReplyKeyboard()
         );
 
         await replyTelegramFormatted(
           ctx,
-          `🎉 به پنل هوشمند **میانجی** خوش آمدید!\n\nبرای ورود مستقیم و امن به وب‌اپ و مدیریت معاملات خود، دکمه زیر را لمس کنید:`,
+          `🎉 به پنل هوشمند **میانجی** خوش آمدید!\n\nبرای ورود مستقیم و دریافت کد ورود در وب‌اپ، دکمه زیر را لمس کنید:`,
           buildMiniAppInlineKeyboard()
         );
       } catch (err: any) {

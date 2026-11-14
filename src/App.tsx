@@ -465,17 +465,20 @@ const App = () => {
       firebase: {
         projectId: 'mianji-3639d',
         databaseId: 'ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73',
-        webAppUrl: 'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app',
-        registerWebhookUrl: 'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user'
+        webAppUrl: 'https://a-c4hy.onrender.com',
+        registerWebhookUrl: 'https://a-c4hy.onrender.com/api/bot/register-user'
       },
       collections: {
         users: {
           documentId: 'String(telegram_id)',
           fields: {
             id: 'String(user.id)',
+            telegram_id: 'number (ctx.from.id)',
             phone_number: '09057586655',
             full_name: 'کاربر میانجی',
-            kyc_status: 'pending | verified | rejected',
+            username: 'telegram_username',
+            role: 'user',
+            kyc_status: 'verified | pending | rejected',
             wallet_balance: 0,
             escrow_locked_balance: 0,
             updatedAt: 'SERVER_TIMESTAMP'
@@ -507,7 +510,7 @@ const App = () => {
       },
       webhookSync: {
         method: 'POST',
-        url: 'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user',
+        url: 'https://a-c4hy.onrender.com/api/bot/register-user',
         headers: { 'Content-Type': 'application/json' },
         body: {
           telegramId: 'String(user.id)',
@@ -841,12 +844,12 @@ const App = () => {
                     آدرس متصل وب‌سایت میانجی (Mini App)
                   </h4>
                   <a
-                    href={botStatus?.web_app_url || 'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app'}
+                    href={botStatus?.web_app_url || 'https://a-c4hy.onrender.com'}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] text-blue-400 hover:text-blue-300 font-mono truncate max-w-full"
                   >
-                    {botStatus?.web_app_url || 'https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app'}
+                    {botStatus?.web_app_url || 'https://a-c4hy.onrender.com'}
                   </a>
                 </div>
 
@@ -1340,7 +1343,7 @@ const App = () => {
                     <span>همگام‌سازی آنی وب‌هوک (Webhook Sync)</span>
                   </div>
                   <p className="text-slate-400 text-[11px] font-mono leading-relaxed break-all">
-                    POST {botStatus?.webhook_url || 'https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user'}
+                    POST {botStatus?.webhook_url || 'https://a-c4hy.onrender.com/api/bot/register-user'}
                   </p>
                 </div>
               </div>

@@ -3,7 +3,7 @@
  * Unified TypeScript Type Definitions for Web, Telegram Mini App & Database
  */
 
-export type UserRole = 'employer' | 'freelancer' | 'arbitrator' | 'ambassador' | 'admin';
+export type UserRole = 'user' | 'employer' | 'freelancer' | 'arbitrator' | 'ambassador' | 'admin';
 
 export type ContractStatus = 
   | 'draft'

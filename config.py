@@ -86,7 +86,7 @@ class Config:
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "miyanji-docs").strip()
     
     # آدرس اصلی وب‌اپلیکیشن واسطه‌گری میانجی جهت اتصال مستقیم مینی‌اپ تلگرام
-    SHARED_APP_URL = "https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app"
+    SHARED_APP_URL = "https://a-c4hy.onrender.com"
     APP_URL = os.getenv("APP_URL", SHARED_APP_URL).strip()
     WEB_APP_URL = os.getenv("WEB_APP_URL", SHARED_APP_URL).strip()
 
